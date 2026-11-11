@@ -94,15 +94,15 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 ## 9. Phases
 
-**Phase 1**
-- Block editor + library (grid editing, Excel paste, pattern fill, CSV/XLSX import/export)
-- Project model with project devices (groundwork for multi-page instances)
-- Pages + tabs, Letter/Tabloid landscape, title block, preferences
-- Blocks (scalable), text boxes, rectangles
-- Anchored right-angle lines with user-adjustable segments, line hops, sliding gap labels, fan-out
-- Range connect, soft signal-type warnings
-- Style properties, grid/snap/guides, undo/redo
-- Save/open project, autosave/backups, vector PDF export
+**Phase 1** — ✅ implemented (first cut, awaiting test feedback)
+- [x] Block editor + library (grid editing, Excel paste, pattern fill, CSV/XLSX import/export)
+- [x] Project model with project devices (groundwork for multi-page instances)
+- [x] Pages + tabs, Letter/Tabloid landscape, title block, preferences
+- [x] Blocks (scalable), text boxes, rectangles
+- [x] Anchored right-angle lines with user-adjustable segments, line hops, sliding gap labels, fan-out
+- [x] Range connect, soft signal-type warnings
+- [x] Style properties, grid/snap/guides, undo/redo
+- [x] Save/open project, autosave/backups, vector PDF export
 
 **Phase 2**
 - Curved lines, snakes
@@ -114,7 +114,40 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 **Phase 3**
 - Cable list, optional signal-type colors, auto-label numbering, quality-of-life polish
 
-## 10. Working process
+## 10. Implementation notes (decisions made while building)
+
+### Code layout
+- `src/model/` — document types, block geometry, orthogonal routing. `src/render/` — display list, page builder, SVG + pdf-lib backends. `src/state/` — store (undo/redo), actions, file ops, prefs. `src/io/` — zip project files, library CSV/XLSX, IndexedDB. `src/ui/` — React panels, canvas, dialogs.
+- Units are PDF points (1/72"), page origin top-left. Text is laid out with the font's own advance widths (no kerning/ligatures, on screen and in the PDF), so screen and PDF match.
+
+### Fonts
+- Liberation Sans Narrow could not be fetched in the build environment, so the narrow font is the spec's fallback **Roboto Condensed** (`public/fonts/narrow-*.ttf`, OFL). To switch to Liberation Sans Narrow, replace those two files (same names) — nothing else changes.
+- Title block uses **Carlito**. pdf-lib's subsetter drops Carlito glyphs, so Carlito is embedded whole (~1.3 MB per PDF); the narrow font is subset.
+
+### Files
+- `.schema` = zip with `project.json` + `assets/<id>` (logo images). Plain JSON is also accepted on open.
+- Library CSV/XLSX: one row per port — `Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector, Direction`. Blocks with no ports are one row with empty port fields. Import merges by manufacturer+model (replaces existing).
+- Library and preferences are stored in the browser (IndexedDB / localStorage); preferences export/import as JSON.
+- Autosave: the open project is written to IndexedDB 1.5 s after each change and restored on reload. Rolling backups: a snapshot every 5 minutes while editing and on every save; last 20 kept (pref). Optional pref: also autosave into the open `.schema` file.
+- "Modified" date updates on explicit save.
+
+### Canvas interaction
+- Blocks move by dragging the header, footer or centre; the outer ~45% of each port row (plus a few points outside the edge) starts a line. Click a port row to select it, Shift-click to extend a run, Ctrl-click to toggle; `Shift+C` = range connect (side with more OUTs becomes the source; pairs in display order; warns if counts differ).
+- Alt-drag from a text box or rectangle starts a line from its outline; lines can also end on a shape outline.
+- Lines are drawn OUT → IN (endpoints are swapped automatically). Mismatched signal types, IN→IN and OUT→OUT only warn.
+- Route model: a line stores alternating bend coordinates (null = automatic). The end segments always stretch to the anchors, so lines stay attached when blocks move while keeping manual edits. Dragging a middle segment moves it; dragging an end segment inserts a jog. "Reset route" returns to automatic.
+- Automatic Z-routes that would overlap are spread into 6 pt lanes, ordered so they don't cross; lines leaving the same port share a trunk (fan-out).
+- Hops: horizontal segments hop over vertical segments of other lines (not over lines from the same source port).
+- Labels: double-click a line to edit; default position is the middle of the longest horizontal run; drag to slide (then it's fixed until "Auto label position"). Labels on vertical segments are rotated.
+- Smart guides snap object edges/centres and **port rows** (so lines come out straight); otherwise grid snap (default 9 pt = 1/8"). Arrow keys nudge 1 pt (Shift = grid).
+- Copy/paste of blocks creates new devices (Phase 2 will add "place another instance of this device").
+- Quick insert: `Q` or `Ctrl+K`, Enter drops the block at the cursor.
+- Shortcuts: V/T/R tools, Ctrl+Z/Y, Ctrl+C/X/V/D/A, Delete, Ctrl+S / Ctrl+Shift+S / Ctrl+O, Ctrl+0 fit, Ctrl+± zoom, Space/middle-drag pan, Ctrl+wheel zoom.
+
+### Not in Phase 1 (by design / later phases)
+- No obstacle-avoiding autorouter (spec). "Used elsewhere" port markers and reference tags are Phase 2.
+
+## 11. Working process
 
 - Code + this spec live in the GitHub repo. Each new conversation starts from the repo; refer to "the spec" rather than re-describing features.
 - One conversation per phase or major feature. Feedback sent in batches (one list per test round, screenshots for visual issues).
