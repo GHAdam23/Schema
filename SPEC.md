@@ -122,7 +122,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 ### Fonts
 - Liberation Sans Narrow could not be fetched in the build environment, so the narrow font is the spec's fallback **Roboto Condensed** (`public/fonts/narrow-*.ttf`, OFL). To switch to Liberation Sans Narrow, replace those two files (same names) — nothing else changes.
-- Title block uses **Carlito**. pdf-lib's subsetter drops Carlito glyphs, so Carlito is embedded whole (~1.3 MB per PDF); the narrow font is subset.
+- Title block uses **Carlito**. pdf-lib's subsetter drops Carlito glyphs, so Carlito is embedded whole (adds ~0.6 MB per PDF); the narrow font is subset.
 
 ### Files
 - `.schema` = zip with `project.json` + `assets/<id>` (logo images). Plain JSON is also accepted on open.
