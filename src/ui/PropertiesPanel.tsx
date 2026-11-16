@@ -1,6 +1,7 @@
-import type { BlockObj, Connection, PageObject, StrokeStyle, TextObj } from '../model/types';
+import type { BlockDef, BlockObj, Connection, PageObject, RectObj, StrokeStyle, TextObj, TextProps } from '../model/types';
 import { setState, useStore, currentPage, type AppState } from '../state/store';
 import {
+  alignLabels,
   connectionWarnings,
   patchConnections,
   patchObjects,
@@ -64,6 +65,16 @@ export function PropertiesPanel() {
           <div className="section-title">
             {objs.length} object(s), {conns.length} line(s)
           </div>
+          {objs.length === 0 && (
+            <div className="btnrow">
+              <button title="Put the label centres on one vertical line" onClick={() => alignLabels('hcenter')}>
+                Line up labels ↕
+              </button>
+              <button title="Put the label centres on one horizontal line (labels on vertical runs)" onClick={() => alignLabels('vcenter')}>
+                Line up labels ↔
+              </button>
+            </div>
+          )}
           <StrokeEditor value={conns[0]?.style ?? (objs[0] && 'border' in objs[0] ? (objs[0].border as StrokeStyle) : null) ?? DEFAULT_LINE} onChange={(st) => st && setStroke(s.selection, st)} />
         </div>
       )}
@@ -88,10 +99,18 @@ function PageSection({ s }: { s: AppState }) {
           rectangle to connect from its outline.
         </p>
         <p>
-          <b>Reroute:</b> select a line and drag its segments. Double-click a line to edit its label; drag the label to slide it.
+          <b>Labels:</b> click a line and just start typing (Enter/F2 to edit an existing label). Drag a label to slide it — it snaps in line
+          with other labels. Select several lines and use the align buttons to line their labels up.
+        </p>
+        <p>
+          <b>Reroute:</b> select a line and drag its segments. Lines route around blocks automatically until you move a segment.
         </p>
         <p>
           <b>Range connect:</b> click a port, Shift-click to extend the run, Ctrl-click ports on a second block, then <kbd>Shift+C</kbd>.
+        </p>
+        <p>
+          <b>Select:</b> drag on empty space — left-to-right selects what is fully inside, right-to-left selects anything touched.
+          Double-click a rectangle or text box to type in it.
         </p>
         <p>
           <b>Pan:</b> scroll, middle-drag or Space-drag. <b>Zoom:</b> Ctrl+scroll.
@@ -129,6 +148,7 @@ function ObjectSection({ s, o }: { s: AppState; o: PageObject }) {
   return (
     <div className="section">
       <div className="section-title">Rectangle</div>
+      <TextFields o={o} />
       <Geometry o={o} />
       <div className="sub">Border</div>
       <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
@@ -167,7 +187,8 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
   const def = dev && s.project.blockDefs[dev.defId];
   if (!dev || !def) return <div className="section">Missing device.</div>;
   const usage = Object.values(s.project.devices).filter((d) => d.defId === def.id).length;
-  const inLib = s.library.some((l) => l.id === def.libraryId);
+  const lib = s.library.find((l) => l.id === def.libraryId);
+  const differs = !!lib && !sameDef(lib, def);
   return (
     <div className="section">
       <div className="section-title">Block</div>
@@ -184,26 +205,43 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
       <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
       <div className="sub">Definition</div>
       <div className="muted">
-        Project copy{usage > 1 ? ` shared by ${usage} devices` : ''}. {inLib ? 'Linked to library.' : 'Not in library.'}
+        {usage > 1 ? `Used by ${usage} devices in this project. ` : ''}
+        {!lib ? 'Not in your library.' : differs ? 'This project’s copy differs from your library.' : 'Matches your library.'}
       </div>
       <div className="btnrow">
         <button onClick={() => setState({ modal: { kind: 'blockEditor', target: 'project', defId: def.id } })}>Edit definition…</button>
-        <button onClick={() => updateFromLibrary(def.id)} title="Replace this project's copy with the current library version">
-          Update from library
-        </button>
-        <button onClick={() => projectDefToLibrary(def.id)}>{inLib ? 'Push to library' : 'Add to library'}</button>
+        {differs && (
+          <>
+            <button onClick={() => updateFromLibrary(def.id)} title="Replace this project's copy with your library version">
+              Use library version
+            </button>
+            <button onClick={() => projectDefToLibrary(def.id)} title="Save this project's version into your library for future projects">
+              Save to library
+            </button>
+          </>
+        )}
+        {!lib && (
+          <button onClick={() => projectDefToLibrary(def.id)} title="e.g. a block that came in a project from someone else">
+            Add to library
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function TextSection({ o }: { o: TextObj }) {
-  const patch = (fn: (t: TextObj) => void) => patchObjects([o.id], (t) => void (t.kind === 'text' && fn(t as TextObj)));
+function TextFields({ o }: { o: TextObj | RectObj }) {
+  const patch = (fn: (t: TextProps) => void) => patchObjects([o.id], (t) => void ((t.kind === 'text' || t.kind === 'rect') && fn(t as TextProps)));
   return (
-    <div className="section">
-      <div className="section-title">Text box</div>
-      <textarea className="textedit" key={o.id} defaultValue={o.text} onBlur={(e) => e.target.value !== o.text && patch((t) => (t.text = e.target.value))} rows={4} />
-      <Geometry o={o} />
+    <>
+      <textarea
+        className="textedit"
+        key={o.id + o.text}
+        defaultValue={o.text}
+        placeholder={o.kind === 'rect' ? 'Text inside the rectangle (or double-click it on the page)' : ''}
+        onBlur={(e) => e.target.value !== o.text && patch((t) => (t.text = e.target.value))}
+        rows={3}
+      />
       <div className="fieldgroup">
         <label>
           Size <input type="number" min={4} max={72} step={0.5} value={o.fontSize} onChange={(e) => patch((t) => (t.fontSize = Number(e.target.value) || 9))} />
@@ -221,7 +259,23 @@ function TextSection({ o }: { o: TextObj }) {
             {a}
           </button>
         ))}
+        {(['top', 'middle', 'bottom'] as const).map((a) => (
+          <button key={a} className={o.valign === a ? 'active' : ''} onClick={() => patch((t) => (t.valign = a))}>
+            {a}
+          </button>
+        ))}
       </div>
+    </>
+  );
+}
+
+function TextSection({ o }: { o: TextObj }) {
+  const patch = (fn: (t: TextObj) => void) => patchObjects([o.id], (t) => void (t.kind === 'text' && fn(t as TextObj)));
+  return (
+    <div className="section">
+      <div className="section-title">Text box</div>
+      <TextFields o={o} />
+      <Geometry o={o} />
       <div className="sub">Border</div>
       {o.border ? (
         <StrokeEditor
@@ -245,7 +299,7 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
   const desc = (i: typeof a, objId: string) => {
     if (i) return `${i.device.name} · ${i.port.name}${i.port.signal ? ' (' + i.port.signal + ')' : ''}`;
     const o = page.objects.find((x) => x.id === objId);
-    return o?.kind === 'text' ? `Text "${o.text.slice(0, 20)}"` : 'Shape';
+    return o && o.kind !== 'block' && o.text ? `${o.kind === 'text' ? 'Text' : 'Rectangle'} "${o.text.slice(0, 20)}"` : o?.kind === 'text' ? 'Text box' : 'Rectangle';
   };
   return (
     <div className="section">
@@ -285,4 +339,9 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
       </div>
     </div>
   );
+}
+
+function sameDef(a: BlockDef, b: BlockDef) {
+  const ports = (d: BlockDef) => JSON.stringify([d.left, d.right].map((col) => col.map((p) => [p.name, p.signal, p.connector])));
+  return a.manufacturer === b.manufacturer && a.model === b.model && a.defaultName === b.defaultName && ports(a) === ports(b);
 }

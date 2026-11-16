@@ -19,7 +19,8 @@ import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
 import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER } from '../model/defaults';
 import { findPort } from '../model/blockGeometry';
-import { objBounds } from '../model/routing';
+import { objBounds, resolvePageRoutes, type ResolvedRoute } from '../model/routing';
+import { labelBox, labelTAt } from '../render/buildPage';
 import { currentPage, getState, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
 
@@ -146,6 +147,7 @@ export function addText(x: number, y: number, text = 'Text'): Id {
     fontSize: 9,
     bold: false,
     align: 'left',
+    valign: 'top',
     color: '#000000',
     border: null,
     fill: null,
@@ -158,7 +160,22 @@ export function addText(x: number, y: number, text = 'Text'): Id {
 }
 
 export function addRect(x: number, y: number, w = 108, h = 72): Id {
-  const o: RectObj = { id: newId('ob'), kind: 'rect', x, y, w, h, border: { ...DEFAULT_RECT_BORDER }, fill: null };
+  const o: RectObj = {
+    id: newId('ob'),
+    kind: 'rect',
+    x,
+    y,
+    w,
+    h,
+    border: { ...DEFAULT_RECT_BORDER },
+    fill: null,
+    text: '',
+    fontSize: 9,
+    bold: false,
+    align: 'center',
+    valign: 'middle',
+    color: '#000000',
+  };
   updateProject((d) => {
     pageDraft(d).objects.push(o);
   });
@@ -255,6 +272,8 @@ export function alignSelection(mode: AlignMode) {
   const s = getState();
   const page = currentPage();
   const objs = page.objects.filter((o) => s.selection.includes(o.id));
+  // Only lines selected: align their labels instead.
+  if (objs.length === 0) return alignLabels(mode);
   if (objs.length < 2) return;
   const bs = objs.map((o) => ({ o, b: objBounds(s.project, o) }));
   const minX = Math.min(...bs.map((x) => x.b.x));
@@ -273,6 +292,42 @@ export function alignSelection(mode: AlignMode) {
       if (mode === 'vcenter') t.y = (minY + maxY) / 2 - b.h / 2;
     }
   });
+}
+
+/**
+ * Line up the labels of the selected lines. Left/centre/right put label centres (or edges) on a
+ * common x along horizontal runs; top/middle/bottom on a common y along vertical runs.
+ */
+export function alignLabels(mode: AlignMode) {
+  const s = getState();
+  const page = currentPage();
+  const routes = resolvePageRoutes(s.project, page);
+  const items = s.selection
+    .map((id) => routes.get(id))
+    .filter((r): r is ResolvedRoute => !!r && !!r.conn.label)
+    .map((r) => ({ r, lb: labelBox(r)! }));
+  if (items.length < 2) {
+    toast('Select two or more labelled lines to align their labels.', 'warn');
+    return;
+  }
+  const axis: 'x' | 'y' = mode === 'left' || mode === 'hcenter' || mode === 'right' ? 'x' : 'y';
+  const lo = (i: (typeof items)[number]) => (axis === 'x' ? i.lb.box.x : i.lb.box.y);
+  const hi = (i: (typeof items)[number]) => (axis === 'x' ? i.lb.box.x + i.lb.box.w : i.lb.box.y + i.lb.box.h);
+  const minV = Math.min(...items.map(lo));
+  const maxV = Math.max(...items.map(hi));
+  let missed = 0;
+  const ts = new Map<string, number>();
+  for (const it of items) {
+    const half = (hi(it) - lo(it)) / 2;
+    const target = mode === 'left' || mode === 'top' ? minV + half : mode === 'right' || mode === 'bottom' ? maxV - half : (minV + maxV) / 2;
+    const t = labelTAt(it.r, axis, target, it.lb.p);
+    if (t === null) missed++;
+    else ts.set(it.r.conn.id, t);
+  }
+  updateProject((d) => {
+    for (const c of pageDraft(d).connections) if (ts.has(c.id)) c.labelT = ts.get(c.id)!;
+  });
+  if (missed) toast(`${missed} label(s) could not be moved there — the line has no ${axis === 'x' ? 'horizontal' : 'vertical'} run at that position.`, 'warn', 5000);
 }
 
 export function distributeSelection(axis: 'h' | 'v') {
@@ -454,8 +509,6 @@ export function connectionWarnings(project: Project, page: Page, a: Endpoint, b:
   if (pa && pb) {
     if (pa.port.signal && pb.port.signal && pa.port.signal.toUpperCase() !== pb.port.signal.toUpperCase())
       w.push(`Signal mismatch: ${pa.port.signal} → ${pb.port.signal}.`);
-    if (pa.port.dir === 'IN' && pb.port.dir === 'IN') w.push('Connecting two inputs.');
-    if (pa.port.dir === 'OUT' && pb.port.dir === 'OUT') w.push('Connecting two outputs.');
   }
   return w;
 }

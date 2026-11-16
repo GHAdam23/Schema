@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { BlockDef } from '../model/types';
 import { currentPage, getState, setState, toast, useStore } from '../state/store';
 import { deleteLibraryDef, placeBlock, setLibrary, upsertLibraryDef } from '../state/actions';
@@ -35,12 +35,37 @@ export function LibraryPanel() {
   const [q, setQ] = useState('');
   const [man, setMan] = useState('');
   const [sig, setSig] = useState('');
-  const [sel, setSel] = useState<string | null>(null);
+  // Multi-selection (click, Shift = range, Ctrl = toggle). Export uses the selection.
+  const [selIds, setSelIds] = useState<string[]>([]);
+  const anchor = useRef<string | null>(null);
 
   const manufacturers = useMemo(() => [...new Set(library.map((d) => d.manufacturer).filter(Boolean))].sort(), [library]);
   const signals = useMemo(() => [...new Set(library.flatMap((d) => [...d.left, ...d.right].map((p) => p.signal)).filter(Boolean))].sort(), [library]);
   const list = useMemo(() => filterLibrary(library, q, man, sig).sort(sortDefs), [library, q, man, sig]);
-  const selected = library.find((d) => d.id === sel) ?? null;
+  const selSet = new Set(selIds.filter((id) => library.some((d) => d.id === id)));
+  const selectedDefs = library.filter((d) => selSet.has(d.id));
+  const selected = selectedDefs.length === 1 ? selectedDefs[0] : null;
+  const setSel = (id: string | null) => setSelIds(id ? [id] : []);
+
+  const clickItem = (e: React.MouseEvent, id: string) => {
+    if (e.shiftKey && anchor.current) {
+      const a = list.findIndex((d) => d.id === anchor.current);
+      const b = list.findIndex((d) => d.id === id);
+      if (a >= 0 && b >= 0) {
+        setSelIds(list.slice(Math.min(a, b), Math.max(a, b) + 1).map((d) => d.id));
+        return;
+      }
+    }
+    if (e.ctrlKey || e.metaKey) setSelIds(selSet.has(id) ? [...selSet].filter((x) => x !== id) : [...selSet, id]);
+    else setSelIds([id]);
+    anchor.current = id;
+  };
+
+  const exportName = (ext: string) =>
+    selectedDefs.length === 1
+      ? `${selectedDefs[0].manufacturer} ${selectedDefs[0].model}`.trim().replace(/[\\/:*?"<>|]+/g, '_') + ext
+      : 'schema-library' + ext;
+  const exportCount = selectedDefs.length;
 
   const doImport = async () => {
     const f = await pickFile('.csv,.tsv,.txt,.xlsx,.xls');
@@ -81,13 +106,13 @@ export function LibraryPanel() {
         {list.map((d) => (
           <div
             key={d.id}
-            className={'libitem' + (d.id === sel ? ' sel' : '')}
+            className={'libitem' + (selSet.has(d.id) ? ' sel' : '')}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData('application/x-schema-block', d.id);
               e.dataTransfer.effectAllowed = 'copy';
             }}
-            onClick={() => setSel(d.id)}
+            onClick={(e) => clickItem(e, d.id)}
             onDoubleClick={() => placeAtPointerOrCenter(d)}
             title="Drag onto the page, or double-click to place"
           >
@@ -118,10 +143,12 @@ export function LibraryPanel() {
           Duplicate
         </button>
         <button
-          disabled={!selected}
+          disabled={!selectedDefs.length}
           onClick={() => {
-            if (selected && confirm(`Delete "${selected.manufacturer} ${selected.model}" from the library? Projects keep their own copies.`)) {
-              deleteLibraryDef(selected.id);
+            const n = selectedDefs.length;
+            const what = n === 1 ? `"${selectedDefs[0].manufacturer} ${selectedDefs[0].model}"` : `${n} blocks`;
+            if (n && confirm(`Delete ${what} from the library? Projects keep their own copies.`)) {
+              for (const d of selectedDefs) deleteLibraryDef(d.id);
               setSel(null);
             }
           }}
@@ -131,8 +158,19 @@ export function LibraryPanel() {
       </div>
       <div className="btnrow">
         <button onClick={() => void doImport()}>Import…</button>
-        <button onClick={() => download(exportLibraryCsv(library), 'schema-library.csv')}>Export CSV</button>
-        <button onClick={() => download(exportLibraryXlsx(library), 'schema-library.xlsx')}>Export XLSX</button>
+        <button disabled={!exportCount} title="Export the highlighted blocks" onClick={() => download(exportLibraryCsv(selectedDefs), exportName('.csv'))}>
+          Export CSV
+        </button>
+        <button disabled={!exportCount} title="Export the highlighted blocks" onClick={() => download(exportLibraryXlsx(selectedDefs), exportName('.xlsx'))}>
+          Export XLSX
+        </button>
+      </div>
+      <div className="btnrow small">
+        <button onClick={() => setSelIds(list.map((d) => d.id))}>Select all{q || man || sig ? ' shown' : ''}</button>
+        <button disabled={!exportCount} onClick={() => setSelIds([])}>
+          Select none
+        </button>
+        <span className="muted">{exportCount ? `${exportCount} selected` : 'Ctrl/Shift-click to multi-select'}</span>
       </div>
     </div>
   );

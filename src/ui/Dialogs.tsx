@@ -31,9 +31,26 @@ function Modal({ title, children, buttons, wide }: { title: string; children: Re
 export function PrefsDialog() {
   const [p, setP] = useState<Prefs>(getState().prefs);
   const set = <K extends keyof Prefs>(k: K, v: Prefs[K]) => setP({ ...p, [k]: v });
+  const [applyToProject, setApplyToProject] = useState(true);
   const save = () => {
     savePrefs(p);
     setState({ prefs: p });
+    if (applyToProject) {
+      // Designer info lives in each project (so files keep it); copy it into the open one too.
+      updateProject((d) => {
+        d.info.designerName = p.designerName;
+        d.info.copyright = p.copyright;
+        d.info.phone = p.phone;
+        d.info.email = p.email;
+        if (d.info.logoAssetId) delete d.assets[d.info.logoAssetId];
+        d.info.logoAssetId = null;
+        if (p.logo) {
+          const id = newId('as');
+          d.assets[id] = p.logo;
+          d.info.logoAssetId = id;
+        }
+      });
+    }
     close();
   };
   return (
@@ -70,6 +87,10 @@ export function PrefsDialog() {
     >
       <div className="form">
         <div className="sub">Designer (pre-filled into new projects)</div>
+        <label>
+          <input type="checkbox" checked={applyToProject} onChange={(e) => setApplyToProject(e.target.checked)} /> Also update the open project's title
+          block
+        </label>
         <label>
           Name <input value={p.designerName} onChange={(e) => set('designerName', e.target.value)} />
         </label>

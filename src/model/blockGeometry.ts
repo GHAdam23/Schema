@@ -7,14 +7,13 @@ export const BLK = {
   headerSize: 7.5,
   rowH: 10,
   portSize: 6.5,
-  footerH: 12,
-  footerSize: 7,
-  pad: 4,
-  gap: 12,
+  footerH: 13,
+  footerSize: 7.5,
+  pad: 3,
   minW: 96,
 };
 
-export const SEP = ' – ';
+export const SEP = ' - ';
 
 export function portText(p: PortDef, side: Side): string {
   const parts = side === 'L' ? [p.name, p.signal, p.connector] : [p.connector, p.signal, p.name];
@@ -42,14 +41,15 @@ export function blockLayout(def: BlockDef, name: string): BlockLayout {
   const rows = Math.max(def.left.length, def.right.length, 1);
   const lw = Math.max(0, ...def.left.map((p) => measureText(portText(p, 'L'), 'narrow', BLK.portSize)));
   const rw = Math.max(0, ...def.right.map((p) => measureText(portText(p, 'R'), 'narrow', BLK.portSize)));
-  const colW = Math.max(lw, rw) + BLK.pad;
-  const header = measureText(headerText(def), 'narrowBold', BLK.headerSize) + BLK.pad * 2;
-  const footer =
-    measureText(name, 'narrowBold', BLK.footerSize) +
-    2 * (measureText('OUT', 'narrow', BLK.footerSize) + BLK.pad * 2);
-  const w = Math.ceil(Math.max(BLK.minW, colW * 2 + BLK.gap, header, footer));
+  // Two equal columns split by a centre divider; the header puts the manufacturer over the
+  // left column and the model over the right one.
+  const man = measureText(def.manufacturer, 'narrow', BLK.headerSize);
+  const model = measureText(def.model, 'narrow', BLK.headerSize);
+  const colW = Math.max(lw, rw, man, model) + BLK.pad * 2 + 2;
+  const footer = measureText(name, 'narrow', BLK.footerSize) + 2 * (measureText('OUT', 'narrow', BLK.footerSize) + BLK.pad * 4);
+  const w = Math.ceil(Math.max(BLK.minW, colW * 2, footer));
   const h = BLK.headerH + rows * BLK.rowH + BLK.footerH;
-  const res = { w, h, rows, colW: (w - BLK.gap) / 2 };
+  const res = { w, h, rows, colW: w / 2 };
   m.set(name, res);
   return res;
 }

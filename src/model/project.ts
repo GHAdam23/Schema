@@ -50,9 +50,28 @@ export function normalizeProject(p: Project): Project {
   p.devices ??= {};
   p.blockDefs ??= {};
   p.assets ??= {};
+  for (const d of Object.values(p.blockDefs)) normalizeDirs(d);
   for (const pg of p.pages) {
     pg.objects ??= [];
+    for (const o of pg.objects) {
+      // Older files: rectangles had no text, text boxes had no vertical alignment.
+      if (o.kind === 'rect' || o.kind === 'text') {
+        o.text ??= '';
+        o.fontSize ??= 9;
+        o.bold ??= false;
+        o.align ??= 'center';
+        o.color ??= '#000000';
+        o.valign ??= o.kind === 'rect' ? 'middle' : 'top';
+      }
+    }
     pg.connections ??= [];
   }
   return p;
+}
+
+/** A port's direction is defined by its column (left = IN, right = OUT). */
+export function normalizeDirs(d: BlockDef): BlockDef {
+  for (const p of d.left) p.dir = 'IN';
+  for (const p of d.right) p.dir = 'OUT';
+  return d;
 }

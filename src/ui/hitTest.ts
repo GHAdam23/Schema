@@ -1,6 +1,7 @@
 import type { BlockObj, Page, PageObject, Project, Side } from '../model/types';
 import { blockFor, blockLayout, BLK } from '../model/blockGeometry';
 import { objBounds } from '../model/routing';
+import { textLines, textTop } from '../render/buildPage';
 import type { PortRef } from '../state/store';
 
 export interface PortHit extends PortRef {
@@ -38,24 +39,36 @@ export function hitPort(project: Project, page: Page, x: number, y: number): Por
   return null;
 }
 
-export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0): PageObject | null {
+/**
+ * Topmost object under a point. An unfilled rectangle is only "solid" along its outline and its
+ * text, so you can marquee-select or click things inside it (pass wholeArea to ignore that).
+ */
+export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0, wholeArea = false, edgeTol = 4): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
     const b = objBounds(project, o);
-    if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return o;
+    if (!(x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad)) continue;
+    if (wholeArea || o.kind !== 'rect' || o.fill) return o;
+    const nearEdge = x - b.x <= edgeTol || b.x + b.w - x <= edgeTol || y - b.y <= edgeTol || b.y + b.h - y <= edgeTol;
+    if (nearEdge) return o;
+    if (o.text) {
+      const top = textTop(o);
+      const bottom = top + textLines(o).length * o.fontSize * 1.2;
+      if (y >= top && y <= bottom) return o;
+    }
   }
   return null;
 }
 
-/** Nearest point on a shape's outline, as fractions of its bounds. */
+/** Connection point on a shape: the centre of the side nearest to (x, y), as fractions of its bounds. */
 export function outlinePoint(b: { x: number; y: number; w: number; h: number }, x: number, y: number) {
-  const fx = Math.min(1, Math.max(0, (x - b.x) / b.w));
-  const fy = Math.min(1, Math.max(0, (y - b.y) / b.h));
+  const fx = (x - b.x) / b.w;
+  const fy = (y - b.y) / b.h;
   const d = [
-    { d: fx * b.w, fx: 0, fy },
-    { d: (1 - fx) * b.w, fx: 1, fy },
-    { d: fy * b.h, fx, fy: 0 },
-    { d: (1 - fy) * b.h, fx, fy: 1 },
+    { d: Math.abs(fx) * b.w, fx: 0, fy: 0.5 },
+    { d: Math.abs(1 - fx) * b.w, fx: 1, fy: 0.5 },
+    { d: Math.abs(fy) * b.h, fx: 0.5, fy: 0 },
+    { d: Math.abs(1 - fy) * b.h, fx: 0.5, fy: 1 },
   ].sort((a, b) => a.d - b.d)[0];
   return { fx: d.fx, fy: d.fy };
 }

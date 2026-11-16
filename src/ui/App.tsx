@@ -7,7 +7,7 @@ import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
 import { QuickInsert } from './QuickInsert';
 import { PrefsDialog, ProjectInfoDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog } from './Dialogs';
-import { getState, redo, setState, undo, useStore } from '../state/store';
+import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
   copySelection,
   cutSelection,
@@ -19,6 +19,8 @@ import {
   selectAll,
 } from '../state/actions';
 import { openProjectCmd, saveCmd } from '../state/fileOps';
+
+let pendingTyped: { id: string; text: string; at: number } | null = null;
 
 export function App() {
   const modal = useStore((s) => s.modal);
@@ -35,6 +37,12 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.closest('input, textarea, select, [contenteditable=true]')) return;
+      // An inline editor that hasn't taken focus yet (fast typing): send the keystroke to it.
+      const ed = document.querySelector<HTMLInputElement>('.inline-editor');
+      if (ed) {
+        ed.focus();
+        return;
+      }
       const s = getState();
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
@@ -49,6 +57,29 @@ export function App() {
         return;
       }
       if (s.modal) return;
+      // Single selected line / text / rectangle / block: type (lines) or Enter/F2 to edit in place.
+      if (s.selection.length === 1 && !mod && !e.altKey) {
+        const pg = currentPage(s);
+        const id = s.selection[0];
+        const conn = pg.connections.find((c) => c.id === id);
+        const obj = pg.objects.find((o) => o.id === id);
+        const edit = (detail: object) => {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent('schema:edit', { detail }));
+        };
+        if (conn && e.key.length === 1 && e.key !== ' ') {
+          // Keys typed before the editor has appeared are collected so nothing is lost.
+          const now = performance.now();
+          const p = pendingTyped;
+          pendingTyped = p && p.id === id && now - p.at < 400 ? { id, text: p.text + e.key, at: now } : { id, text: e.key, at: now };
+          return edit({ kind: 'label', id, typed: pendingTyped.text });
+        }
+        if (e.key === 'Enter' || e.key === 'F2') {
+          if (conn) return edit({ kind: 'label', id });
+          if (obj?.kind === 'block') return edit({ kind: 'device', id });
+          if (obj) return edit({ kind: 'text', id });
+        }
+      }
       if (mod && k === 'z') {
         e.preventDefault();
         if (e.shiftKey) redo();

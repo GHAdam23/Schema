@@ -1,6 +1,6 @@
-import type { BlockObj, Page, PageObject, Project, RectObj, StrokeStyle, TextObj } from '../model/types';
+import type { BlockObj, Page, PageObject, Project, RectObj, StrokeStyle, TextObj, TextProps } from '../model/types';
 import { dashArray, PAGE_MARGIN, PAGE_SIZES, titleBlockWidth } from '../model/defaults';
-import { BLK, blockFor, blockLayout, headerText, portText } from '../model/blockGeometry';
+import { BLK, blockFor, blockLayout, portText } from '../model/blockGeometry';
 import { pathLength, pointAt, resolvePageRoutes, type Pt, type ResolvedRoute } from '../model/routing';
 import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
 import type { DLItem, DLStroke, PathCmd } from './displayList';
@@ -36,29 +36,45 @@ export function drawObject(out: DLItem[], project: Project, o: PageObject) {
 
 function drawRect(out: DLItem[], o: RectObj) {
   out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: o.border.width > 0 ? toDLStroke(o.border) : null });
+  drawTextIn(out, o);
 }
 
 export const TEXT_PAD = 3;
 
-export function textLines(o: TextObj) {
+type TextBox = TextProps & { x: number; y: number; w: number; h: number };
+
+export function textLines(o: TextBox) {
   const font = o.bold ? 'narrowBold' : 'narrow';
   return wrapText(o.text, font, o.fontSize, Math.max(1, o.w - TEXT_PAD * 2));
+}
+
+/** Top of the first line's box for the given vertical alignment. */
+export function textTop(o: TextBox) {
+  const lh = o.fontSize * 1.2;
+  const total = (o.text ? textLines(o).length : 1) * lh;
+  if (o.valign === 'middle') return o.y + (o.h - total) / 2;
+  if (o.valign === 'bottom') return o.y + o.h - TEXT_PAD - total;
+  return o.y + TEXT_PAD;
+}
+
+function drawTextIn(out: DLItem[], o: TextBox) {
+  if (!o.text) return;
+  const font = o.bold ? 'narrowBold' : 'narrow';
+  const lh = o.fontSize * 1.2;
+  let y = textTop(o) + o.fontSize * capHeightEm(font) + (lh - o.fontSize) / 2;
+  for (const line of textLines(o)) {
+    const w = measureText(line, font, o.fontSize);
+    const x = o.align === 'left' ? o.x + TEXT_PAD : o.align === 'right' ? o.x + o.w - TEXT_PAD - w : o.x + (o.w - w) / 2;
+    if (line) out.push({ t: 'text', x, y, text: line, font, size: o.fontSize, color: o.color });
+    y += lh;
+  }
 }
 
 function drawText(out: DLItem[], o: TextObj) {
   if (o.fill || (o.border && o.border.width > 0)) {
     out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: o.border && o.border.width > 0 ? toDLStroke(o.border) : null });
   }
-  const font = o.bold ? 'narrowBold' : 'narrow';
-  const lh = o.fontSize * 1.2;
-  const lines = textLines(o);
-  let y = o.y + TEXT_PAD + o.fontSize * capHeightEm(font) + (lh - o.fontSize) / 2;
-  for (const line of lines) {
-    const w = measureText(line, font, o.fontSize);
-    const x = o.align === 'left' ? o.x + TEXT_PAD : o.align === 'right' ? o.x + o.w - TEXT_PAD - w : o.x + (o.w - w) / 2;
-    if (line) out.push({ t: 'text', x, y, text: line, font, size: o.fontSize, color: o.color });
-    y += lh;
-  }
+  drawTextIn(out, o);
 }
 
 function drawBlock(out: DLItem[], project: Project, o: BlockObj) {
@@ -74,46 +90,49 @@ function drawBlock(out: DLItem[], project: Project, o: BlockObj) {
   const thin: DLStroke = { color: o.border.color, width: 0.5 * Math.min(1, s), dash: [] };
   out.push({ t: 'rect', x: o.x, y: o.y, w: W, h: H, fill: '#ffffff', stroke: null });
 
-  // Header
+  const half = W / 2;
+  const text = (t: string, x: number, y: number, size: number) => out.push({ t: 'text', x, y, text: t, font: 'narrow', size, color: '#000000' });
+  const line = (x1: number, y1: number, x2: number, y2: number) =>
+    out.push({ t: 'path', d: [{ c: 'M', x: x1, y: y1 }, { c: 'L', x: x2, y: y2 }], fill: null, stroke: thin });
+
+  // Header: manufacturer centred over the left column, model over the right.
   const hs = BLK.headerSize * s;
-  const ht = fitText(headerText(def), 'narrowBold', BLK.headerSize, L.w - BLK.pad * 2);
-  const hw = measureText(ht, 'narrowBold', BLK.headerSize) * s;
-  out.push({
-    t: 'text',
-    x: o.x + (W - hw) / 2,
-    y: o.y + (BLK.headerH * s + hs * capHeightEm('narrowBold')) / 2,
-    text: ht,
-    font: 'narrowBold',
-    size: hs,
-    color: '#000000',
-  });
+  const hb = o.y + (BLK.headerH * s + hs * capHeightEm('narrow')) / 2;
+  const colText = (L.colW - BLK.pad * 2) ;
+  const man = fitText(def.manufacturer, 'narrow', BLK.headerSize, colText);
+  const mod = fitText(def.model, 'narrow', BLK.headerSize, colText);
+  text(man, o.x + (half - measureText(man, 'narrow', BLK.headerSize) * s) / 2, hb, hs);
+  text(mod, o.x + half + (half - measureText(mod, 'narrow', BLK.headerSize) * s) / 2, hb, hs);
   const hy = o.y + BLK.headerH * s;
-  out.push({ t: 'path', d: [{ c: 'M', x: o.x, y: hy }, { c: 'L', x: o.x + W, y: hy }], fill: null, stroke: thin });
+  line(o.x, hy, o.x + W, hy);
 
   // Ports
   const ps = BLK.portSize * s;
   const cap = ps * capHeightEm('narrow');
   def.left.forEach((p, i) => {
     const y = hy + (i * BLK.rowH + BLK.rowH / 2) * s + cap / 2;
-    out.push({ t: 'text', x: o.x + BLK.pad * s, y, text: portText(p, 'L'), font: 'narrow', size: ps, color: '#000000' });
+    text(portText(p, 'L'), o.x + BLK.pad * s, y, ps);
   });
   def.right.forEach((p, i) => {
     const y = hy + (i * BLK.rowH + BLK.rowH / 2) * s + cap / 2;
     const t = portText(p, 'R');
-    const w = measureText(t, 'narrow', BLK.portSize) * s;
-    out.push({ t: 'text', x: o.x + W - BLK.pad * s - w, y, text: t, font: 'narrow', size: ps, color: '#000000' });
+    text(t, o.x + W - BLK.pad * s - measureText(t, 'narrow', BLK.portSize) * s, y, ps);
   });
 
-  // Footer
+  // Centre divider (header + port rows), then the footer across the full width.
   const fy = o.y + (BLK.headerH + L.rows * BLK.rowH) * s;
-  out.push({ t: 'path', d: [{ c: 'M', x: o.x, y: fy }, { c: 'L', x: o.x + W, y: fy }], fill: null, stroke: thin });
+  line(o.x + half, o.y, o.x + half, fy);
+  line(o.x, fy, o.x + W, fy);
   const fs = BLK.footerSize * s;
   const fb = fy + (BLK.footerH * s + fs * capHeightEm('narrow')) / 2;
-  out.push({ t: 'text', x: o.x + BLK.pad * s, y: fb, text: 'IN', font: 'narrow', size: fs, color: '#000000' });
+  const nw = measureText(dev.name, 'narrow', BLK.footerSize) * s;
+  const iw = measureText('IN', 'narrow', BLK.footerSize) * s;
   const ow = measureText('OUT', 'narrow', BLK.footerSize) * s;
-  out.push({ t: 'text', x: o.x + W - BLK.pad * s - ow, y: fb, text: 'OUT', font: 'narrow', size: fs, color: '#000000' });
-  const nw = measureText(dev.name, 'narrowBold', BLK.footerSize) * s;
-  out.push({ t: 'text', x: o.x + (W - nw) / 2, y: fb, text: dev.name, font: 'narrowBold', size: fs, color: '#000000' });
+  // IN / OUT centred in the space either side of the name.
+  const side = (W - nw) / 2;
+  text('IN', o.x + side / 2 - iw / 2, fb, fs);
+  text(dev.name, o.x + (W - nw) / 2, fb, fs);
+  text('OUT', o.x + W - side / 2 - ow / 2, fb, fs);
 
   // Border on top
   if (o.border.width > 0) out.push({ t: 'rect', x: o.x, y: o.y, w: W, h: H, fill: null, stroke: toDLStroke(o.border) });
@@ -356,4 +375,34 @@ function drawTitleBlock(out: DLItem[], project: Project, page: Page, opts: Build
   const ns = 18;
   const nw = measureText(num, 'titleBold', ns);
   out.push({ t: 'text', x: r.x + (r.w - nw) / 2, y: r.y + r.h - 8, text: num, font: 'titleBold', size: ns, color: '#000000' });
+}
+
+/**
+ * labelT that puts a line's label centre at x = value (axis 'x', on a horizontal run) or
+ * y = value (axis 'y', on a vertical run). Picks the matching run nearest to `near`. null if none.
+ */
+export function labelTAt(route: ResolvedRoute, axis: 'x' | 'y', value: number, near: Pt): number | null {
+  const pts = route.pts;
+  const L = pathLength(pts);
+  if (L <= 0) return null;
+  let best: { t: number; dist: number } | null = null;
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    const horiz = Math.abs(a.y - b.y) < 1e-6;
+    if (len > 0 && horiz === (axis === 'x')) {
+      const lo = Math.min(axis === 'x' ? a.x : a.y, axis === 'x' ? b.x : b.y);
+      const hi = Math.max(axis === 'x' ? a.x : a.y, axis === 'x' ? b.x : b.y);
+      if (value >= lo && value <= hi) {
+        const p = axis === 'x' ? { x: value, y: a.y } : { x: a.x, y: value };
+        const dist = Math.hypot(p.x - near.x, p.y - near.y);
+        const t = (acc + Math.abs((axis === 'x' ? p.x - a.x : p.y - a.y))) / L;
+        if (!best || dist < best.dist) best = { t, dist };
+      }
+    }
+    acc += len;
+  }
+  return best ? Math.min(0.99, Math.max(0.01, best.t)) : null;
 }

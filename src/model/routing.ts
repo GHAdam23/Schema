@@ -168,13 +168,172 @@ export function rawPoints(s: Anchor, e: Anchor, bends: number[]): Pt[] {
   return pts;
 }
 
-export function resolveRoute(project: Project, page: Page, conn: Connection): ResolvedRoute | null {
+export function resolveRoute(project: Project, page: Page, conn: Connection, obstacles = blockObstacles(project, page)): ResolvedRoute | null {
   const s = resolveEndpoint(project, page, conn.from);
   const e = resolveEndpoint(project, page, conn.to);
   if (!s || !e) return null;
-  const bends = conn.bends && bendsValid(conn.bends, s, e) ? conn.bends : autoBends(s, e);
+  const bends = conn.bends && bendsValid(conn.bends, s, e) ? conn.bends : autoRoute(s, e, obstacles);
   const raw = rawPoints(s, e, bends);
   return { conn, s, e, bends, raw, pts: simplify(raw) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Automatic routing around blocks
+
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function blockObstacles(project: Project, page: Page): Rect[] {
+  return page.objects.filter((o) => o.kind === 'block').map((o) => objBounds(project, o));
+}
+
+/** Does an orthogonal segment pass through the inside of a rectangle? (Touching the edge is fine.) */
+function segCrosses(a: Pt, b: Pt, r: Rect, inset = 0.5) {
+  const x0 = r.x + inset;
+  const x1 = r.x + r.w - inset;
+  const y0 = r.y + inset;
+  const y1 = r.y + r.h - inset;
+  if (Math.abs(a.y - b.y) < 1e-6) {
+    return a.y > y0 && a.y < y1 && Math.max(Math.min(a.x, b.x), x0) < Math.min(Math.max(a.x, b.x), x1);
+  }
+  return a.x > x0 && a.x < x1 && Math.max(Math.min(a.y, b.y), y0) < Math.min(Math.max(a.y, b.y), y1);
+}
+
+const routeCache = new Map<string, number[]>();
+
+/**
+ * Automatic bends: the simple route when it is clear of blocks, otherwise the shortest
+ * orthogonal path around them (with a penalty per bend). Falls back to the simple route.
+ */
+export function autoRoute(s: Anchor, e: Anchor, obstacles: Rect[]): number[] {
+  const simple = autoBends(s, e);
+  const pts = simplify(rawPoints(s, e, simple));
+  const blocked = pts.some((p, i) => i > 0 && obstacles.some((r) => segCrosses(pts[i - 1], p, r)));
+  if (!blocked) return simple;
+  const key = [s.x, s.y, s.dx, s.dy, e.x, e.y, e.dx, e.dy].join(',') + '|' + obstacles.map((r) => `${r.x},${r.y},${r.w},${r.h}`).join(';');
+  const hit = routeCache.get(key);
+  if (hit) return hit;
+  const found = searchRoute(s, e, obstacles) ?? simple;
+  if (routeCache.size > 4000) routeCache.clear();
+  routeCache.set(key, found);
+  return found;
+}
+
+const PAD = 8;
+const BEND_COST = 24;
+
+function searchRoute(s: Anchor, e: Anchor, obstacles: Rect[]): number[] | null {
+  const S1 = { x: s.x + s.dx * STUB, y: s.y + s.dy * STUB };
+  const E1 = { x: e.x + e.dx * STUB, y: e.y + e.dy * STUB };
+  const inside = (p: Pt, r: Rect) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+  const obs = obstacles
+    .map((r) => ({ x: r.x - PAD, y: r.y - PAD, w: r.w + PAD * 2, h: r.h + PAD * 2 }))
+    .filter((r) => !inside(S1, r) && !inside(E1, r));
+  const uniq = (v: number[]) => [...new Set(v.map((n) => Math.round(n * 100) / 100))].sort((a, b) => a - b);
+  const xs = uniq([S1.x, E1.x, (S1.x + E1.x) / 2, ...obs.flatMap((r) => [r.x, r.x + r.w])]);
+  const ys = uniq([S1.y, E1.y, (S1.y + E1.y) / 2, ...obs.flatMap((r) => [r.y, r.y + r.h])]);
+  const nx = xs.length;
+  const ny = ys.length;
+  const ok = new Uint8Array(nx * ny);
+  for (let i = 0; i < nx; i++)
+    for (let j = 0; j < ny; j++) ok[j * nx + i] = obs.some((r) => inside({ x: xs[i], y: ys[j] }, r)) ? 0 : 1;
+  const si = xs.indexOf(Math.round(S1.x * 100) / 100);
+  const sj = ys.indexOf(Math.round(S1.y * 100) / 100);
+  const ei = xs.indexOf(Math.round(E1.x * 100) / 100);
+  const ej = ys.indexOf(Math.round(E1.y * 100) / 100);
+  if (si < 0 || sj < 0 || ei < 0 || ej < 0) return null;
+  // Directions: 0 +x, 1 -x, 2 +y, 3 -y
+  const DX = [1, -1, 0, 0];
+  const DY = [0, 0, 1, -1];
+  const dirOf = (dx: number, dy: number) => (dx > 0 ? 0 : dx < 0 ? 1 : dy > 0 ? 2 : 3);
+  const startDir = dirOf(s.dx, s.dy);
+  const endDir = dirOf(-e.dx, -e.dy);
+  const N = nx * ny * 4;
+  const g = new Float64Array(N).fill(Infinity);
+  const prev = new Int32Array(N).fill(-1);
+  const h = (i: number, j: number) => Math.abs(xs[i] - xs[ei]) + Math.abs(ys[j] - ys[ej]);
+  const heap: [number, number][] = [];
+  const push = (f: number, st: number) => {
+    heap.push([f, st]);
+    let k = heap.length - 1;
+    while (k > 0) {
+      const p = (k - 1) >> 1;
+      if (heap[p][0] <= heap[k][0]) break;
+      [heap[p], heap[k]] = [heap[k], heap[p]];
+      k = p;
+    }
+  };
+  const pop = () => {
+    const top = heap[0];
+    const last = heap.pop()!;
+    if (heap.length) {
+      heap[0] = last;
+      let k = 0;
+      for (;;) {
+        const l = k * 2 + 1;
+        const r = l + 1;
+        let m = k;
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+        if (m === k) break;
+        [heap[m], heap[k]] = [heap[k], heap[m]];
+        k = m;
+      }
+    }
+    return top;
+  };
+  const sid = (sj * nx + si) * 4 + startDir;
+  g[sid] = 0;
+  push(h(si, sj), sid);
+  let goal = -1;
+  while (heap.length) {
+    const [, st] = pop();
+    const dir = st & 3;
+    const node = st >> 2;
+    const i = node % nx;
+    const j = (node - i) / nx;
+    if (i === ei && j === ej) {
+      goal = st;
+      break;
+    }
+    for (let nd = 0; nd < 4; nd++) {
+      if ((dir ^ 1) === nd && (dir >> 1) === (nd >> 1)) continue; // no U-turns
+      const ni = i + DX[nd];
+      const nj = j + DY[nd];
+      if (ni < 0 || nj < 0 || ni >= nx || nj >= ny || !ok[nj * nx + ni]) continue;
+      const a = { x: xs[i], y: ys[j] };
+      const b = { x: xs[ni], y: ys[nj] };
+      if (obs.some((r) => segCrosses(a, b, r, 0))) continue;
+      let cost = g[st] + Math.abs(b.x - a.x) + Math.abs(b.y - a.y) + (nd !== dir ? BEND_COST : 0);
+      if (ni === ei && nj === ej && nd !== endDir) cost += BEND_COST;
+      const ns = (nj * nx + ni) * 4 + nd;
+      if (cost < g[ns]) {
+        g[ns] = cost;
+        prev[ns] = st;
+        push(cost + h(ni, nj), ns);
+      }
+    }
+  }
+  if (goal < 0) return null;
+  const path: Pt[] = [];
+  for (let st = goal; st >= 0; st = prev[st]) {
+    const node = st >> 2;
+    const i = node % nx;
+    path.push({ x: xs[i], y: ys[(node - i) / nx] });
+  }
+  path.reverse();
+  const pts = simplify([{ x: s.x, y: s.y }, ...path, { x: e.x, y: e.y }]);
+  // Convert the polyline to bend coordinates (see the top of this file).
+  const bends: number[] = [];
+  for (let k = 1; k <= pts.length - 3; k++) {
+    const horiz = Math.abs(pts[k - 1].y - pts[k].y) < 1e-6;
+    bends.push(horiz ? pts[k].x : pts[k].y);
+  }
+  return bendsValid(bends, s, e) ? bends : null;
 }
 
 export function pathLength(pts: Pt[]): number {
@@ -235,8 +394,9 @@ export const LANE_SPACING = 6;
 export function resolvePageRoutes(project: Project, page: Page): Map<string, ResolvedRoute> {
   const out = new Map<string, ResolvedRoute>();
   const autoZ: ResolvedRoute[] = [];
+  const obstacles = blockObstacles(project, page);
   for (const c of page.connections) {
-    const r = resolveRoute(project, page, c);
+    const r = resolveRoute(project, page, c, obstacles);
     if (!r) continue;
     out.set(c.id, r);
     const usable = !(c.bends && bendsValid(c.bends, r.s, r.e));

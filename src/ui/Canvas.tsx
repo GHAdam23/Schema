@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, Page, PageObject, Project, TextObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, Page, PageObject, Project, RectObj, TextObj } from '../model/types';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
 import {
@@ -17,7 +17,7 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { buildPage, labelBox, TEXT_PAD } from '../render/buildPage';
+import { buildPage, labelBox, labelTAt, TEXT_PAD } from '../render/buildPage';
 import { SvgItems } from '../render/SvgRender';
 import { checkpoint, currentPage, dropCheckpointIfUnchanged, getState, setState, toast, updateProject, useStore } from '../state/store';
 import { addRect, addText, connect, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
@@ -39,6 +39,13 @@ type Drag =
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
   | { t: 'label'; connId: Id; moved: boolean }
   | { t: 'pan'; sx: number; sy: number; orig: View };
+
+interface Editing {
+  kind: 'text' | 'device' | 'label';
+  id: Id;
+  /** Text typed to start the edit (replaces the current value). */
+  typed?: string;
+}
 
 interface Guide {
   x1: number;
@@ -72,7 +79,7 @@ export function Canvas() {
     setDragState(d);
   };
   const [guides, setGuides] = useState<Guide[]>([]);
-  const [editing, setEditing] = useState<{ kind: 'text' | 'device' | 'label'; id: Id } | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
   const [hoverPort, setHoverPort] = useState<PortHit | null>(null);
   const spaceDown = useRef(false);
   const lastPortClick = useRef<PortHit | null>(null);
@@ -106,7 +113,16 @@ export function Canvas() {
       }
     };
     window.addEventListener('schema:view', onView);
-    return () => window.removeEventListener('schema:view', onView);
+    // Start inline editing from the keyboard (type on a selected line to label it, Enter/F2 to edit).
+    const onEdit = (e: Event) => {
+      const d = (e as CustomEvent).detail as Editing;
+      setEditing(d);
+    };
+    window.addEventListener('schema:edit', onEdit);
+    return () => {
+      window.removeEventListener('schema:view', onView);
+      window.removeEventListener('schema:edit', onEdit);
+    };
   }, [fit]);
 
   const zoomAt = (sx: number, sy: number, factor: number) => {
@@ -154,7 +170,12 @@ export function Canvas() {
   // Pointer handling
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (editing) return;
+    if (editing) {
+      // Clicking the canvas finishes an inline edit (blur commits it).
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      setEditing(null);
+      return;
+    }
     const p = toPage(e.clientX, e.clientY);
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
@@ -215,7 +236,7 @@ export function Canvas() {
       });
       return;
     }
-    const obj = hitObject(s.project, pg, p.x, p.y);
+    const obj = hitObject(s.project, pg, p.x, p.y, 0, false, 5 / viewRef.current.z);
     if (obj) {
       // Alt-drag from a shape starts a connection from its outline.
       if (e.altKey && obj.kind !== 'block') {
@@ -265,16 +286,22 @@ export function Canvas() {
         const nd = { ...d, cur: p };
         setDrag(nd);
         const r = normRect(d.start, p);
+        // Drag left-to-right: select what is fully inside. Right-to-left: anything touched.
+        const crossing = p.x < d.start.x;
+        const inRect = (q: Pt) => q.x >= r.x && q.y >= r.y && q.x <= r.x + r.w && q.y <= r.y + r.h;
         const inside = pg.objects
           .filter((o) => {
             const b = objBounds(s.project, o);
+            if (crossing) return b.x <= r.x + r.w && b.x + b.w >= r.x && b.y <= r.y + r.h && b.y + b.h >= r.y;
             return b.x >= r.x && b.y >= r.y && b.x + b.w <= r.x + r.w && b.y + b.h <= r.y + r.h;
           })
           .map((o) => o.id);
         const conns = pg.connections
           .filter((c) => {
             const rt = routes.get(c.id);
-            return rt && rt.pts.every((q) => q.x >= r.x && q.y >= r.y && q.x <= r.x + r.w && q.y <= r.y + r.h);
+            if (!rt) return false;
+            if (!crossing) return rt.pts.every(inRect);
+            return rt.pts.some((q, i) => i > 0 && segHitsRect(rt.pts[i - 1], q, r));
           })
           .map((c) => c.id);
         setState({ selection: [...new Set([...d.base, ...inside, ...conns])] });
@@ -314,7 +341,8 @@ export function Canvas() {
         const moved = d.moved || Math.hypot((p.x - d.start.x) * z, (p.y - d.start.y) * z) >= DRAG_THRESHOLD;
         setDrag({ ...d, cur: p, moved });
         const hp = hitPort(s.project, pg, p.x, p.y);
-        setHoverPort(hp && hp.objId !== d.from.objId ? hp : null);
+        // Any port except the one we started from (same-device jumpers are allowed).
+        setHoverPort(hp && !(hp.objId === d.from.objId && hp.portId === (d.from as { portId?: string }).portId) ? hp : null);
         return;
       }
       case 'segment': {
@@ -329,8 +357,31 @@ export function Canvas() {
         if (!r) return;
         d.moved = true;
         const L = pathLength(r.pts);
-        const t = L > 0 ? projectOnPath(r.pts, p) / L : 0.5;
-        patchConnections([d.connId], (c) => void (c.labelT = Math.min(0.98, Math.max(0.02, t))), false);
+        let t = L > 0 ? projectOnPath(r.pts, p) / L : 0.5;
+        // Snap the label centre in line with other labels (same x on horizontal runs, same y on vertical runs).
+        const me = labelBox({ ...r, conn: { ...r.conn, labelT: t } });
+        const gs: Guide[] = [];
+        if (me && s.prefs.smartGuides) {
+          const tol = 6 / z;
+          let best: { d: number; v: number } | null = null;
+          for (const [id, other] of routes) {
+            if (id === d.connId) continue;
+            const ob = labelBox(other);
+            if (!ob || ob.horiz !== me.horiz) continue;
+            const v = me.horiz ? ob.p.x : ob.p.y;
+            const dd = Math.abs((me.horiz ? me.p.x : me.p.y) - v);
+            if (dd < tol && (!best || dd < best.d)) best = { d: dd, v };
+          }
+          if (best) {
+            const st = labelTAt(r, me.horiz ? 'x' : 'y', best.v, me.p);
+            if (st !== null) {
+              t = st;
+              gs.push(me.horiz ? { x1: best.v, y1: 0, x2: best.v, y2: 3000 } : { x1: 0, y1: best.v, x2: 3000, y2: best.v });
+            }
+          }
+        }
+        setGuides(gs);
+        patchConnections([d.connId], (c) => void (c.labelT = Math.min(0.99, Math.max(0.01, t))), false);
         return;
       }
     }
@@ -361,11 +412,11 @@ export function Canvas() {
         }
         const hp = hitPort(s.project, pg, p.x, p.y);
         let to: Endpoint | null = null;
-        if (hp && hp.objId !== d.from.objId) to = { objId: hp.objId, portId: hp.portId };
+        const fromPort = (d.from as { portId?: string }).portId;
+        if (hp && !(hp.objId === d.from.objId && hp.portId === fromPort)) to = { objId: hp.objId, portId: hp.portId };
         else {
-          const o = hitObject(s.project, pg, p.x, p.y, 4);
+          const o = hitObject(s.project, pg, p.x, p.y, 4, true);
           if (o && o.kind !== 'block' && o.id !== d.from.objId) to = { objId: o.id, ...outlinePoint(objBounds(s.project, o), p.x, p.y) };
-          else if (hp && hp.objId === d.from.objId && hp.portId !== (d.from as { portId?: string }).portId) to = { objId: hp.objId, portId: hp.portId };
         }
         if (to) {
           const id = connect(d.from, to);
@@ -528,9 +579,9 @@ export function Canvas() {
       setEditing({ kind: 'label', id: hit.id! });
       return;
     }
-    const o = hitObject(s.project, pg, p.x, p.y);
+    const o = hitObject(s.project, pg, p.x, p.y, 0, true);
     if (!o) return;
-    if (o.kind === 'text') setEditing({ kind: 'text', id: o.id });
+    if (o.kind === 'text' || o.kind === 'rect') setEditing({ kind: 'text', id: o.id });
     else if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
   };
 
@@ -605,7 +656,17 @@ export function Canvas() {
           />
           {preview && <path d={preview} fill="none" stroke={previewWarn.length ? '#d97706' : '#2563eb'} strokeWidth={1 / z} strokeDasharray={`${4 / z} ${3 / z}`} pointerEvents="none" />}
           {drag?.t === 'marquee' && (
-            <rect {...normRect(drag.start, drag.cur)} fill="rgba(37,99,235,0.08)" stroke="#2563eb" strokeWidth={1 / z} pointerEvents="none" />
+            <rect
+              x={normRect(drag.start, drag.cur).x}
+              y={normRect(drag.start, drag.cur).y}
+              width={normRect(drag.start, drag.cur).w}
+              height={normRect(drag.start, drag.cur).h}
+              fill={drag.cur.x < drag.start.x ? 'rgba(22,163,74,0.08)' : 'rgba(37,99,235,0.08)'}
+              stroke={drag.cur.x < drag.start.x ? '#16a34a' : '#2563eb'}
+              strokeDasharray={drag.cur.x < drag.start.x ? `${4 / z} ${3 / z}` : undefined}
+              strokeWidth={1 / z}
+              pointerEvents="none"
+            />
           )}
           {guides.map((g, i) => (
             <line key={i} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke="#e11d48" strokeWidth={0.75 / z} strokeDasharray={`${3 / z} ${2 / z}`} pointerEvents="none" />
@@ -613,9 +674,18 @@ export function Canvas() {
         </g>
       </svg>
       {previewWarn.length > 0 && <div className="canvas-hint warn">{previewWarn.join(' ')}</div>}
-      {editing && <InlineEditor editing={editing} view={view} onDone={() => setEditing(null)} />}
+      {editing && <InlineEditor key={JSON.stringify(editing)} editing={editing} view={view} onDone={() => setEditing(null)} />}
     </div>
   );
+}
+
+function segHitsRect(a: Pt, b: Pt, r: { x: number; y: number; w: number; h: number }) {
+  // Orthogonal segment vs rectangle.
+  const x0 = Math.min(a.x, b.x);
+  const x1 = Math.max(a.x, b.x);
+  const y0 = Math.min(a.y, b.y);
+  const y1 = Math.max(a.y, b.y);
+  return x1 >= r.x && x0 <= r.x + r.w && y1 >= r.y && y0 <= r.y + r.h;
 }
 
 function normRect(a: Pt, b: Pt) {
@@ -830,13 +900,16 @@ function Handles({ project, o, z }: { project: Project; o: PageObject; z: number
 // ---------------------------------------------------------------------------------------------
 // Inline editor (text boxes, device names, line labels)
 
-function InlineEditor({ editing, view, onDone }: { editing: { kind: 'text' | 'device' | 'label'; id: Id }; view: View; onDone: () => void }) {
+function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View; onDone: () => void }) {
   const s = getState();
   const pg = currentPage(s);
   const ref = useRef<HTMLTextAreaElement & HTMLInputElement>(null);
   useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    if (editing.typed !== undefined) el.setSelectionRange(el.value.length, el.value.length);
+    else el.select();
   }, []);
   let rect = { x: 0, y: 0, w: 120, h: 20 };
   let initial = '';
@@ -845,12 +918,12 @@ function InlineEditor({ editing, view, onDone }: { editing: { kind: 'text' | 'de
   const tr = (r: { x: number; y: number; w: number; h: number }) => ({ x: r.x * view.z + view.px, y: r.y * view.z + view.py, w: r.w * view.z, h: r.h * view.z });
 
   if (editing.kind === 'text') {
-    const o = pg.objects.find((x) => x.id === editing.id) as TextObj | undefined;
+    const o = pg.objects.find((x) => x.id === editing.id) as TextObj | RectObj | undefined;
     if (!o) return null;
     rect = tr({ x: o.x, y: o.y, w: o.w, h: Math.max(o.h, 20) });
     initial = o.text;
     fontSize = o.fontSize * view.z;
-    commit = (v) => patchObjects([o.id], (t) => void (t.kind === 'text' && (t.text = v)));
+    commit = (v) => patchObjects([o.id], (t) => void ((t.kind === 'text' || t.kind === 'rect') && (t.text = v)));
   } else if (editing.kind === 'device') {
     const o = pg.objects.find((x) => x.id === editing.id) as BlockObj | undefined;
     if (!o) return null;
@@ -874,7 +947,7 @@ function InlineEditor({ editing, view, onDone }: { editing: { kind: 'text' | 'de
     const lb = labelBox({ ...r, conn: { ...c, label: c.label || 'X' } });
     const at = lb?.p ?? r.pts[0];
     rect = tr({ x: at.x - 40, y: at.y - 7, w: 80, h: 14 });
-    initial = c.label;
+    initial = editing.typed ?? c.label;
     fontSize = Math.max(11, 7 * view.z);
     commit = (v) => patchConnections([c.id], (cc) => void (cc.label = v.trim()));
   }

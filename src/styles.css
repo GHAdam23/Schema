@@ -634,11 +634,7 @@ table.backups th {
   color: #991b1b;
   border: 1px solid #f5b5b5;
 }
-.be-grid th:last-child,
-.be-grid td:last-child {
-  width: 78px;
-}
-.be-grid th:nth-child(3),
-.be-grid td:nth-child(3) {
-  width: 22%;
+.be-grid th:nth-child(2),
+.be-grid td:nth-child(2) {
+  width: 46%;
 }

@@ -31,22 +31,24 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 ### Block definition
 - Header: **Manufacturer | Model**
-- Footer: **IN — Friendly name — OUT** (friendly name is per placed device; the library holds a default)
-- Ports, each: port name, signal type, connector type, direction (**IN**, **OUT**, **BIDIR**).
-  - IN rows (left column) display `Port – Signal – Connector`, anchor on the left edge.
-  - OUT rows (right column) display `Connector – Signal – Port`, anchor on the right edge.
-  - BIDIR ports may be placed in either column and connect in either direction.
+- Header split by the centre divider: **Manufacturer** centred over the left column, **Model** over the right column.
+- A centre divider line runs down the header and port rows (see the reference block from feedback round 1).
+- Footer (full width): **IN — Friendly name — OUT** (friendly name is per placed device; the library holds a default)
+- Ports, each: port name, signal type, connector type. **Direction is the column** — no per-row setting:
+  - IN rows (left column) display `Port - Signal - Connector`, anchor on the left edge.
+  - OUT rows (right column) display `Connector - Signal - Port`, anchor on the right edge.
+  - (BIDIR was dropped in feedback round 1: e.g. Ethernet is simply placed in whichever column suits the drawing.)
 
 ### Editor (subwindow showing a live preview of the final block)
 - Spreadsheet-style grid per column: add, delete, move/swap, copy/cut/paste rows; multi-select; undo/redo.
 - Paste rows directly from Excel / tab-separated text.
 - **Pattern fill**: e.g. `SDI IN {n}`, n = 1–10, with signal + connector → generates rows. Also "duplicate and increment" on selected rows.
-- Library browser: search/filter by manufacturer, model, signal type.
+- Library browser: search/filter by manufacturer, model, signal type. Multi-select (Ctrl/Shift-click, Select all); export writes only the highlighted blocks (one block → file named after it). Import merges whatever the file contains.
 
 ### Signal types
 - Fixed, user-editable list (HDSDI, HDMI, AUDIO, DATA, AC, …).
 - Optional color/line style per signal type (off by default).
-- Soft warning (non-blocking) when connecting mismatched signal types.
+- Soft warning (non-blocking) when connecting mismatched signal types. (No IN→IN / OUT→OUT warnings: network gear and jumpers do that legitimately.)
 
 ## 4. Projects, pages, title block
 
@@ -57,14 +59,14 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
   - Created date (project), Modified date (auto, updates on save), Revision (project-level), shown on every page
   - Page number and name, e.g. `(11) Sanctuary Video Schematic`, and `11/19` auto-computed
   - No "Printed" date.
-- Designer info + logo stored as app preferences and pre-filled into new projects.
+- Designer info + logo stored as app preferences and pre-filled into new projects. Saving Preferences also updates the open project's title block (checkbox, on by default) — feedback round 1.
 
 ## 5. Layout canvas
 
 - PowerPoint-like interaction: select, multi-select, marquee, move, resize, align/distribute, grid + snap, smart guides, copy/paste, z-order, zoom/pan.
 - Objects:
   - **Blocks** — scalable, **not rotatable**. Per-block border color/thickness/style.
-  - Text boxes, rectangles, circles/ellipses, containers (labeled grouping frames), callouts — all rotatable.
+  - Text boxes, rectangles (rectangles can hold text — double-click to type), circles/ellipses, containers (labeled grouping frames), callouts — all rotatable.
   - Imported images (JPG/PNG) and single-page PDFs — rotatable. PDFs stay embedded as the original and export as true vector (pdf-lib embedPage). SVG import also accepted.
   - **Reference tags** (see §7).
 - **Quick insert**: hotkey opens search; Enter drops the block at the cursor. Drag from library panel also works.
@@ -73,10 +75,12 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 ## 6. Connections (lines)
 
 - Drawn port-to-port by dragging. Endpoints anchor to a block row, a shape, or a reference tag, and stay anchored when objects move.
-- Routing: right-angle (default) or curved, selectable per line. New lines get a simple automatic right-angle path; **the user can drag segments/bends to reroute**. No full obstacle-avoiding autorouter.
+- Routing: right-angle (default) or curved, selectable per line. New lines get an automatic right-angle path that **goes around blocks** (feedback round 1); **the user can drag segments/bends to reroute**, after which the line keeps the manual route.
+- Jumpers: a line may run from a device back to another port on the same device.
+- Lines to a text box / rectangle attach to the centre of the nearest side.
 - **Line hops** drawn automatically where lines cross.
 - **Fan-out**: one output may feed multiple inputs.
-- **Labels**: manual by default; optional auto-numbering (prefix + counter). Label sits in a gap in the line (`—DD-301—`), can be slid along the line, and stays with the line when it moves.
+- **Labels**: manual by default; optional auto-numbering (prefix + counter). Label sits in a gap in the line (`—DD-301—`), can be slid along the line, and stays with the line when it moves. Click a line and type to label it. Labels can be lined up with each other (align buttons with several lines selected; dragging snaps to other labels).
 - **Range connect**: select a run of ports on block A and a run on block B → connect them pairwise in order.
 - **Snakes** (bundles): manual "Bundle" command on selected lines. Allowed only when: same signal type, ≥4 lines, same two devices. Each line keeps its own short leg + full label at each end; only the trunk between breakouts becomes one heavier line.
 
@@ -126,20 +130,24 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 ### Files
 - `.schema` = zip with `project.json` + `assets/<id>` (logo images). Plain JSON is also accepted on open.
-- Library CSV/XLSX: one row per port — `Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector, Direction`. Blocks with no ports are one row with empty port fields. Import merges by manufacturer+model (replaces existing).
+- Library CSV/XLSX: one row per port — `Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector` (an old `Direction` column is accepted on import). Blocks with no ports are one row with empty port fields. Import merges by manufacturer+model (replaces existing).
 - Library and preferences are stored in the browser (IndexedDB / localStorage); preferences export/import as JSON.
 - Autosave: the open project is written to IndexedDB 1.5 s after each change and restored on reload. Rolling backups: a snapshot every 5 minutes while editing and on every save; last 20 kept (pref). Optional pref: also autosave into the open `.schema` file.
 - "Modified" date updates on explicit save.
 
 ### Canvas interaction
-- Blocks move by dragging the header, footer or centre; the outer ~45% of each port row (plus a few points outside the edge) starts a line. Click a port row to select it, Shift-click to extend a run, Ctrl-click to toggle; `Shift+C` = range connect (side with more OUTs becomes the source; pairs in display order; warns if counts differ).
-- Alt-drag from a text box or rectangle starts a line from its outline; lines can also end on a shape outline.
-- Lines are drawn OUT → IN (endpoints are swapped automatically). Mismatched signal types, IN→IN and OUT→OUT only warn.
+- Blocks move by dragging the header, footer or centre (the area next to the divider); the outer ~45% of each port row (plus a few points outside the edge) starts a line. Click a port row to select it, Shift-click to extend a run, Ctrl-click to toggle; `Shift+C` = range connect (side with more OUTs becomes the source; pairs in display order; warns if counts differ).
+- Alt-drag from a text box or rectangle starts a line from it; lines attach to the centre of the nearest side.
+- Lines are drawn OUT → IN where possible (endpoints are swapped automatically). Mismatched signal types only warn.
+- Unfilled rectangles are only grabbed by their outline or text, so you can click and drag-select inside them.
+- Marquee: left-to-right selects objects fully inside; right-to-left (green, dashed) selects anything touched.
 - Route model: a line stores alternating bend coordinates (null = automatic). The end segments always stretch to the anchors, so lines stay attached when blocks move while keeping manual edits. Dragging a middle segment moves it; dragging an end segment inserts a jog. "Reset route" returns to automatic.
-- Automatic Z-routes that would overlap are spread into 6 pt lanes, ordered so they don't cross; lines leaving the same port share a trunk (fan-out).
+- Automatic routing: the simple Z/L route is used when it's clear of blocks; otherwise a shortest orthogonal path around the blocks (8 pt clearance, penalty per bend) is found on a grid built from block edges (A*, cached). Text boxes/rectangles are not obstacles.
+- Automatic Z-routes that would overlap are spread into 6 pt lanes, ordered so they don't cross; lines leaving the same port share a trunk (fan-out). Lines routed around blocks are not yet laned, so two of them can share or cross a channel — drag a segment to tidy.
 - Hops: horizontal segments hop over vertical segments of other lines (not over lines from the same source port).
-- Labels: double-click a line to edit; default position is the middle of the longest horizontal run; drag to slide (then it's fixed until "Auto label position"). Labels on vertical segments are rotated.
+- Labels: click a line and type (or double-click / Enter / F2 to edit); default position is the middle of the longest horizontal run; drag to slide (then it's fixed until "Auto label position"). Labels on vertical segments are rotated.
 - Smart guides snap object edges/centres and **port rows** (so lines come out straight); otherwise grid snap (default 9 pt = 1/8"). Arrow keys nudge 1 pt (Shift = grid).
+- "Definition" buttons on a block: *Use library version* / *Save to library* appear only when the project's copy differs from the library (e.g. you fixed a port name while drawing and want that fix for future projects); *Add to library* appears for blocks that aren't in your library (e.g. a project from someone else).
 - Copy/paste of blocks creates new devices (Phase 2 will add "place another instance of this device").
 - Quick insert: `Q` or `Ctrl+K`, Enter drops the block at the cursor.
 - Shortcuts: V/T/R tools, Ctrl+Z/Y, Ctrl+C/X/V/D/A, Delete, Ctrl+S / Ctrl+Shift+S / Ctrl+O, Ctrl+0 fit, Ctrl+± zoom, Space/middle-drag pan, Ctrl+wheel zoom.
@@ -147,7 +155,11 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 ### Not in Phase 1 (by design / later phases)
 - No obstacle-avoiding autorouter (spec). "Used elsewhere" port markers and reference tags are Phase 2.
 
-## 11. Working process
+## 11. Feedback log
+
+**Round 1** (all addressed): no IN/OUT dropdown (column = direction) · centre divider + split header per reference block · export only highlighted library blocks · text inside rectangles · same-device jumpers · lines snap to the centre of a text box/rectangle side · click a line and type to label · line labels up with each other · drag-select (marquee rectangle was invisible — fixed; plus crossing selection) · auto lines avoid blocks · "push to library" reworked into context-dependent buttons · Prefs designer info now updates the open project.
+
+## 12. Working process
 
 - Code + this spec live in the GitHub repo. Each new conversation starts from the repo; refer to "the spec" rather than re-describing features.
 - One conversation per phase or major feature. Feedback sent in batches (one list per test round, screenshots for visual issues).

@@ -1,28 +1,22 @@
 // Block library import/export as CSV or XLSX.
-// One row per port:  Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector, Direction
+// One row per port:  Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector
+// (an older 'Direction' column is accepted on import and only used when Column is missing).
 // A block with no ports is written as a single row with the port fields empty.
 import * as XLSX from 'xlsx';
-import type { BlockDef, Direction, PortDef } from '../model/types';
+import type { BlockDef, PortDef } from '../model/types';
 import { newId } from '../model/ids';
 
-export const LIB_HEADERS = ['Manufacturer', 'Model', 'Default Name', 'Column', 'Port', 'Signal', 'Connector', 'Direction'];
+export const LIB_HEADERS = ['Manufacturer', 'Model', 'Default Name', 'Column', 'Port', 'Signal', 'Connector'];
 
 export function libraryToRows(lib: BlockDef[]): string[][] {
   const rows: string[][] = [LIB_HEADERS];
   for (const d of lib) {
     const base = [d.manufacturer, d.model, d.defaultName];
-    if (!d.left.length && !d.right.length) rows.push([...base, '', '', '', '', '']);
-    for (const p of d.left) rows.push([...base, 'IN', p.name, p.signal, p.connector, p.dir]);
-    for (const p of d.right) rows.push([...base, 'OUT', p.name, p.signal, p.connector, p.dir]);
+    if (!d.left.length && !d.right.length) rows.push([...base, '', '', '', '']);
+    for (const p of d.left) rows.push([...base, 'IN', p.name, p.signal, p.connector]);
+    for (const p of d.right) rows.push([...base, 'OUT', p.name, p.signal, p.connector]);
   }
   return rows;
-}
-
-function normDir(s: string, col: 'L' | 'R'): Direction {
-  const u = s.trim().toUpperCase();
-  if (u === 'IN' || u === 'OUT' || u === 'BIDIR') return u;
-  if (u === 'BI' || u === 'BIDIRECTIONAL' || u === 'I/O' || u === 'IO') return 'BIDIR';
-  return col === 'L' ? 'IN' : 'OUT';
 }
 
 export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
@@ -63,7 +57,7 @@ export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
     if (colRaw === 'IN' || colRaw === 'L' || colRaw === 'LEFT') side = 'L';
     else if (colRaw === 'OUT' || colRaw === 'R' || colRaw === 'RIGHT') side = 'R';
     else side = dirRaw.toUpperCase() === 'OUT' ? 'R' : 'L';
-    const p: PortDef = { id: newId('pt'), name: portName, signal: g(iSig).toUpperCase(), connector: g(iCon), dir: normDir(dirRaw, side) };
+    const p: PortDef = { id: newId('pt'), name: portName, signal: g(iSig).toUpperCase(), connector: g(iCon), dir: side === 'L' ? 'IN' : 'OUT' };
     (side === 'L' ? def.left : def.right).push(p);
   }
   return out;
@@ -129,7 +123,7 @@ export function exportLibraryCsv(lib: BlockDef[]): Blob {
 
 export function exportLibraryXlsx(lib: BlockDef[]): Blob {
   const ws = XLSX.utils.aoa_to_sheet(libraryToRows(lib));
-  ws['!cols'] = [18, 22, 14, 8, 18, 10, 12, 10].map((wch) => ({ wch }));
+  ws['!cols'] = [18, 22, 14, 8, 18, 10, 12].map((wch) => ({ wch }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Blocks');
   const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;

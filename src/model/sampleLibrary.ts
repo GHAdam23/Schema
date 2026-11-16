@@ -25,7 +25,7 @@ export function sampleLibrary(): BlockDef[] {
       manufacturer: 'Generic',
       model: 'PTZ Camera',
       defaultName: 'CAM-1',
-      left: [...ports('IN', [['PWR', 'AC', 'IEC']]), ...ports('BIDIR', [['LAN', 'DATA', 'RJ45']])],
+      left: [...ports('IN', [['PWR', 'AC', 'IEC']]), ...ports('IN', [['LAN', 'DATA', 'RJ45']])],
       right: ports('OUT', [
         ['SDI OUT', 'HDSDI', 'BNC'],
         ['HDMI OUT', 'HDMI', 'HDMI'],
@@ -36,8 +36,8 @@ export function sampleLibrary(): BlockDef[] {
       manufacturer: 'Generic',
       model: 'Network Switch 8-Port',
       defaultName: 'SW-1',
-      left: ports('BIDIR', seq('PORT', 4, 'DATA', 'RJ45')),
-      right: ports('BIDIR', seq('PORT', 4, 'DATA', 'RJ45').map(([n, s, c], i) => [n.replace(/\d+$/, String(i + 5)), s, c] as [string, string, string])),
+      left: ports('IN', seq('PORT', 4, 'DATA', 'RJ45')),
+      right: ports('OUT', seq('PORT', 4, 'DATA', 'RJ45').map(([n, s, c], i) => [n.replace(/\d+$/, String(i + 5)), s, c] as [string, string, string])),
     },
     {
       id: newId('bd'),

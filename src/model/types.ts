@@ -13,7 +13,7 @@ export interface PortDef {
   dir: Direction;
 }
 
-/** A block definition. `left` holds IN (and BIDIR) rows, `right` holds OUT (and BIDIR) rows. */
+/** A block definition. `left` holds the IN column, `right` the OUT column (a port's direction is its column). */
 export interface BlockDef {
   id: Id;
   manufacturer: string;
@@ -55,21 +55,27 @@ export interface BlockObj extends ObjBase {
 }
 
 export type TextAlign = 'left' | 'center' | 'right';
+export type VAlign = 'top' | 'middle' | 'bottom';
 
-export interface TextObj extends ObjBase {
-  kind: 'text';
-  w: number;
-  h: number;
+/** Text content shared by text boxes and rectangles (a rectangle can hold text too). */
+export interface TextProps {
   text: string;
   fontSize: number;
   bold: boolean;
   align: TextAlign;
+  valign: VAlign;
   color: string;
+}
+
+export interface TextObj extends ObjBase, TextProps {
+  kind: 'text';
+  w: number;
+  h: number;
   border: StrokeStyle | null;
   fill: string | null;
 }
 
-export interface RectObj extends ObjBase {
+export interface RectObj extends ObjBase, TextProps {
   kind: 'rect';
   w: number;
   h: number;

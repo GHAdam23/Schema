@@ -11,7 +11,7 @@ import { saveProjectDef, upsertLibraryDef } from '../state/actions';
 
 type Col = 'left' | 'right';
 const COLS: Col[] = ['left', 'right'];
-const FIELDS = ['name', 'signal', 'connector', 'dir'] as const;
+const FIELDS = ['name', 'signal', 'connector'] as const;
 type FieldKey = (typeof FIELDS)[number];
 
 interface RowClip {
@@ -19,12 +19,8 @@ interface RowClip {
 }
 let rowClipboard: RowClip | null = null;
 
-function parseDir(s: string, col: Col): Direction {
-  const u = s.trim().toUpperCase();
-  if (u === 'IN' || u === 'OUT' || u === 'BIDIR') return u;
-  if (u.startsWith('BI') || u === 'I/O') return 'BIDIR';
-  return col === 'left' ? 'IN' : 'OUT';
-}
+/** Direction is defined by the column: left = IN, right = OUT. */
+const colDir = (col: Col): Direction => (col === 'left' ? 'IN' : 'OUT');
 
 function parseTsv(text: string): string[][] {
   return text
@@ -35,7 +31,7 @@ function parseTsv(text: string): string[][] {
 }
 
 function rowsToTsv(rows: PortDef[]) {
-  return rows.map((r) => [r.name, r.signal, r.connector, r.dir].join('\t')).join('\n');
+  return rows.map((r) => [r.name, r.signal, r.connector].join('\t')).join('\n');
 }
 
 function incrementName(name: string, by: number): string {
@@ -99,8 +95,8 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
       manufacturer: def.manufacturer.trim(),
       model: def.model.trim(),
       defaultName: def.defaultName.trim(),
-      left: def.left.filter((p) => p.name || p.signal || p.connector),
-      right: def.right.filter((p) => p.name || p.signal || p.connector),
+      left: def.left.filter((p) => p.name || p.signal || p.connector).map((p) => ({ ...p, dir: colDir('left') })),
+      right: def.right.filter((p) => p.name || p.signal || p.connector).map((p) => ({ ...p, dir: colDir('right') })),
     };
     if (target === 'library') upsertLibraryDef(clean);
     else {
@@ -114,14 +110,14 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
 
   // ---- row operations ---------------------------------------------------------------------
   const setCell = (col: Col, id: string, k: FieldKey, v: string) => {
-    commit({ ...def, [col]: def[col].map((r) => (r.id === id ? { ...r, [k]: k === 'dir' ? parseDir(v, col) : k === 'signal' ? v.toUpperCase() : v } : r)) });
+    commit({ ...def, [col]: def[col].map((r) => (r.id === id ? { ...r, [k]: k === 'signal' ? v.toUpperCase() : v } : r)) });
   };
   const newRow = (col: Col, src?: Partial<PortDef>): PortDef => ({
     id: newId('pt'),
     name: '',
     signal: '',
     connector: '',
-    dir: col === 'left' ? 'IN' : 'OUT',
+    dir: colDir(col),
     ...src,
   });
   const addRow = (col: Col) => {
@@ -152,8 +148,8 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
     commit(next);
   };
   const moveToOtherColumn = () => {
-    const toRight = def.left.filter((r) => sel.has(r.id)).map((r) => ({ ...r, dir: r.dir === 'IN' ? ('OUT' as Direction) : r.dir }));
-    const toLeft = def.right.filter((r) => sel.has(r.id)).map((r) => ({ ...r, dir: r.dir === 'OUT' ? ('IN' as Direction) : r.dir }));
+    const toRight = def.left.filter((r) => sel.has(r.id)).map((r) => ({ ...r, dir: colDir('right') }));
+    const toLeft = def.right.filter((r) => sel.has(r.id)).map((r) => ({ ...r, dir: colDir('left') }));
     if (!toRight.length && !toLeft.length) return;
     commit({
       ...def,
@@ -189,7 +185,7 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
     if (text && (text.includes('\t') || text.includes('\n'))) {
       insertRows(activeCol, parseTsv(text).map((cells) => tsvRow(activeCol, cells)));
     } else if (rowClipboard) {
-      insertRows(activeCol, rowClipboard.rows.map((r) => ({ ...r, id: newId('pt'), dir: activeCol === 'left' && r.dir === 'OUT' ? 'IN' : activeCol === 'right' && r.dir === 'IN' ? 'OUT' : r.dir })));
+      insertRows(activeCol, rowClipboard.rows.map((r) => ({ ...r, id: newId('pt'), dir: colDir(activeCol) })));
     }
   };
   const tsvRow = (col: Col, cells: string[]) =>
@@ -197,7 +193,7 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
       name: (cells[0] ?? '').trim(),
       signal: (cells[1] ?? '').trim().toUpperCase(),
       connector: (cells[2] ?? '').trim(),
-      dir: cells[3] ? parseDir(cells[3], col) : col === 'left' ? 'IN' : 'OUT',
+      dir: colDir(col),
     });
   const duplicateIncrement = () => {
     const next = { ...def };
@@ -229,8 +225,7 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
       cells.forEach((v, j) => {
         const k = FIELDS[f0 + j];
         if (!k) return;
-        if (k === 'dir') r.dir = parseDir(v, col);
-        else r[k] = k === 'signal' ? v.trim().toUpperCase() : v.trim();
+        r[k] = k === 'signal' ? v.trim().toUpperCase() : v.trim();
       });
       rows[ri] = r;
     });
@@ -377,7 +372,6 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
                         <th>Port</th>
                         <th>Signal</th>
                         <th>Connector</th>
-                        <th>Dir</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -397,13 +391,6 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
                               />
                             </td>
                           ))}
-                          <td>
-                            <select value={r.dir} onChange={(e) => setCell(col, r.id, 'dir', e.target.value)}>
-                              <option>IN</option>
-                              <option>OUT</option>
-                              <option>BIDIR</option>
-                            </select>
-                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -415,7 +402,7 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
               ))}
             </div>
             <div className="muted small">
-              Click row numbers to select (Shift = range, Ctrl = toggle). Paste rows copied from Excel (Port, Signal, Connector[, Dir]) into a cell or
+              Click row numbers to select (Shift = range, Ctrl = toggle). Paste rows copied from Excel (Port, Signal, Connector) into a cell or
               anywhere in the grid.
             </div>
           </div>
@@ -493,7 +480,6 @@ function PatternFill({
   const [to, setTo] = useState(8);
   const [signal, setSignal] = useState('HDSDI');
   const [connector, setConnector] = useState('BNC');
-  const [dir, setDir] = useState<Direction>(col === 'left' ? 'IN' : 'OUT');
   const [pad, setPad] = useState(false);
   const count = Math.max(0, Math.abs(to - from) + 1);
   const make = (): PortDef[] => {
@@ -502,7 +488,7 @@ function PatternFill({
     const out: PortDef[] = [];
     for (let n = from; step > 0 ? n <= to : n >= to; n += step) {
       const ns = pad ? String(n).padStart(width, '0') : String(n);
-      out.push({ id: newId('pt'), name: tpl.includes('{n}') ? tpl.split('{n}').join(ns) : `${tpl} ${ns}`, signal: signal.toUpperCase(), connector, dir });
+      out.push({ id: newId('pt'), name: tpl.includes('{n}') ? tpl.split('{n}').join(ns) : `${tpl} ${ns}`, signal: signal.toUpperCase(), connector, dir: colDir(c) });
     }
     return out;
   };
@@ -534,14 +520,6 @@ function PatternFill({
           </datalist>
           <label>
             Connector <input value={connector} onChange={(e) => setConnector(e.target.value)} />
-          </label>
-          <label>
-            Direction{' '}
-            <select value={dir} onChange={(e) => setDir(e.target.value as Direction)}>
-              <option>IN</option>
-              <option>OUT</option>
-              <option>BIDIR</option>
-            </select>
           </label>
           <label>
             Column{' '}
