@@ -57,6 +57,10 @@ export function Toolbar() {
         <Btn label="Ellipse" title="Ellipse / circle (E)" active={tool === 'ellipse'} onClick={() => setState({ tool: 'ellipse' })} />
         <Btn label="Container" title="Container: a labelled frame that moves what's inside it (F)" active={tool === 'container'} onClick={() => setState({ tool: 'container' })} />
         <Btn label="Callout" title="Callout: text with a pointer (L)" active={tool === 'callout'} onClick={() => setState({ tool: 'callout' })} />
+        <Btn label="Thought" title="Thought bubble: a cloud with trailing bubbles — drag the yellow diamond to point it" active={tool === 'cloud'} onClick={() => setState({ tool: 'cloud' })} />
+        <Btn label="Line" title="Draw a line (drag; Shift = 15° steps)" active={tool === 'line'} onClick={() => setState({ tool: 'line' })} />
+        <Btn label="Arrow" title="Draw an arrow (drag; Shift = 15° steps)" active={tool === 'arrow'} onClick={() => setState({ tool: 'arrow' })} />
+        <Btn label="↔" title="Draw a double-headed arrow (drag; Shift = 15° steps)" active={tool === 'arrow2'} onClick={() => setState({ tool: 'arrow2' })} />
         <Btn label="Tag" title="Reference tag pointing to a device on another page (G). Tip: drag a line from a port into empty space." active={tool === 'tag'} onClick={() => setState({ tool: 'tag' })} />
         <Btn
           label="Image…"

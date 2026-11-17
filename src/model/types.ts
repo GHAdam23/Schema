@@ -117,7 +117,22 @@ export interface CalloutObj extends BoxBase, TextProps {
   border: StrokeStyle;
   fill: string | null;
   tail: { x: number; y: number };
-  tailTo?: { objId: Id; fx: number; fy: number };
+  /** Glued to a point of an object (fractions of its box) or of a line (fraction of its length). */
+  tailTo?: { objId: Id; fx: number; fy: number } | { connId: Id; t: number };
+  /** Outline: a box with a wedge (default) or a thought-bubble cloud with trailing bubbles. */
+  shape?: 'box' | 'cloud';
+}
+
+export type ArrowEnds = 'none' | 'start' | 'end' | 'both';
+
+/**
+ * A drawn line / arrow (not a connection): runs along the middle of its box, from (x, y+h/2) to
+ * (x+w, y+h/2), turned by `rot` — so length = w and direction = rot.
+ */
+export interface LineObj extends BoxBase {
+  kind: 'line';
+  border: StrokeStyle;
+  arrows: ArrowEnds;
 }
 
 /** Imported image (PNG/JPG), single PDF page (stays vector) or SVG (converted to vector paths). */
@@ -148,7 +163,7 @@ export interface TagObj extends ObjBase {
   auto?: boolean;
 }
 
-export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj;
+export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj | LineObj;
 /** Objects that have a free box (x, y, w, h, rot). */
 export type BoxObj = Exclude<PageObject, BlockObj | TagObj>;
 /** Objects that hold editable text in their box. */
@@ -171,8 +186,10 @@ export interface Connection {
   /** Label position along the line, 0..1 of total length. null = automatic (middle of the longest horizontal run). */
   labelT: number | null;
   style: StrokeStyle;
-  /** Curved (one smooth Bézier between the anchors) instead of right-angle. */
+  /** Curved: the right-angle route smoothed. */
   curved?: boolean;
+  /** Show the label near both ends instead of once along the line. */
+  labelEnds?: boolean;
 }
 
 /**

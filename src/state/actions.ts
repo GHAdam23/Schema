@@ -11,6 +11,7 @@ import type {
   Endpoint,
   Id,
   ImageObj,
+  LineObj,
   Page,
   PageObject,
   PageSizeId,
@@ -236,25 +237,143 @@ export function addContainer(x: number, y: number, w = 216, h = 144): Id {
   return o.id;
 }
 
-export function addCallout(x: number, y: number): Id {
-  nextLabel('Add callout');
+export function addCallout(x: number, y: number, shape: CalloutObj['shape'] = 'box'): Id {
+  const cloud = shape === 'cloud';
+  nextLabel(cloud ? 'Add thought bubble' : 'Add callout');
   const o: CalloutObj = {
     id: newId('ob'),
     kind: 'callout',
     x,
     y,
-    w: 108,
-    h: 36,
+    w: cloud ? 162 : 108,
+    h: cloud ? 90 : 36,
     border: { color: '#000000', width: 0.75, dash: 'solid' },
     fill: '#ffffff',
-    tail: { x: -36, y: 60 },
+    tail: cloud ? { x: 200, y: 110 } : { x: -36, y: 60 },
     ...textDefaults,
     text: 'Note',
     wrap: true,
+    shape: cloud ? 'cloud' : undefined,
   };
   updateProject((d) => void pageDraft(d).objects.push(o));
   setState({ selection: [o.id], selectedPorts: [] });
   return o.id;
+}
+
+export const LINE_H = 8;
+
+/** A drawn line / arrow from (x1, y1) to (x2, y2). */
+export function addLine(x1: number, y1: number, x2: number, y2: number, arrows: LineObj['arrows'], record = true): Id {
+  nextLabel(arrows === 'none' ? 'Add line' : arrows === 'both' ? 'Add double arrow' : 'Add arrow');
+  const o: LineObj = { id: newId('ob'), kind: 'line', ...lineBox(x1, y1, x2, y2), border: { color: '#000000', width: 1, dash: 'solid' }, arrows };
+  updateProject((d) => void pageDraft(d).objects.push(o), record);
+  setState({ selection: [o.id], selectedPorts: [] });
+  return o.id;
+}
+
+/** Box + rotation of a line between two page points. */
+export function lineBox(x1: number, y1: number, x2: number, y2: number) {
+  const w = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
+  const cx = (x1 + x2) / 2;
+  const cy = (y1 + y2) / 2;
+  const rot = normDeg((Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI);
+  return { x: cx - w / 2, y: cy - LINE_H / 2, w, h: LINE_H, rot: Math.round(rot * 100) / 100 };
+}
+
+/** The two ends of a drawn line on the page. */
+export function lineEnds(o: LineObj) {
+  const a = (normDeg(o.rot ?? 0) * Math.PI) / 180;
+  const cx = o.x + o.w / 2;
+  const cy = o.y + o.h / 2;
+  const hx = (Math.cos(a) * o.w) / 2;
+  const hy = (Math.sin(a) * o.w) / 2;
+  return [
+    { x: cx - hx, y: cy - hy },
+    { x: cx + hx, y: cy + hy },
+  ];
+}
+
+/**
+ * Clicking a port's "used elsewhere" dot: add an off-page reference tag at this port for each
+ * line that port has on another page, pointing at what that line goes to there.
+ */
+export function tagsFromElsewhere(objId: Id, portId: Id) {
+  const s = getState();
+  const page = currentPage(s);
+  const o = page.objects.find((x): x is BlockObj => x.id === objId && x.kind === 'block');
+  if (!o) return;
+  const targets: TagObj['target'][] = [];
+  s.project.pages.forEach((pg) => {
+    if (pg === page) return;
+    const inst = new Set(pg.objects.filter((x) => x.kind === 'block' && x.deviceId === o.deviceId).map((x) => x.id));
+    for (const c of pg.connections) {
+      const mine = [c.from, c.to].find((e) => isPortEndpoint(e) && inst.has(e.objId) && e.portId === portId);
+      if (!mine) continue;
+      const far = mine === c.from ? c.to : c.from;
+      const fo = pg.objects.find((x) => x.id === far.objId);
+      // The far end: a device's port, or a tag (then where that tag points).
+      let t: TagObj['target'] = null;
+      if (fo?.kind === 'block' && isPortEndpoint(far)) t = { deviceId: fo.deviceId, portId: far.portId };
+      else if (fo?.kind === 'tag' && fo.target) t = { ...fo.target };
+      if (t && t.deviceId !== o.deviceId && !targets.some((x) => x?.deviceId === t!.deviceId && x?.portId === t!.portId)) targets.push(t);
+    }
+  });
+  const dev = s.project.devices[o.deviceId];
+  const port = blockFor(s.project, o).base && findPort(blockFor(s.project, o).base!, portId)?.port;
+  if (!targets.length) {
+    toast(`The line${''} from ${dev?.name} ${port?.name ?? ''} on the other page doesn't end at a device — add a tag by hand (G).`, 'warn', 6000);
+    return;
+  }
+  // Skip ones already tagged at this port on this page.
+  const existing = page.objects.filter((x): x is TagObj => x.kind === 'tag' && page.connections.some((c) => [c.from, c.to].some((e) => e.objId === x.id) && [c.from, c.to].some((e) => isPortEndpoint(e) && e.objId === objId && e.portId === portId)));
+  const todo = targets.filter((t) => !existing.some((x) => x.target?.deviceId === t!.deviceId && x.target?.portId === t!.portId));
+  if (!todo.length) {
+    toast('This port already has those reference tags.', 'info');
+    return;
+  }
+  const a = portAnchor(s.project, o, portId);
+  if (!a) return;
+  nextLabel(`Off-page tag${todo.length > 1 ? 's' : ''} at ${dev?.name} ${port?.name ?? ''}`);
+  const left = a.dir[0] < 0;
+  const made: Id[] = [];
+  todo.forEach((t, i) => {
+    const tag: TagObj = {
+      id: newId('ob'),
+      kind: 'tag',
+      x: a.x,
+      y: a.y,
+      target: t,
+      dir: 'auto',
+      showPort: true,
+      note: '',
+      fontSize: 7,
+      border: { color: '#000000', width: 0.75, dash: 'solid' },
+      fill: null,
+    };
+    const line: Connection = {
+      id: newId('cn'),
+      from: left ? { objId: tag.id, fx: 1, fy: 0.5 } : { objId, portId },
+      to: left ? { objId, portId } : { objId: tag.id, fx: 0, fy: 0.5 },
+      bends: null,
+      label: '',
+      labelT: null,
+      style: { ...DEFAULT_LINE },
+    };
+    updateProject((d) => {
+      const pg = pageDraft(d);
+      pg.objects.push(tag as Draft<TagObj>);
+      pg.connections.push(line as Draft<Connection>);
+    }, made.length === 0);
+    const sz = tagSize(getState().project, currentPage().objects.find((x) => x.id === tag.id) as TagObj);
+    updateProject((d) => {
+      const tt = pageDraft(d).objects.find((x) => x.id === tag.id)!;
+      tt.x = left ? a.x - PAIR_GAP - sz.w : a.x + PAIR_GAP;
+      // Several: stacked below each other, the first level with the port.
+      tt.y = a.y - sz.h / 2 + i * (sz.h + 3);
+    }, false);
+    made.push(tag.id);
+  });
+  setState({ selection: made, selectedPorts: [] });
 }
 
 /** Add an imported image / PDF page / SVG. The asset is stored in the project. */
@@ -1010,18 +1129,6 @@ function copyObjectsInto(
     }
     return copy;
   });
-  // Callout pointers glued to an object: follow the copy of it, or keep pointing at the same spot.
-  outObjs.forEach((o, i) => {
-    if (o.kind !== 'callout' || !o.tailTo) return;
-    const orig = objects[i] as CalloutObj;
-    const to = idMap.get(o.tailTo.objId);
-    if (to) o.tailTo = { ...o.tailTo, objId: to };
-    else {
-      const tip = calloutTip(src, orig);
-      o.tail = { x: tip.x - orig.x, y: tip.y - orig.y };
-      delete o.tailTo;
-    }
-  });
   const outConns: Connection[] = connections.map((c) => {
     const id = newId('cn');
     idMap.set(c.id, id);
@@ -1033,6 +1140,19 @@ function copyObjectsInto(
       // Port endpoints always start horizontally, so bends alternate x, y, x...
       bends: c.bends && isPortEndpoint(c.from) ? c.bends.map((v, i) => v + (i % 2 === 0 ? dx : dy)) : null,
     };
+  });
+  // Callout pointers glued to an object or line: follow the copy of it, or keep pointing at the same spot.
+  outObjs.forEach((o, i) => {
+    if (o.kind !== 'callout' || !o.tailTo) return;
+    const orig = objects[i] as CalloutObj;
+    const tt = o.tailTo;
+    const to = idMap.get('connId' in tt ? tt.connId : tt.objId);
+    if (to) o.tailTo = 'connId' in tt ? { ...tt, connId: to } : { ...tt, objId: to };
+    else {
+      const tip = calloutTip(src, orig);
+      o.tail = { x: tip.x - orig.x, y: tip.y - orig.y };
+      delete o.tailTo;
+    }
   });
   const outBundles: Bundle[] = bundles.map((b) => ({
     ...JSON.parse(JSON.stringify(b)),
@@ -1237,6 +1357,7 @@ const KIND_NAMES: Record<PageObject['kind'], string> = {
   callout: 'Callout',
   image: 'Image',
   tag: 'Tag',
+  line: 'Line',
 };
 
 export function kindName(o: PageObject) {
@@ -1247,6 +1368,8 @@ export function describeObject(p: Project, o: PageObject) {
   if (o.kind === 'block') return p.devices[o.deviceId]?.name ?? 'block';
   if (o.kind === 'tag') return `Tag "${tagText(p, o)}"`;
   if (o.kind === 'image') return 'Image';
+  if (o.kind === 'line') return o.arrows === 'none' ? 'Line' : o.arrows === 'both' ? 'Double arrow' : 'Arrow';
+  if (o.kind === 'callout' && o.shape === 'cloud') return 'Thought bubble' + (o.text.trim() ? ` "${o.text.trim().split('\n')[0].slice(0, 24)}"` : '');
   const t = o.text?.trim().split('\n')[0].slice(0, 24);
   return KIND_NAMES[o.kind] + (t ? ` "${t}"` : '');
 }
@@ -1327,6 +1450,8 @@ export function projectDefToLibrary(defId: Id) {
  */
 export function straighten() {
   nextLabel('Straighten');
+  // Lines between two blocks can only all be level if their rows are spaced the same: match scales first.
+  const rescaled = matchScalesForStraightening();
   const s = getState();
   const page = currentPage(s);
   const sel = new Set(s.selection);
@@ -1355,12 +1480,54 @@ export function straighten() {
     }
   }
   if (!moves.size) {
-    toast(selObjs.length || sel.size ? 'Nothing to straighten — the selected lines are already straight (or can\'t be).' : 'Select blocks or lines to straighten.', 'info');
+    if (!rescaled) toast(selObjs.length || sel.size ? 'Nothing to straighten — the selected lines are already straight (or can\'t be).' : 'Select blocks or lines to straighten.', 'info');
     return;
   }
   updateProject((d) => {
     for (const o of pageDraft(d).objects) if (moves.has(o.id)) o.y += moves.get(o.id)!;
+  }, !rescaled);
+}
+
+/**
+ * For Straighten: a block that has two or more lines to the same other block, at a different
+ * scale, takes that block's scale (top-left stays put). Returns how many blocks changed;
+ * the change is recorded as the "Straighten" history step.
+ */
+function matchScalesForStraightening(): number {
+  const s = getState();
+  const page = currentPage(s);
+  const sel = new Set(s.selection);
+  const blocks = new Map(page.objects.filter((o): o is BlockObj => o.kind === 'block').map((o) => [o.id, o]));
+  // Which block moves, relative to which: selected blocks against unselected; selected lines move their input end.
+  const pairs = new Map<Id, Map<Id, number>>(); // mover → other → line count
+  const add = (mover: Id, other: Id) => {
+    if (!blocks.has(mover) || !blocks.has(other) || mover === other) return;
+    const m = pairs.get(mover) ?? new Map<Id, number>();
+    m.set(other, (m.get(other) ?? 0) + 1);
+    pairs.set(mover, m);
+  };
+  const selObjs = page.objects.filter((o) => sel.has(o.id));
+  for (const c of page.connections) {
+    if (!isPortEndpoint(c.from) || !isPortEndpoint(c.to)) continue;
+    if (selObjs.length) {
+      if (sel.has(c.from.objId) && !sel.has(c.to.objId)) add(c.from.objId, c.to.objId);
+      if (sel.has(c.to.objId) && !sel.has(c.from.objId)) add(c.to.objId, c.from.objId);
+    } else if (sel.has(c.id)) add(c.to.objId, c.from.objId);
+  }
+  const scales = new Map<Id, number>();
+  for (const [mover, others] of pairs) {
+    const best = [...others.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1])[0];
+    if (!best) continue;
+    const target = blocks.get(best[0])!.scale;
+    if (Math.abs(blocks.get(mover)!.scale - target) > 1e-6) scales.set(mover, target);
+  }
+  if (!scales.size) return 0;
+  updateProject((d) => {
+    for (const o of pageDraft(d).objects) if (o.kind === 'block' && scales.has(o.id)) o.scale = scales.get(o.id)!;
   });
+  labelLast('Straighten (matched block scale so the rows line up)');
+  toast(`${plural(scales.size, 'block')} rescaled to match the block ${scales.size === 1 ? 'it’s' : 'they’re'} wired to, so every row can line up.`, 'info', 5000);
+  return scales.size;
 }
 
 /**

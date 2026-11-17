@@ -99,7 +99,7 @@ export interface ShapeDot {
 export function hitShapeDot(project: Project, page: Page, x: number, y: number, tol: number): ShapeDot | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    if (o.kind === 'block') continue;
+    if (o.kind === 'block' || o.kind === 'line') continue;
     for (const c of SIDE_CENTRES) {
       const p = dotPos(project, o, c);
       if (Math.hypot(p.x - x, p.y - y) <= tol) return { objId: o.id, ...c };
@@ -118,7 +118,7 @@ export function dotPos(project: Project, o: PageObject, c: { fx: number; fy: num
 export function hitShape(project: Project, page: Page, x: number, y: number, pad: number): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    if (o.kind === 'block') continue;
+    if (o.kind === 'block' || o.kind === 'line') continue;
     if (o.kind === 'container' ? hitsContainer(project, o, x, y, pad + 4) : insideObj(project, o, { x, y }, pad)) return o;
   }
   return null;

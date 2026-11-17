@@ -259,9 +259,10 @@ export function resolveRoute(project: Project, page: Page, conn: Connection, obs
 // ---------------------------------------------------------------------------------------------
 // Automatic routing around blocks
 
-/** Everything on the page is an obstacle for automatic routing: blocks, rectangles, text boxes. */
+/** Objects on the page are obstacles for automatic routing (not drawn lines/arrows). */
 export function pageObstacles(project: Project, page: Page): Rect[] {
-  return page.objects.map((o) => objBounds(project, o));
+  // Drawn lines/arrows are annotations, not obstacles (a diagonal arrow's bounds would block a lot).
+  return page.objects.filter((o) => o.kind !== 'line').map((o) => objBounds(project, o));
 }
 
 /**
@@ -522,20 +523,32 @@ function computePageRoutes(project: Project, page: Page): Map<string, ResolvedRo
     const r = resolveRoute(project, page, c, obstacles);
     if (!r) continue;
     out.set(c.id, r);
-    const usable = !r.curve && !(c.bends && bendsValid(c.bends, r.s, r.e));
+    const usable = !(c.bends && bendsValid(c.bends, r.s, r.e));
     if (usable && r.bends.length === 1 && axisOf(r.s) === axisOf(r.e)) autoZ.push(r);
   }
   // Group by the middle coordinate.
   const groups = new Map<number, ResolvedRoute[]>();
   for (const r of autoZ) {
-    const k = Math.round(r.bends[0] * 2) / 2;
+    // U-shaped routes (jumpers: both ends face the same way) are laned separately from Z routes.
+    const k = Math.round(r.bends[0] * 2) / 2 + (r.s.dx === r.e.dx && r.s.dy === r.e.dy ? 0.25 : 0);
     const g = groups.get(k);
     if (g) g.push(r);
     else groups.set(k, [r]);
   }
-  for (const [mid, rs] of groups) {
+  const setBends = (r: ResolvedRoute, v: number) => {
+    const bends = [v];
+    const raw = rawPoints(r.s, r.e, bends);
+    const nr: ResolvedRoute = { ...r, bends, raw, pts: simplify(raw), curve: undefined, ortho: undefined };
+    out.set(r.conn.id, r.conn.curved ? curveOf(nr) : nr);
+  };
+  for (const [key, rs] of groups) {
     if (rs.length < 2) continue;
+    const mid = Math.round(rs[0].bends[0] * 2) / 2;
     const horiz = axisOf(rs[0].s) === 'h';
+    if (key !== mid) {
+      laneUTurns(rs, horiz, setBends);
+      continue;
+    }
     const along = (p: Pt) => (horiz ? p.y : p.x);
     // Units: lines sharing a start endpoint move together.
     const units = new Map<string, ResolvedRoute[]>();
@@ -575,15 +588,34 @@ function computePageRoutes(project: Project, page: Page): Map<string, ResolvedRo
       const sgn = horiz ? rs[0].s.dx || 1 : rs[0].s.dy || 1;
       ordered.forEach((it, k) => {
         const v = mid + sgn * ((n - 1) / 2 - k) * LANE_SPACING;
-        for (const r of it.u) {
-          const bends = [v];
-          const raw = rawPoints(r.s, r.e, bends);
-          out.set(r.conn.id, { ...r, bends, raw, pts: simplify(raw) });
-        }
+        for (const r of it.u) setBends(r, v);
       });
     }
   }
   return out;
+}
+
+/**
+ * Jumpers and other U-shaped routes that would share a lane: nest them, the shortest span nearest
+ * the block (at the normal stub distance) and each enclosing one a lane further out, so none
+ * ends up flat against the block.
+ */
+function laneUTurns(rs: ResolvedRoute[], horiz: boolean, setBends: (r: ResolvedRoute, v: number) => void) {
+  const along = (p: Pt) => (horiz ? p.y : p.x);
+  const across = (p: Pt) => (horiz ? p.x : p.y);
+  const dir = horiz ? rs[0].s.dx : rs[0].s.dy;
+  // The innermost lane sits a stub beyond the furthest anchor of the group.
+  const base = dir > 0 ? Math.max(...rs.flatMap((r) => [across(r.s), across(r.e)])) + STUB : Math.min(...rs.flatMap((r) => [across(r.s), across(r.e)])) - STUB;
+  const items = rs.map((r) => ({ r, lo: Math.min(along(r.s), along(r.e)), hi: Math.max(along(r.s), along(r.e)), k: 0 }));
+  items.sort((a, b) => a.hi - a.lo - (b.hi - b.lo));
+  const placed: typeof items = [];
+  for (const it of items) {
+    // One lane further out than anything already placed that it overlaps (or shares an end with).
+    const over = placed.filter((p) => p.lo <= it.hi + 0.5 && p.hi >= it.lo - 0.5 && !(p.lo === it.lo && p.hi === it.hi && JSON.stringify(p.r.conn.from) === JSON.stringify(it.r.conn.from)));
+    it.k = over.length ? Math.max(...over.map((p) => p.k)) + 1 : 0;
+    placed.push(it);
+  }
+  for (const it of items) setBends(it.r, base + dir * it.k * LANE_SPACING);
 }
 
 // ---------------------------------------------------------------------------------------------

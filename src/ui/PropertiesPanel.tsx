@@ -25,12 +25,19 @@ import {
 import { DEFAULT_LINE } from '../model/defaults';
 import { fitTextBox, textBoxOf, titleBlockObjects } from '../render/buildPage';
 import { devicePages, tagTargetPage, tagText } from '../model/tags';
-import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject } from '../state/actions';
+import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
 import { useEffect, useRef, useState } from 'react';
 import { calloutTip } from '../render/buildPage';
 import { getState } from '../state/store';
-import type { CalloutObj } from '../model/types';
+import type { CalloutObj, LineObj } from '../model/types';
+
+function describeLine(id: string) {
+  const s = getState();
+  const pg = currentPage(s);
+  const c = pg.connections.find((x) => x.id === id);
+  return c ? 'line ' + describeConnection(s.project, pg, c) : 'a deleted line';
+}
 
 function describeTarget(id: string) {
   const s = getState();
@@ -181,7 +188,8 @@ function PageSection({ s }: { s: AppState }) {
         </p>
         <p>
           <b>Shapes:</b> ellipse (<kbd>E</kbd>), container (<kbd>F</kbd>) — a labelled frame that moves what's inside it — and callout (<kbd>L</kbd>,
-          drag the yellow diamond to point it). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
+          drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble, and drawn lines / arrows (drag
+          to draw). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
           <b>Images:</b> drop PNG, JPG, PDF or SVG files on the page, paste an image, or use <b>Image…</b>. PDFs stay vector in the export; SVGs are
@@ -190,7 +198,7 @@ function PageSection({ s }: { s: AppState }) {
         <p>
           <b>Same device on several pages:</b> copy a block and paste it on another page (or drag it from the <b>Devices</b> tab) — it's the
           same device, with one friendly name. <kbd>Ctrl+Shift+V</kbd> pastes a new device of the same model instead. Renaming a block to an
-          existing device's name offers to make them one device. A small blue dot marks ports that are connected on another page. In a block's
+          existing device's name offers to make them one device. A small blue dot marks ports that are connected on another page — click it to add an off-page reference tag for that connection. In a block's
           properties you can hide rows or edit its ports for that block only.
         </p>
         <p>
@@ -247,7 +255,45 @@ function ObjectSection({ s, o }: { s: AppState; o: PageObject }) {
   if (o.kind === 'block') return <BlockSection s={s} o={o} />;
   if (o.kind === 'tag') return <TagSection s={s} o={o} />;
   if (o.kind === 'image') return <ImageSection s={s} o={o} />;
+  if (o.kind === 'line') return <LineSection o={o} />;
   return <ShapeSection o={o} />;
+}
+
+function LineSection({ o }: { o: LineObj }) {
+  return (
+    <div className="section">
+      <div className="section-title">{o.arrows === 'none' ? 'Line' : 'Arrow'}</div>
+      <SharedNote o={o} />
+      <div className="fieldgroup">
+        <label>
+          Arrowheads{' '}
+          <select value={o.arrows} onChange={(e) => patchObjects([o.id], (t) => void (t.kind === 'line' && (t.arrows = e.target.value as LineObj['arrows'])))}>
+            <option value="none">None (line)</option>
+            <option value="end">At the end</option>
+            <option value="start">At the start</option>
+            <option value="both">Both ends</option>
+          </select>
+        </label>
+      </div>
+      <div className="fieldgroup">
+        <label>
+          Length{' '}
+          <input type="number" min={1} step={1} value={Math.round(o.w * 10) / 10} onChange={(e) => patchObjects([o.id], (t) => {
+            if (t.kind !== 'line') return;
+            const w = Math.max(1, Number(e.target.value) || 1);
+            t.x -= (w - t.w) / 2;
+            t.w = w;
+          })} />
+        </label>
+        <label>
+          Angle <input type="number" step={15} value={Math.round((o.rot ?? 0) * 10) / 10} onChange={(e) => setRotation([o.id], Number(e.target.value) || 0)} />°
+        </label>
+      </div>
+      <div className="sub">Line</div>
+      <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+      <div className="muted small">Drag the round handles at the ends to move them (Shift: 15° steps).</div>
+    </div>
+  );
 }
 
 function ShapeSection({ o }: { o: TextualObj }) {
@@ -272,11 +318,22 @@ function ShapeSection({ o }: { o: TextualObj }) {
       {o.kind === 'container' && <FillEditor label="Label band" value={o.headerFill} onChange={(f) => patch((t) => t.kind === 'container' && (t.headerFill = f))} />}
       {o.kind === 'callout' && o.tailTo && (
         <div className="btnrow small">
-          <span className="muted">Pointer glued to {describeTarget(o.tailTo.objId)}.</span>
+          <span className="muted">Pointer glued to {'connId' in o.tailTo ? describeLine(o.tailTo.connId) : describeTarget(o.tailTo.objId)}.</span>
           <button onClick={() => detachCallout(o)}>Detach</button>
         </div>
       )}
-      {o.kind === 'callout' && !o.tailTo && <div className="muted small">Drop the yellow diamond on an object to glue the pointer to it.</div>}
+      {o.kind === 'callout' && !o.tailTo && <div className="muted small">Drop the yellow diamond on an object or a line to glue the pointer to it.</div>}
+      {o.kind === 'callout' && (
+        <div className="fieldgroup">
+          <label>
+            Shape{' '}
+            <select value={o.shape ?? 'box'} onChange={(e) => patch((t) => t.kind === 'callout' && (t.shape = e.target.value === 'cloud' ? 'cloud' : undefined))}>
+              <option value="box">Callout (box)</option>
+              <option value="cloud">Thought bubble</option>
+            </select>
+          </label>
+        </div>
+      )}
       {o.kind === 'container' && <div className="muted small">Moving the container moves everything inside it. Click inside it to select what's there.</div>}
     </div>
   );
@@ -504,9 +561,25 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
           </button>
         </div>
       )}
-      <Field label="Scale">
-        <input type="number" min={0.3} max={4} step={0.05} value={o.scale} onChange={(e) => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = Math.min(4, Math.max(0.3, Number(e.target.value) || 1)))))} />
-      </Field>
+      <div className="fieldgroup">
+        <label>
+          Scale{' '}
+          <input
+            type="number"
+            min={30}
+            max={400}
+            step={5}
+            value={Math.round(o.scale * 1000) / 10}
+            onChange={(e) => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = Math.min(4, Math.max(0.3, (Number(e.target.value) || 100) / 100)))))}
+          />
+          %
+        </label>
+        {o.scale !== 1 && (
+          <button title="Back to 100% (rows then line up with other 100% blocks)" onClick={() => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = 1)))}>
+            Reset to 100%
+          </button>
+        )}
+      </div>
       <div className="sub">Border</div>
       <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
       <div className="sub">Rows shown on this block</div>
@@ -676,11 +749,16 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
         <input key={c.id + c.label} defaultValue={c.label} placeholder="e.g. DD-301" onBlur={(e) => e.target.value !== c.label && patchConnections([c.id], (x) => void (x.label = e.target.value.trim()))} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
       </Field>
       {!bundle && (
+        <label className="check" title="Repeat the label near each end instead of once along the line — handy for tracing long lines">
+          <input type="checkbox" checked={!!c.labelEnds} onChange={(e) => patchConnections([c.id], (x) => void (x.labelEnds = e.target.checked || undefined))} /> Label at both ends
+        </label>
+      )}
+      {!bundle && !c.labelEnds && (
         <Field label="Label position">
           <input type="range" min={0.02} max={0.98} step={0.01} value={c.labelT ?? 0.5} onChange={(e) => patchConnections([c.id], (x) => void (x.labelT = Number(e.target.value)))} />
         </Field>
       )}
-      {!bundle && c.labelT !== null && (
+      {!bundle && !c.labelEnds && c.labelT !== null && (
         <button onClick={() => patchConnections([c.id], (x) => void (x.labelT = null))}>Auto label position</button>
       )}
       <StrokeEditor value={c.style} onChange={(st) => st && setStroke([c.id], st)} />

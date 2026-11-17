@@ -6,6 +6,7 @@ import type {
   ContainerObj,
   EllipseObj,
   ImageObj,
+  LineObj,
   Page,
   PageObject,
   Project,
@@ -85,6 +86,9 @@ export function drawObject(out: DLItem[], project: Project, o: PageObject) {
     case 'image':
       drawImage(dst, project, o);
       break;
+    case 'line':
+      drawLine(dst, o);
+      break;
   }
   if (rot) out.push({ t: 'group', m: rotMatrix(localBox(project, o), rot), items: dst });
 }
@@ -139,11 +143,19 @@ function drawContainer(out: DLItem[], o: ContainerObj) {
 
 /** Page position of a callout's pointer tip: glued to an object on its page, or its own offset. */
 export function calloutTip(project: Project, o: CalloutObj): Pt {
-  if (o.tailTo) {
-    const t = pageOfObject(project, o.id)?.objects.find((x) => x.id === o.tailTo!.objId);
-    if (t) {
-      const b = localBox(project, t);
-      return fromLocal(project, t, { x: b.x + o.tailTo.fx * b.w, y: b.y + o.tailTo.fy * b.h });
+  const to = o.tailTo;
+  const page = to && pageOfObject(project, o.id);
+  if (to && page) {
+    if ('connId' in to) {
+      // Glued to a line: the same fraction of its length, wherever it's routed.
+      const r = resolvePageRoutes(project, page).get(to.connId);
+      if (r) return pointAt(r.pts, to.t * pathLength(r.pts)).p;
+    } else {
+      const t = page.objects.find((x) => x.id === to.objId);
+      if (t) {
+        const b = localBox(project, t);
+        return fromLocal(project, t, { x: b.x + to.fx * b.w, y: b.y + to.fy * b.h });
+      }
     }
   }
   return { x: o.x + o.tail.x, y: o.y + o.tail.y };
@@ -190,8 +202,103 @@ export function calloutPath(o: CalloutObj, tip: Pt): PathCmd[] {
 function drawCallout(out: DLItem[], project: Project, o: CalloutObj) {
   // The tip is fixed on the page; the outline is drawn in the (possibly rotated) box frame.
   const tip = rotatePt(calloutTip(project, o), { x: o.x + o.w / 2, y: o.y + o.h / 2 }, -rotOf(o));
-  out.push({ t: 'path', d: calloutPath(o, tip), fill: o.fill, stroke: strokeOf(o.border) });
+  if (o.shape === 'cloud') {
+    out.push({ t: 'path', d: cloudPath(o), fill: o.fill, stroke: strokeOf(o.border) });
+    for (const b of thoughtBubbles(o, tip)) out.push({ t: 'path', d: ellipsePath(b.x - b.r, b.y - b.r, b.r * 2, b.r * 2), fill: o.fill, stroke: strokeOf(o.border) });
+  } else out.push({ t: 'path', d: calloutPath(o, tip), fill: o.fill, stroke: strokeOf(o.border) });
   drawTextIn(out, textBoxOf(o));
+}
+
+/** The ellipse the cloud's scallops sit on, and the scallop size. */
+function cloudBase(o: { x: number; y: number; w: number; h: number }) {
+  const per = Math.PI * (o.w + o.h) / 2;
+  const n = Math.max(8, Math.min(22, Math.round(per / (Math.min(o.w, o.h) * 0.3 + 14))));
+  const chord = per / n;
+  // Scallops stick out about 0.4 × chord beyond the base ellipse; keep them inside the box.
+  const ext = chord * 0.4;
+  return { cx: o.x + o.w / 2, cy: o.y + o.h / 2, rx: Math.max(4, o.w / 2 - ext), ry: Math.max(4, o.h / 2 - ext), n, chord };
+}
+
+/** Thought-bubble outline: scallops around an ellipse. */
+export function cloudPath(o: { x: number; y: number; w: number; h: number }): PathCmd[] {
+  const { cx, cy, rx, ry, n, chord } = cloudBase(o);
+  // Start angle offset so the scallops look hand-placed rather than symmetric.
+  const pts = Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * Math.PI * 2 + 0.3;
+    const ux = Math.cos(a);
+    const uy = Math.sin(a);
+    // Outward normal of the ellipse at that point.
+    const nx = ux / rx;
+    const ny = uy / ry;
+    const nl = Math.hypot(nx, ny) || 1;
+    return { x: cx + rx * ux, y: cy + ry * uy, nx: nx / nl, ny: ny / nl };
+  });
+  const k = chord * 0.55;
+  const d: PathCmd[] = [{ c: 'M', x: pts[0].x, y: pts[0].y }];
+  pts.forEach((p, i) => {
+    const q = pts[(i + 1) % n];
+    d.push({ c: 'C', x1: p.x + p.nx * k, y1: p.y + p.ny * k, x2: q.x + q.nx * k, y2: q.y + q.ny * k, x: q.x, y: q.y });
+  });
+  d.push({ c: 'Z' });
+  return d;
+}
+
+/** Trailing bubbles from the cloud towards the tip (none if the tip is inside the cloud). */
+export function thoughtBubbles(o: { x: number; y: number; w: number; h: number }, tip: Pt) {
+  const { cx, cy } = cloudBase(o);
+  const dx = tip.x - cx;
+  const dy = tip.y - cy;
+  // Where the ray to the tip leaves the box ellipse.
+  const f = 1 / Math.hypot(dx / (o.w / 2), dy / (o.h / 2) || 0);
+  if (!isFinite(f) || f >= 1) return [];
+  const ex = cx + dx * f;
+  const ey = cy + dy * f;
+  const big = Math.max(2, Math.min(o.w, o.h) * 0.09);
+  const radii = [big, big * 0.65, big * 0.38];
+  const gap = Math.hypot(tip.x - ex, tip.y - ey);
+  // Spread the bubbles from just outside the cloud to the tip (the smallest touches the tip).
+  return radii.map((r, i) => {
+    const t = (i === 2 ? (gap - r) / gap : [0.18, 0.55][i] + r / gap) || 0;
+    const tt = Math.min(1, Math.max(0, t));
+    return { x: ex + (tip.x - ex) * tt, y: ey + (tip.y - ey) * tt, r };
+  });
+}
+
+/** Arrowhead triangle at `tip`, pointing along (ux, uy). */
+function arrowHead(tip: Pt, ux: number, uy: number, width: number) {
+  const len = Math.max(5, width * 4 + 3);
+  const half = len * 0.4;
+  const bx = tip.x - ux * len;
+  const by = tip.y - uy * len;
+  const d: PathCmd[] = [
+    { c: 'M', x: tip.x, y: tip.y },
+    { c: 'L', x: bx - uy * half, y: by + ux * half },
+    { c: 'L', x: bx + uy * half, y: by - ux * half },
+    { c: 'Z' },
+  ];
+  return { d, len };
+}
+
+function drawLine(out: DLItem[], o: LineObj) {
+  // Drawn in the unrotated frame (horizontal); the rotation group turns it.
+  const y = o.y + o.h / 2;
+  let x0 = o.x;
+  let x1 = o.x + o.w;
+  const st = strokeOf(o.border);
+  if (!st) return;
+  const heads: PathCmd[][] = [];
+  if (o.arrows === 'end' || o.arrows === 'both') {
+    const h = arrowHead({ x: x1, y }, 1, 0, st.width);
+    heads.push(h.d);
+    x1 -= h.len * 0.8;
+  }
+  if (o.arrows === 'start' || o.arrows === 'both') {
+    const h = arrowHead({ x: x0, y }, -1, 0, st.width);
+    heads.push(h.d);
+    x0 += h.len * 0.8;
+  }
+  out.push({ t: 'path', d: [{ c: 'M', x: x0, y }, { c: 'L', x: x1, y }], fill: null, stroke: st });
+  for (const d of heads) out.push({ t: 'path', d, fill: st.color, stroke: null });
 }
 
 const vectorCache = new WeakMap<Asset, DLItem[]>();
@@ -244,6 +351,11 @@ export function textBoxOf(o: TextualObj): TextBox {
     return { ...o, x: o.x + (o.w - w) / 2, y: o.y + (o.h - h) / 2, w, h };
   }
   if (o.kind === 'container') return { ...o, h: containerBand(o) || o.h, valign: 'middle', wrap: false };
+  if (o.kind === 'callout' && o.shape === 'cloud') {
+    const w = o.w * 0.66;
+    const h = o.h * 0.6;
+    return { ...o, x: o.x + (o.w - w) / 2, y: o.y + (o.h - h) / 2, w, h };
+  }
   return o;
 }
 
@@ -470,7 +582,16 @@ export function labelBoxes(route: ResolvedRoute): LabelBox[] {
     });
   }
   const L = pathLength(route.pts);
+  if (route.conn.labelEnds) {
+    // One label near each end (for tracing long lines), a little way out from the anchor.
+    const off = Math.min(L / 4, 6 + (tw + 4) / 2);
+    return [labelAt(route, tw, off), labelAt(route, tw, L - off)];
+  }
   const d = route.conn.labelT === null ? autoLabelDistance(route.ortho ?? route.pts, route.ortho ? route.pts : undefined) : route.conn.labelT * L;
+  return [labelAt(route, tw, d)];
+}
+
+function labelAt(route: ResolvedRoute, tw: number, d: number): LabelBox {
   const { p, seg } = pointAt(route.pts, d);
   const a = route.pts[seg];
   const b = route.pts[seg + 1] ?? a;
@@ -480,12 +601,12 @@ export function labelBoxes(route: ResolvedRoute): LabelBox[] {
     const ux = Math.abs(b.x - a.x) / len;
     const uy = Math.abs(b.y - a.y) / len;
     const half = Math.min(ux > 1e-6 ? (tw / 2 + 2) / ux : Infinity, uy > 1e-6 ? 5 / uy : Infinity);
-    return [{ p, d, gap: half * 2, tw, horiz: true, box: { x: p.x - tw / 2 - 2, y: p.y - 5, w: tw + 4, h: 10 } }];
+    return { p, d, gap: half * 2, tw, horiz: true, box: { x: p.x - tw / 2 - 2, y: p.y - 5, w: tw + 4, h: 10 } };
   }
   const horiz = Math.abs(a.y - b.y) < 1e-6;
   const gap = tw + 4;
   const box = horiz ? { x: p.x - gap / 2, y: p.y - 5, w: gap, h: 10 } : { x: p.x - 5, y: p.y - gap / 2, w: 10, h: gap };
-  return [{ p, d, gap, tw, horiz, box }];
+  return { p, d, gap, tw, horiz, box };
 }
 
 export function labelBox(route: ResolvedRoute): LabelBox | null {
@@ -531,18 +652,18 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
       r.legs.forEach((leg, k) => {
         const lb = lbs[k];
         const L = Math.abs(leg[1].x - leg[0].x);
-        const gap = lb ? ([L / 2 - lb.gap / 2, L / 2 + lb.gap / 2] as [number, number]) : null;
-        out.push({ t: 'path', d: strokePath(leg, gap, new Map()), fill: null, stroke: style });
+        const gaps: [number, number][] = lb ? [[L / 2 - lb.gap / 2, L / 2 + lb.gap / 2]] : [];
+        out.push({ t: 'path', d: strokePath(leg, gaps, new Map()), fill: null, stroke: style });
         if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
       });
       return;
     }
-    const lb = lbs[0];
-    const gap = lb ? ([lb.d - lb.gap / 2, lb.d + lb.gap / 2] as [number, number]) : null;
+    const gaps = lbs.map((lb): [number, number] => [lb.d - lb.gap / 2, lb.d + lb.gap / 2]);
+    const texts = () => lbs.forEach((lb) => labelText(out, lb, r.conn.label, r.conn.style.color));
     if (r.curve) {
-      out.push({ t: 'path', d: curvePath(r.curve, r.pts, gap), fill: null, stroke: style });
-      if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, null, new Map()), fill: null, stroke: style });
-      if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
+      out.push({ t: 'path', d: curvePath(r.curve, r.pts, gaps), fill: null, stroke: style });
+      if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, [], new Map()), fill: null, stroke: style });
+      texts();
       return;
     }
     const hops = new Map<number, number[]>();
@@ -560,30 +681,38 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
       }
       if (xs.length) hops.set(i - 1, mergeHops(xs));
     }
-    out.push({ t: 'path', d: strokePath(r.pts, gap, hops), fill: null, stroke: style });
-    if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, null, new Map()), fill: null, stroke: style });
-    if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
+    out.push({ t: 'path', d: strokePath(r.pts, gaps, hops), fill: null, stroke: style });
+    if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, [], new Map()), fill: null, stroke: style });
+    texts();
   });
 }
 
-/** Curve pieces drawn as true Béziers, with an optional gap given as distances along the samples. */
-function curvePath(cs: Bezier[], samples: Pt[], gap: [number, number] | null): PathCmd[] {
+/** Curve pieces drawn as true Béziers, minus gaps given as distances along the samples. */
+function curvePath(cs: Bezier[], samples: Pt[], gaps: [number, number][]): PathCmd[] {
   const out: PathCmd[] = [];
-  const piece = (b: Bezier, move: boolean) => {
-    if (move) out.push({ c: 'M', x: b[0].x, y: b[0].y });
-    out.push({ c: 'C', x1: b[1].x, y1: b[1].y, x2: b[2].x, y2: b[2].y, x: b[3].x, y: b[3].y });
-  };
-  if (!gap) {
-    cs.forEach((b, i) => piece(b, i === 0));
-    return out;
+  const L = pathLength(samples);
+  // Drawn intervals = [0, L] minus the gaps.
+  const iv: [number, number][] = [];
+  let from = 0;
+  for (const [g0, g1] of [...gaps].sort((a, b) => a[0] - b[0])) {
+    if (g0 > from) iv.push([from, g0]);
+    from = Math.max(from, g1);
   }
-  const a = curveParamAt(samples, gap[0]);
-  const z = curveParamAt(samples, gap[1]);
-  let pen = true;
-  for (let i = 0; i < a.piece; i++) (piece(cs[i], pen), (pen = false));
-  if (a.t > 0.001) piece(subCurve(cs[a.piece], 0, a.t), pen);
-  if (z.t < 0.999) piece(subCurve(cs[z.piece], z.t, 1), true);
-  for (let i = z.piece + 1; i < cs.length; i++) piece(cs[i], i === z.piece + 1 && z.t >= 0.999);
+  if (from < L) iv.push([from, L]);
+  for (const [d0, d1] of iv) {
+    const a = curveParamAt(samples, d0);
+    const z = curveParamAt(samples, d1);
+    let first = true;
+    for (let i = a.piece; i <= z.piece; i++) {
+      const t0 = i === a.piece ? a.t : 0;
+      const t1 = i === z.piece ? z.t : 1;
+      if (t1 - t0 < 1e-4) continue;
+      const b = t0 === 0 && t1 === 1 ? cs[i] : subCurve(cs[i], t0, t1);
+      if (first) out.push({ c: 'M', x: b[0].x, y: b[0].y });
+      first = false;
+      out.push({ c: 'C', x1: b[1].x, y1: b[1].y, x2: b[2].x, y2: b[2].y, x: b[3].x, y: b[3].y });
+    }
+  }
   return out;
 }
 
@@ -621,8 +750,8 @@ function mergeHops(xs: number[]): number[] {
 const K = 0.5523;
 void labelGapWidth;
 
-/** Build path commands for an orthogonal polyline with an optional gap (distance interval) and hops. */
-export function strokePath(pts: Pt[], gap: [number, number] | null, hops: Map<number, number[]>): PathCmd[] {
+/** Build path commands for an orthogonal polyline minus gaps (distance intervals), with hops. */
+export function strokePath(pts: Pt[], gaps: [number, number][], hops: Map<number, number[]>): PathCmd[] {
   const d: PathCmd[] = [];
   let pen: Pt | null = null;
   let acc = 0;
@@ -638,14 +767,17 @@ export function strokePath(pts: Pt[], gap: [number, number] | null, hops: Map<nu
     const at = (u: number): Pt => ({ x: A.x + ((B.x - A.x) * u) / len, y: A.y + ((B.y - A.y) * u) / len });
     // Draw intervals = [0,len] minus gap.
     let intervals: [number, number][] = [[0, len]];
-    if (gap) {
+    for (const gap of gaps) {
       const g0 = gap[0] - acc;
       const g1 = gap[1] - acc;
-      if (g1 > 0 && g0 < len) {
-        intervals = [];
-        if (g0 > 0) intervals.push([0, g0]);
-        if (g1 < len) intervals.push([g1, len]);
-      }
+      if (g1 <= 0 || g0 >= len) continue;
+      intervals = intervals.flatMap(([p, q]): [number, number][] => {
+        if (g1 <= p || g0 >= q) return [[p, q]];
+        const r: [number, number][] = [];
+        if (g0 > p) r.push([p, g0]);
+        if (g1 < q) r.push([g1, q]);
+        return r;
+      });
     }
     const hx = hops.get(i - 1) ?? [];
     const sgn = Math.sign(B.x - A.x) || 1;

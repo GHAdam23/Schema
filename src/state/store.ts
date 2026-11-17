@@ -49,7 +49,7 @@ export interface HistoryEntry {
   at: number;
 }
 
-export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'tag' | 'pan';
+export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'cloud' | 'line' | 'arrow' | 'arrow2' | 'tag' | 'pan';
 
 export type Modal =
   /** library: a library block; project: the ports shared by a model's devices; instance: one placed block only. */

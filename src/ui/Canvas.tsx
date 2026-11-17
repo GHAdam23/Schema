@@ -25,8 +25,12 @@ import {
   addContainer,
   addEllipse,
   addRect,
+  addLine,
   addTag,
   addText,
+  lineBox,
+  lineEnds,
+  tagsFromElsewhere,
   applyCarry,
   autoStraighten,
   connect,
@@ -64,6 +68,8 @@ type Drag =
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
   | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
   | { t: 'tail'; id: Id }
+  /** Dragging one end of a drawn line/arrow; `fixed` is the other end. `fresh`: being drawn now. */
+  | { t: 'lineEnd'; id: Id; fixed: Pt; fresh: boolean }
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl' }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
   | { t: 'label'; connId: Id; moved: boolean }
@@ -230,11 +236,18 @@ export function Canvas() {
       const y = snapV(p.y);
       const tool = s.tool;
       setState({ tool: 'select' });
+      if (tool === 'line' || tool === 'arrow' || tool === 'arrow2') {
+        // Drag to draw; a plain click makes a 1-inch horizontal one.
+        const id = addLine(x, y, x, y, tool === 'line' ? 'none' : tool === 'arrow' ? 'end' : 'both');
+        setDrag({ t: 'lineEnd', id, fixed: { x, y }, fresh: true });
+        return;
+      }
       if (tool === 'text') setEditing({ kind: 'text', id: addText(x, y) });
       else if (tool === 'rect') addRect(x, y);
       else if (tool === 'ellipse') addEllipse(x, y);
       else if (tool === 'container') addContainer(x, y);
       else if (tool === 'callout') setEditing({ kind: 'text', id: addCallout(x, y) });
+      else if (tool === 'cloud') setEditing({ kind: 'text', id: addCallout(x, y, 'cloud') });
       else if (tool === 'tag') setState({ modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
       return;
     }
@@ -245,6 +258,17 @@ export function Canvas() {
       checkpoint('Rotate ' + describeObject(s.project, o));
       const c = centre(localBox(s.project, o));
       setDrag({ t: 'rotate', id: o.id, c, start: angleDeg(c, p), orig: rotOf(o) });
+      return;
+    }
+    if (hit.hit === 'elsewhere') {
+      tagsFromElsewhere(hit.id!, hit.port!);
+      return;
+    }
+    if (hit.hit === 'lineEnd') {
+      const o = pg.objects.find((x) => x.id === hit.id);
+      if (!o || o.kind !== 'line') return;
+      checkpoint('Move end of ' + describeObject(s.project, o).toLowerCase());
+      setDrag({ t: 'lineEnd', id: o.id, fixed: lineEnds(o)[hit.end === '0' ? 1 : 0], fresh: false });
       return;
     }
     if (hit.hit === 'tail') {
@@ -264,7 +288,7 @@ export function Canvas() {
     if (hit.hit === 'label') {
       setState({ selection: [hit.id!], selectedPorts: [] });
       // Labels in a snake sit in the middle of their legs.
-      if (routes.get(hit.id!)?.legs) return;
+      if (routes.get(hit.id!)?.legs || routes.get(hit.id!)?.conn.labelEnds) return;
       checkpoint('Move line label');
       setDrag({ t: 'label', connId: hit.id!, moved: false });
       return;
@@ -422,12 +446,29 @@ export function Canvas() {
         patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && (o.rot = r)), false);
         return;
       }
+      case 'lineEnd': {
+        let q = e.shiftKey ? p : { x: snapV(p.x), y: snapV(p.y) };
+        if (e.shiftKey) {
+          // 15° steps around the fixed end.
+          const len = Math.hypot(p.x - d.fixed.x, p.y - d.fixed.y);
+          const a = (Math.round((Math.atan2(p.y - d.fixed.y, p.x - d.fixed.x) * 180) / Math.PI / 15) * 15 * Math.PI) / 180;
+          q = { x: d.fixed.x + Math.cos(a) * len, y: d.fixed.y + Math.sin(a) * len };
+        }
+        // Keep the line's direction: the dragged end is the start or the end depending on which was fixed.
+        const o = pg.objects.find((x) => x.id === d.id);
+        if (!o || o.kind !== 'line') return;
+        const ends = lineEnds(o);
+        const draggingStart = !d.fresh && Math.hypot(ends[1].x - d.fixed.x, ends[1].y - d.fixed.y) < 0.01;
+        const box = draggingStart ? lineBox(q.x, q.y, d.fixed.x, d.fixed.y) : lineBox(d.fixed.x, d.fixed.y, q.x, q.y);
+        patchObjects([d.id], (t) => void (t.kind === 'line' && Object.assign(t, box)), false);
+        return;
+      }
       case 'tail': {
         const o = pg.objects.find((x) => x.id === d.id);
         if (!o || o.kind !== 'callout') return;
-        // The tip follows the pointer; over another object it will glue to it on release.
-        const target = hitObjectExcept(s.project, pg, p, o.id);
-        setTailHover(target?.id ?? null);
+        // The tip follows the pointer; over another object (or a line) it will glue to it on release.
+        const target = hitObjectExcept(s.project, pg, p, o.id)?.id ?? nearestLine(routes, p, 6 / z)?.id ?? null;
+        setTailHover(target);
         patchObjects(
           [d.id],
           (t) => {
@@ -440,7 +481,7 @@ export function Canvas() {
         return;
       }
       case 'resize': {
-        resizeTo(d, p, e.shiftKey);
+        resizeTo(d, p, e.shiftKey, e.altKey);
         return;
       }
       case 'connect': {
@@ -516,13 +557,26 @@ export function Canvas() {
         setTailHover(null);
         const o = pg.objects.find((x) => x.id === d.id);
         const target = o && hitObjectExcept(s.project, pg, p, o.id);
+        const line = o && !target ? nearestLine(routes, p, 6 / viewRef.current.z) : null;
         if (target) {
           const b = localBox(s.project, target);
           const q = toLocal(s.project, target, p);
           patchObjects([d.id], (t) => void (t.kind === 'callout' && (t.tailTo = { objId: target.id, fx: (q.x - b.x) / b.w, fy: (q.y - b.y) / b.h })), false);
           labelLast('Point callout at ' + describeObject(s.project, target));
+        } else if (line && !line.trunk) {
+          patchObjects([d.id], (t) => void (t.kind === 'callout' && (t.tailTo = { connId: line.id, t: line.t })), false);
+          labelLast('Point callout at a line');
         }
         dropCheckpointIfUnchanged();
+        break;
+      }
+      case 'lineEnd': {
+        const o = pg.objects.find((x) => x.id === d.id);
+        if (d.fresh && o?.kind === 'line' && o.w < 4) {
+          const box = lineBox(d.fixed.x, d.fixed.y, d.fixed.x + 72, d.fixed.y);
+          patchObjects([d.id], (t) => void (t.kind === 'line' && Object.assign(t, box)), false);
+        }
+        if (!d.fresh) dropCheckpointIfUnchanged();
         break;
       }
       case 'resize':
@@ -606,7 +660,7 @@ export function Canvas() {
     setState({ modal: { kind: 'tagTarget', objId: id, isNew: true } });
   };
 
-  const resizeTo = (d: Extract<Drag, { t: 'resize' }>, p: Pt, keepAspect: boolean) => {
+  const resizeTo = (d: Extract<Drag, { t: 'resize' }>, p: Pt, keepAspect: boolean, altKey = false) => {
     const o = d.orig;
     const b = { x: o.x, y: o.y, w: d.origSize.w, h: d.origSize.h };
     const rot = rotOf(o);
@@ -630,7 +684,12 @@ export function Canvas() {
       const sx = (x2 - x1) / b.w;
       const sy = (y2 - y1) / b.h;
       const f = h === 'e' || h === 'w' ? sx : h === 'n' || h === 's' ? sy : Math.max(sx, sy);
-      const scale = Math.min(4, Math.max(0.3, Math.round(o.scale * f * 100) / 100));
+      // Snap to other blocks' scales (so rows stay level with them), else to 5% steps; Alt = free.
+      let scale = Math.min(4, Math.max(0.3, o.scale * f));
+      if (!altKey) {
+        const near = currentPage().objects.filter((x): x is BlockObj => x.kind === 'block' && x.id !== o.id).map((x) => x.scale).find((v) => Math.abs(v - scale) < 0.03);
+        scale = near ?? Math.round(scale * 20) / 20;
+      } else scale = Math.round(scale * 100) / 100;
       const nw = (b.w / o.scale) * scale;
       const nh = (b.h / o.scale) * scale;
       patchObjects(
@@ -767,7 +826,7 @@ export function Canvas() {
     if (!o) return;
     if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
     else if (o.kind === 'tag') jumpToTag(o);
-    else if (o.kind !== 'image') setEditing({ kind: 'text', id: o.id });
+    else if ('text' in o) setEditing({ kind: 'text', id: o.id });
   };
 
   // ------------------------------------------------------------------------------------------
@@ -1001,11 +1060,25 @@ type Elsewhere = Map<Id, Map<Id, number[]>>; // deviceId → portId → page num
 
 function portsUsedElsewhere(project: Project, pageIndex: number): Elsewhere {
   const out: Elsewhere = new Map();
+  // Device-level key of a line end ("device:port", or the object for shapes/tags).
+  const endKey = (pg: Page, e: Endpoint) => {
+    const o = pg.objects.find((x) => x.id === e.objId);
+    return o?.kind === 'block' && isPortEndpoint(e) ? `${o.deviceId}:${e.portId}` : e.objId;
+  };
+  // Connections drawn on this page too (e.g. a copied jumper) aren't "elsewhere".
+  const here = new Set<string>();
+  const cur = project.pages[pageIndex];
+  for (const c of cur?.connections ?? []) {
+    const a = endKey(cur, c.from);
+    const b = endKey(cur, c.to);
+    here.add(a + '|' + b).add(b + '|' + a);
+  }
   project.pages.forEach((pg, i) => {
     if (i === pageIndex) return;
     const dev = new Map<Id, Id>();
     for (const o of pg.objects) if (o.kind === 'block') dev.set(o.id, o.deviceId);
-    for (const c of pg.connections)
+    for (const c of pg.connections) {
+      if (here.has(endKey(pg, c.from) + '|' + endKey(pg, c.to))) continue;
       for (const e of [c.from, c.to]) {
         if (!isPortEndpoint(e)) continue;
         const d = dev.get(e.objId);
@@ -1016,8 +1089,36 @@ function portsUsedElsewhere(project: Project, pageIndex: number): Elsewhere {
         if (!list.includes(i + 1)) list.push(i + 1);
         m.set(e.portId, list);
       }
+    }
   });
   return out;
+}
+
+/** The line (or snake trunk) nearest to a point within `tol`, with the fraction of its length there. */
+function nearestLine(routes: Map<Id, ResolvedRoute>, p: Pt, tol: number): { id: Id; t: number; trunk: boolean } | null {
+  let best: { id: Id; t: number; trunk: boolean; d: number } | null = null;
+  for (const [id, r] of routes) {
+    const L = pathLength(r.pts);
+    if (!L) continue;
+    const dd = projectOnPath(r.pts, p);
+    const q = pointAtDist(r.pts, dd);
+    const dist = Math.hypot(q.x - p.x, q.y - p.y);
+    if (dist <= tol && (!best || dist < best.d)) best = { id, t: dd / L, trunk: !!r.trunk, d: dist };
+  }
+  return best;
+}
+
+function pointAtDist(pts: Pt[], d: number): Pt {
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    if (acc + len >= d) {
+      const f = len ? (d - acc) / len : 0;
+      return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f };
+    }
+    acc += len;
+  }
+  return pts[pts.length - 1];
 }
 
 /** Topmost object under a point other than `except` (blocks, shapes, container frames). */
@@ -1071,23 +1172,6 @@ function Overlay(props: {
     );
   return (
     <g>
-      {/* "Used elsewhere": a port of this device is connected on another page */}
-      {page.objects.map((o) => {
-        if (o.kind !== 'block') return null;
-        const m = elsewhere.get(o.deviceId);
-        if (!m) return null;
-        return [...m.entries()].map(([portId, pages]) => {
-          const a = portAnchor(project, o, portId);
-          if (!a) return null;
-          const r = 1.8 * o.scale;
-          const x = a.x + a.dir[0] * (r + 0.8 * o.scale);
-          return (
-            <circle key={o.id + portId} cx={x} cy={a.y} r={r} fill="#0ea5e9" stroke="#fff" strokeWidth={0.4 * o.scale}>
-              <title>{`${a.port.name}: also connected on page ${pages.join(', ')}`}</title>
-            </circle>
-          );
-        });
-      })}
       {/* Connection hit targets */}
       {[...routes.values()].map((r) => {
         const id = r.conn.id;
@@ -1138,6 +1222,23 @@ function Overlay(props: {
           <rect key={r.conn.id + ':' + i} data-hit="label" data-id={r.conn.id} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: r.legs ? 'pointer' : 'move' }} />
         )),
       )}
+      {/* (above the line hit targets so they stay clickable) "Used elsewhere": a port of this device is connected on another page */}
+      {page.objects.map((o) => {
+        if (o.kind !== 'block') return null;
+        const m = elsewhere.get(o.deviceId);
+        if (!m) return null;
+        return [...m.entries()].map(([portId, pages]) => {
+          const a = portAnchor(project, o, portId);
+          if (!a) return null;
+          const r = 1.8 * o.scale;
+          const x = a.x + a.dir[0] * (r + 0.8 * o.scale);
+          return (
+            <circle key={o.id + portId} data-hit="elsewhere" data-id={o.id} data-port={portId} cx={x} cy={a.y} r={Math.max(r, 2.2 / z)} fill="#0ea5e9" stroke="#fff" strokeWidth={0.4 * o.scale} style={{ cursor: 'pointer' }}>
+              <title>{`${a.port.name}: also connected on page ${pages.join(', ')} — click to add an off-page reference tag here`}</title>
+            </circle>
+          );
+        });
+      })}
       {/* Port hover / selection */}
       {selectedPorts.map((sp) => {
         const o = page.objects.find((x) => x.id === sp.objId);
@@ -1187,12 +1288,18 @@ function Overlay(props: {
       {tailHover &&
         (() => {
           const o = page.objects.find((x) => x.id === tailHover);
+          const r = !o && routes.get(tailHover);
+          if (r) return <path d={polyD(r.pts)} fill="none" stroke="#ca8a04" strokeOpacity={0.6} strokeWidth={4 / z} pointerEvents="none" />;
           return o ? <path d={polyD(objCorners(project, o)) + 'Z'} fill="rgba(250,204,21,0.12)" stroke="#ca8a04" strokeWidth={1.5 / z} strokeDasharray={`${4 / z} ${2 / z}`} pointerEvents="none" /> : null;
         })()}
       {/* Selected objects (outline follows rotation) */}
-      {selectedObjs.map((o) => (
-        <path key={o.id} d={polyD(objCorners(project, o)) + 'Z'} fill="none" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />
-      ))}
+      {selectedObjs.map((o) =>
+        o.kind === 'line' ? (
+          <path key={o.id} d={polyD(lineEnds(o))} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={3 / z} pointerEvents="none" />
+        ) : (
+          <path key={o.id} d={polyD(objCorners(project, o)) + 'Z'} fill="none" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />
+        ),
+      )}
       {selectedObjs.length === 1 && <Handles project={project} o={selectedObjs[0]} z={z} />}
     </g>
   );
@@ -1208,6 +1315,14 @@ const HANDLE_CURSORS = ['ns-resize', 'nesw-resize', 'ew-resize', 'nwse-resize'];
 
 function Handles({ project, o, z }: { project: Project; o: PageObject; z: number }) {
   if (o.kind === 'tag') return null;
+  if (o.kind === 'line')
+    return (
+      <g>
+        {lineEnds(o).map((q, i) => (
+          <circle key={i} data-hit="lineEnd" data-id={o.id} data-end={i} cx={q.x} cy={q.y} r={4 / z} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: 'crosshair' }} />
+        ))}
+      </g>
+    );
   const b = localBox(project, o);
   const rot = rotOf(o);
   const hs = 7 / z;
