@@ -55,7 +55,7 @@ export type Modal =
   | { kind: 'blockEditor'; target: 'library' | 'project'; defId: Id | null }
   | { kind: 'quickInsert' }
   | { kind: 'prefs' }
-  | { kind: 'projectInfo' }
+  | { kind: 'titleBlock' }
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
   | { kind: 'signalTypes' }

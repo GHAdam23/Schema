@@ -57,14 +57,14 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Title block column on the right of every page, laid out after the designer's reference sheet (round 3), top to bottom:
   - Logo (≈12% of the column height)
   - **PROJECT ADDRESS** + address lines (all bold)
-  - **Designed by** name, **Copyright ©** …, phone, email (all bold)
+  - **Designed by** name, **Copyright ©** …, phone, email (all bold), followed by a divider that floats just below however many lines there are
   - Free area — **shared**: text boxes / rectangles placed inside the title block on page 1 are repeated on every page
   - Created / Modified dates (Modified updates on save)
   - Project name, then `Rev. x` right-aligned
   - Page title `(11) Sanctuary Video Schematic` (bold)
   - Page number `11/19` large: number in black, `/19` in light grey
   - Inset grey separators between sections; text ≈ 7% of the column width with ~1.4 line spacing. No "Printed" date.
-- Designer info + logo stored as app preferences and pre-filled into new projects. Saving Preferences also updates the open project's title block (checkbox, on by default) — feedback round 1.
+- **Title block** window (round 4): everything printed in the title block — logo, project address/name/revision/created date, designer name/copyright/phone/email. "Save designer & logo as my default" stores them for new projects; "Use my default" fills them in. **Prefs** holds only app settings (new-project page size, grid, saving/backups, signal types).
 
 ## 5. Layout canvas
 
@@ -148,7 +148,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Unfilled rectangles are only grabbed by their outline or text, so you can click and drag-select inside them.
 - Marquee (round 3): selects what is fully inside, in any drag direction (PowerPoint); hold Alt for touch-select (green, dashed).
 - Pan: right-drag, middle-drag, Space-drag, Hand tool (`H`), or drag the grey area outside the page; wheel scrolls. Left-drag on blank page space stays marquee-select.
-- Text boxes grow to fit after typing; shrinking a box shrinks the text (never below 2 pt). New text boxes don't word-wrap (Wrap checkbox); rectangles do.
+- Text boxes grow to fit after typing. Shrinking a box first eats the 3 pt padding; the font only shrinks once the text would touch the edge (0.75 pt), never below 2 pt (round 4). New text boxes don't word-wrap (Wrap checkbox); rectangles do.
 - History labels: actions call `nextLabel()` before recording; drags name their checkpoint; `labelLast()` adds details afterwards.
 - Route model: a line stores alternating bend coordinates (null = automatic). The end segments always stretch to the anchors, so lines stay attached when blocks move while keeping manual edits. Dragging a middle segment moves it; dragging an end segment inserts a jog. "Reset route" returns to automatic.
 - Automatic routing: the simple Z/L route is used when it's clear of obstacles; otherwise a shortest orthogonal path around them (8 pt clearance, penalty per bend) is found on a grid built from obstacle edges (A*, cached). Obstacles = every object on the page (blocks, rectangles, text boxes). A shape that encloses a line's end (a rack/room frame) doesn't block that line. When something sits closer than the 12 pt stub, the stub and clearance shrink so the line still goes around.
@@ -167,11 +167,13 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 ## 11. Feedback log
 
+**Round 4** (all addressed): floating divider under the designer section · Title block window vs. app-only Prefs · text shrinks only on physical overlap with the box edge.
+
 **Round 3** (all addressed): change History with details (e.g. which connections a block update removed) · text shrinks with its box · connection dots on rectangles/text boxes · drag-select works the same in every direction (Alt = touch) · pan by right-drag / Hand tool / grey area · title block rebuilt from the reference sheet, with a shared free area copied from page 1.
 
 **Round 2** (all addressed): rectangles/text boxes (and future shapes) are routing obstacles · easy alignment so lines stay straight (port snap while dragging, auto-straighten on connect, Straighten command).
 
-**Round 1** (all addressed): no IN/OUT dropdown (column = direction) · centre divider + split header per reference block · export only highlighted library blocks · text inside rectangles · same-device jumpers · lines snap to the centre of a text box/rectangle side · click a line and type to label · line labels up with each other · drag-select (marquee rectangle was invisible — fixed; plus crossing selection) · auto lines avoid blocks · "push to library" reworked into context-dependent buttons · Prefs designer info now updates the open project.
+**Round 1** (all addressed): no IN/OUT dropdown (column = direction) · centre divider + split header per reference block · export only highlighted library blocks · text inside rectangles · same-device jumpers · lines snap to the centre of a text box/rectangle side · click a line and type to label · line labels up with each other · drag-select (marquee rectangle was invisible — fixed; plus crossing selection) · auto lines avoid blocks · "push to library" reworked into context-dependent buttons · Prefs designer info now updates the open project (superseded in round 4 by the Title block window).
 
 ## 12. Working process
 

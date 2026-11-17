@@ -6,7 +6,7 @@ import { LibraryPanel } from './LibraryPanel';
 import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
 import { QuickInsert } from './QuickInsert';
-import { PrefsDialog, ProjectInfoDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog } from './Dialogs';
+import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog } from './Dialogs';
 import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
   copySelection,
@@ -151,7 +151,7 @@ export function App() {
       {modal?.kind === 'blockEditor' && <BlockEditor target={modal.target} defId={modal.defId} />}
       {modal?.kind === 'quickInsert' && <QuickInsert />}
       {modal?.kind === 'prefs' && <PrefsDialog />}
-      {modal?.kind === 'projectInfo' && <ProjectInfoDialog />}
+      {modal?.kind === 'titleBlock' && <TitleBlockDialog />}
       {modal?.kind === 'exportPdf' && <ExportPdfDialog />}
       {modal?.kind === 'backups' && <BackupsDialog />}
       {modal?.kind === 'signalTypes' && <SignalTypesDialog />}

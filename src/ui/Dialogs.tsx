@@ -31,27 +31,9 @@ function Modal({ title, children, buttons, wide }: { title: string; children: Re
 export function PrefsDialog() {
   const [p, setP] = useState<Prefs>(getState().prefs);
   const set = <K extends keyof Prefs>(k: K, v: Prefs[K]) => setP({ ...p, [k]: v });
-  const [applyToProject, setApplyToProject] = useState(true);
   const save = () => {
     savePrefs(p);
     setState({ prefs: p });
-    if (applyToProject) {
-      // Designer info lives in each project (so files keep it); copy it into the open one too.
-      nextLabel('Designer info from Preferences');
-      updateProject((d) => {
-        d.info.designerName = p.designerName;
-        d.info.copyright = p.copyright;
-        d.info.phone = p.phone;
-        d.info.email = p.email;
-        if (d.info.logoAssetId) delete d.assets[d.info.logoAssetId];
-        d.info.logoAssetId = null;
-        if (p.logo) {
-          const id = newId('as');
-          d.assets[id] = p.logo;
-          d.info.logoAssetId = id;
-        }
-      });
-    }
     close();
   };
   return (
@@ -87,44 +69,11 @@ export function PrefsDialog() {
       }
     >
       <div className="form">
-        <div className="sub">Designer (pre-filled into new projects)</div>
-        <label>
-          <input type="checkbox" checked={applyToProject} onChange={(e) => setApplyToProject(e.target.checked)} /> Also update the open project's title
-          block
-        </label>
-        <label>
-          Name <input value={p.designerName} onChange={(e) => set('designerName', e.target.value)} />
-        </label>
-        <label>
-          Copyright / company <input value={p.copyright} onChange={(e) => set('copyright', e.target.value)} />
-        </label>
-        <label>
-          Phone <input value={p.phone} onChange={(e) => set('phone', e.target.value)} />
-        </label>
-        <label>
-          Email <input value={p.email} onChange={(e) => set('email', e.target.value)} />
-        </label>
-        <label>
-          Logo{' '}
-          <span>
-            {p.logo ? <img className="logo-thumb" src={`data:${p.logo.mime};base64,${p.logo.data}`} /> : <span className="muted">none</span>}{' '}
-            <button
-              onClick={async () => {
-                const f = await pickFile('image/png,image/jpeg');
-                if (!f) return;
-                try {
-                  set('logo', await fileToImageAsset(f));
-                } catch (e) {
-                  toast((e as Error).message, 'error');
-                }
-              }}
-            >
-              Choose…
-            </button>{' '}
-            {p.logo && <button onClick={() => set('logo', null)}>Remove</button>}
-          </span>
-        </label>
-        <div className="sub">Defaults</div>
+        <div className="muted small">
+          App settings for this browser. Everything printed in the title block (project, designer, logo) is in <b>Title block</b>, where you can also
+          save your designer details as the default for new projects.
+        </div>
+        <div className="sub">New projects</div>
         <label>
           Page size{' '}
           <select value={p.defaultPageSize} onChange={(e) => set('defaultPageSize', e.target.value as PageSizeId)}>
@@ -187,13 +136,14 @@ export function SignalTypesDialog() {
 
 // ---------------------------------------------------------------------------------------------
 
-export function ProjectInfoDialog() {
+export function TitleBlockDialog() {
   const project = useStore((s) => s.project);
+  const prefs = useStore((s) => s.prefs);
   const [info, setInfo] = useState(project.info);
   const [logo, setLogo] = useState(info.logoAssetId ? project.assets[info.logoAssetId] ?? null : null);
   const set = <K extends keyof typeof info>(k: K, v: (typeof info)[K]) => setInfo({ ...info, [k]: v });
   const save = () => {
-    nextLabel('Edit project / title block info');
+    nextLabel('Edit title block');
     updateProject((d) => {
       const oldLogo = d.info.logoAssetId;
       const cur = oldLogo ? d.assets[oldLogo] : null;
@@ -210,26 +160,31 @@ export function ProjectInfoDialog() {
     });
     close();
   };
-  const field = (k: 'name' | 'address' | 'designerName' | 'copyright' | 'phone' | 'email' | 'revision', label: string, multiline = false) => (
+  const saveDefaults = () => {
+    const p = { ...prefs, designerName: info.designerName, copyright: info.copyright, phone: info.phone, email: info.email, logo };
+    savePrefs(p);
+    setState({ prefs: p });
+    toast('Designer details and logo saved as the default for new projects.');
+  };
+  const useDefaults = () => {
+    setInfo({ ...info, designerName: prefs.designerName, copyright: prefs.copyright, phone: prefs.phone, email: prefs.email });
+    setLogo(prefs.logo);
+  };
+  const field = (k: 'name' | 'address' | 'designerName' | 'copyright' | 'phone' | 'email' | 'revision', label: string, multiline = false, placeholder = '') => (
     <label>
       {label}
-      {multiline ? <textarea rows={2} value={info[k]} onChange={(e) => set(k, e.target.value)} /> : <input value={info[k]} onChange={(e) => set(k, e.target.value)} />}
+      {multiline ? (
+        <textarea rows={2} value={info[k]} placeholder={placeholder} onChange={(e) => set(k, e.target.value)} />
+      ) : (
+        <input value={info[k]} placeholder={placeholder} onChange={(e) => set(k, e.target.value)} />
+      )}
     </label>
   );
   return (
     <Modal
-      title="Project / title block"
+      title="Title block"
       buttons={
         <>
-          <button
-            onClick={() => {
-              const p = getState().prefs;
-              setInfo({ ...info, designerName: p.designerName, copyright: p.copyright, phone: p.phone, email: p.email });
-              setLogo(p.logo);
-            }}
-          >
-            Reset designer from preferences
-          </button>
           <div className="spacer" />
           <button onClick={close}>Cancel</button>
           <button className="primary" onClick={save}>
@@ -239,20 +194,8 @@ export function ProjectInfoDialog() {
       }
     >
       <div className="form">
-        {field('name', 'Project name')}
-        {field('address', 'Project address', true)}
-        {field('revision', 'Revision')}
-        <label>
-          Created <input type="date" value={info.created.slice(0, 10)} onChange={(e) => set('created', new Date(e.target.value + 'T12:00:00').toISOString())} />
-        </label>
-        <label>
-          Modified <span className="muted">{new Date(info.modified).toLocaleString()} (updates on save)</span>
-        </label>
-        <div className="sub">Designer</div>
-        {field('designerName', 'Name')}
-        {field('copyright', 'Copyright / company')}
-        {field('phone', 'Phone')}
-        {field('email', 'Email')}
+        <div className="muted small">Everything printed in the title block of this project. Saved with the project file.</div>
+        <div className="sub">Logo</div>
         <label>
           Logo{' '}
           <span>
@@ -273,6 +216,30 @@ export function ProjectInfoDialog() {
             {logo && <button onClick={() => setLogo(null)}>Remove</button>}
           </span>
         </label>
+        <div className="sub">Project</div>
+        {field('address', 'Project address', true)}
+        {field('name', 'Project name', true, 'e.g. Sojourn Campus Church Technology Systems')}
+        {field('revision', 'Revision', false, 'e.g. 5.1')}
+        <label>
+          Created <input type="date" value={info.created.slice(0, 10)} onChange={(e) => set('created', new Date(e.target.value + 'T12:00:00').toISOString())} />
+        </label>
+        <label>
+          Modified <span className="muted">{new Date(info.modified).toLocaleString()} (updates when you save)</span>
+        </label>
+        <div className="sub">Designer</div>
+        {field('designerName', 'Designed by')}
+        {field('copyright', 'Copyright', false, 'e.g. Adam Rollin 2025 (printed as "Copyright © …")')}
+        {field('phone', 'Phone')}
+        {field('email', 'Email')}
+        <div className="btnrow">
+          <button onClick={saveDefaults} title="New projects will start with these designer details and logo">
+            Save designer &amp; logo as my default
+          </button>
+          <button onClick={useDefaults} title="Fill in the designer details and logo from your saved default">
+            Use my default
+          </button>
+        </div>
+        <div className="muted small">Page names and numbers come from the page tabs. Anything you place in the title block on page 1 repeats on every page.</div>
       </div>
     </Modal>
   );

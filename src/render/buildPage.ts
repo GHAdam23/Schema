@@ -44,33 +44,46 @@ export const TEXT_PAD = 3;
 type TextBox = TextProps & { x: number; y: number; w: number; h: number };
 
 const LINE = 1.2;
+/** Text may come this close to the box edge (≈ half a border line) before it starts to shrink. */
+const EDGE = 0.75;
 
-/** Lines and size at a given font size (no fitting). */
+/** Lines and their extent at a given font size (no fitting). */
 function layoutAt(o: TextBox, size: number) {
   const font = o.bold ? 'narrowBold' : 'narrow';
-  const availW = Math.max(1, o.w - TEXT_PAD * 2);
-  const lines = o.wrap !== false ? wrapText(o.text, font, size, availW) : o.text.split(/\r?\n/);
-  // Widest unbreakable piece: whole lines without wrap, single words with wrap.
-  const pieces = o.wrap !== false ? o.text.split(/\s+/) : lines;
-  const widest = Math.max(0, ...pieces.map((p) => measureText(p, font, size)));
-  return { lines, widest, height: lines.length * size * LINE };
+  let lines: string[];
+  if (o.wrap !== false) {
+    // Wrap inside the normal padding, but let a single long word use the padding before it breaks.
+    const longestWord = Math.max(0, ...o.text.split(/\s+/).map((p) => measureText(p, font, size)));
+    const wrapW = Math.max(o.w - TEXT_PAD * 2, Math.min(longestWord, o.w - EDGE * 2), 1);
+    lines = wrapText(o.text, font, size, wrapW + 0.01);
+  } else lines = o.text.split(/\r?\n/);
+  const widest = Math.max(0, ...lines.map((p) => measureText(p, font, size)));
+  // Ink height: line spacing between lines, about one em for the last line.
+  const ink = lines.length ? (lines.length - 1) * size * LINE + size : 0;
+  return { lines, widest, ink, height: lines.length * size * LINE };
 }
 
-const fitCache = new WeakMap<object, { key: string; size: number; lines: string[] }>();
+interface Fit {
+  key: string;
+  size: number;
+  lines: string[];
+  /** Padding actually used: normally TEXT_PAD, less when the text is tight against the box. */
+  padX: number;
+  padY: number;
+}
+const fitCache = new WeakMap<object, Fit>();
 
 /**
- * Text layout for a box: the font size shrinks (never grows) so the text stays inside the box,
- * the same way a block scales.
+ * Text layout for a box. The padding collapses first; the font size only shrinks (never grows)
+ * once the text would physically overlap the box edge — the same way a block scales.
  */
-export function fitTextBox(o: TextBox): { size: number; lines: string[] } {
+export function fitTextBox(o: TextBox): Fit {
   const key = `${o.text}|${o.w}|${o.h}|${o.fontSize}|${o.bold}|${o.wrap}`;
   const hit = fitCache.get(o);
   if (hit && hit.key === key) return hit;
-  const availW = Math.max(1, o.w - TEXT_PAD * 2);
-  const availH = Math.max(1, o.h - TEXT_PAD * 2);
   const fits = (size: number) => {
     const L = layoutAt(o, size);
-    return L.widest <= availW + 0.01 && L.height <= availH + 0.01;
+    return L.widest <= o.w - EDGE * 2 + 0.01 && L.ink <= o.h - EDGE * 2 + 0.01;
   };
   let size = o.fontSize;
   if (o.text && !fits(size)) {
@@ -83,7 +96,9 @@ export function fitTextBox(o: TextBox): { size: number; lines: string[] } {
     }
     size = Math.floor(lo * 4) / 4;
   }
-  const res = { key, size, lines: layoutAt(o, size).lines };
+  const L = layoutAt(o, size);
+  const clamp = (v: number) => Math.min(TEXT_PAD, Math.max(EDGE, v));
+  const res: Fit = { key, size, lines: L.lines, padX: clamp((o.w - L.widest) / 2), padY: clamp((o.h - L.ink) / 2) };
   fitCache.set(o, res);
   return res;
 }
@@ -100,22 +115,25 @@ export function textLines(o: TextBox) {
 
 /** Top of the first line's box for the given vertical alignment. */
 export function textTop(o: TextBox) {
-  const { size, lines } = fitTextBox(o);
-  const total = (o.text ? lines.length : 1) * size * LINE;
+  const { size, lines, padY } = fitTextBox(o);
+  const lh = size * LINE;
+  // Line boxes have (lh - size)/2 of leading above the ink; let that leading eat into the padding.
+  const lead = (lh - size) / 2;
+  const total = (o.text ? lines.length : 1) * lh;
   if (o.valign === 'middle') return o.y + (o.h - total) / 2;
-  if (o.valign === 'bottom') return o.y + o.h - TEXT_PAD - total;
-  return o.y + TEXT_PAD;
+  if (o.valign === 'bottom') return o.y + o.h - padY - total + lead;
+  return o.y + padY - lead;
 }
 
 function drawTextIn(out: DLItem[], o: TextBox) {
   if (!o.text) return;
   const font = o.bold ? 'narrowBold' : 'narrow';
-  const { size, lines } = fitTextBox(o);
+  const { size, lines, padX } = fitTextBox(o);
   const lh = size * LINE;
   let y = textTop(o) + size * capHeightEm(font) + (lh - size) / 2;
   for (const line of lines) {
     const w = measureText(line, font, size);
-    const x = o.align === 'left' ? o.x + TEXT_PAD : o.align === 'right' ? o.x + o.w - TEXT_PAD - w : o.x + (o.w - w) / 2;
+    const x = o.align === 'left' ? o.x + padX : o.align === 'right' ? o.x + o.w - padX - w : o.x + (o.w - w) / 2;
     if (line) out.push({ t: 'text', x, y, text: line, font, size, color: o.color });
     y += lh;
   }
@@ -436,7 +454,7 @@ function drawTitleBlock(out: DLItem[], project: Project, page: Page, opts: Build
   y += addrH;
   sep(y);
 
-  // ---- Designer (all bold, no closing line — the free area follows)
+  // ---- Designer (all bold)
   const copyright = info.copyright.trim();
   const designer = [
     info.designerName && { t: `Designed by ${info.designerName}`, f: 'titleBold' as F },
@@ -444,7 +462,9 @@ function drawTitleBlock(out: DLItem[], project: Project, page: Page, opts: Build
     info.phone && { t: info.phone, f: 'titleBold' as F },
     info.email && { t: info.email, f: 'titleBold' as F },
   ].filter(Boolean) as { t: string; f: F }[];
+  // A divider always follows the designer block, floating with however many lines it has.
   const freeTop = lines(designer, y + pad * 0.6) + pad;
+  sep(freeTop);
 
   // ---- Bottom group, built upwards from the bottom edge.
   const numH = r.h * 0.055;

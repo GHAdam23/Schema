@@ -91,9 +91,9 @@ export function Toolbar() {
         {dirty ? ' •' : ''}
       </span>
       <div className="group">
-        <Btn label="Project" title="Project / title block info" onClick={() => setState({ modal: { kind: 'projectInfo' } })} />
+        <Btn label="Title block" title="Logo, project and designer info printed in the title block" onClick={() => setState({ modal: { kind: 'titleBlock' } })} />
         <Btn label="Backups" onClick={() => setState({ modal: { kind: 'backups' } })} />
-        <Btn label="Prefs" title="Preferences" onClick={() => setState({ modal: { kind: 'prefs' } })} />
+        <Btn label="Prefs" title="App preferences (grid, defaults, saving, signal types)" onClick={() => setState({ modal: { kind: 'prefs' } })} />
       </div>
     </div>
   );
