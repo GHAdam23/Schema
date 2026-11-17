@@ -32,7 +32,7 @@ interface View {
 type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
-  | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean }
+  | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean; enclose?: boolean }
   | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl' }
@@ -246,12 +246,13 @@ export function Canvas() {
       });
       return;
     }
-    const obj = hitObject(s.project, pg, p.x, p.y, 0, false, 5 / viewRef.current.z);
+    const obj = hitObject(s.project, pg, p.x, p.y);
     if (obj) {
-      // Alt-drag from a shape starts a connection from its outline.
-      if (e.altKey && obj.kind !== 'block') {
-        const b = objBounds(s.project, obj);
-        setDrag({ t: 'connect', from: { objId: obj.id, ...outlinePoint(b, p.x, p.y) }, start: p, cur: p, moved: false, port: null, additive: 'none' });
+      // Alt-drag starting on an object (e.g. inside a rack / room frame) draws a selection box
+      // instead of moving it; it selects what's fully inside.
+      if (e.altKey) {
+        if (!additive) setState({ selection: [], selectedPorts: [] });
+        setDrag({ t: 'marquee', start: p, cur: p, base: additive ? s.selection : [], touch: false, enclose: true });
         return;
       }
       let sel = s.selection;
@@ -300,11 +301,11 @@ export function Canvas() {
         return;
       }
       case 'marquee': {
-        const nd = { ...d, cur: p, touch: e.altKey };
+        const nd = { ...d, cur: p, touch: e.altKey && !d.enclose };
         setDrag(nd);
         const r = normRect(d.start, p);
         // Like PowerPoint: select what is fully inside, in any drag direction. Hold Alt to select anything touched.
-        const crossing = e.altKey;
+        const crossing = nd.touch;
         const inRect = (q: Pt) => q.x >= r.x && q.y >= r.y && q.x <= r.x + r.w && q.y <= r.y + r.h;
         const inside = pg.objects
           .filter((o) => {
@@ -606,7 +607,7 @@ export function Canvas() {
       setEditing({ kind: 'label', id: hit.id! });
       return;
     }
-    const o = hitObject(s.project, pg, p.x, p.y, 0, true);
+    const o = hitObject(s.project, pg, p.x, p.y);
     if (!o) return;
     if (o.kind === 'text' || o.kind === 'rect') setEditing({ kind: 'text', id: o.id });
     else if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });

@@ -96,8 +96,7 @@ function PageSection({ s }: { s: AppState }) {
           <b>Place blocks:</b> drag from the library, double-click a library entry, or press <kbd>Q</kbd> / <kbd>Ctrl+K</kbd>.
         </p>
         <p>
-          <b>Move a block:</b> drag its header, footer or centre. <b>Connect:</b> drag from a port row to another port. Alt-drag from a text box or
-          rectangle to connect from its outline.
+          <b>Move a block:</b> drag its header, footer or centre. <b>Connect:</b> drag from a port row to another port. Drag from the dots on a text box or rectangle to connect to it.
         </p>
         <p>
           <b>Labels:</b> click a line and just start typing (Enter/F2 to edit an existing label). Drag a label to slide it — it snaps in line
@@ -120,7 +119,8 @@ function PageSection({ s }: { s: AppState }) {
         </p>
         <p>
           <b>Select:</b> drag on empty space to select what's fully inside (any direction); hold Alt to select anything touched.
-          Double-click a rectangle or text box to type in it. Drag from the dots on a rectangle / text box to connect a line to it.
+          Click anywhere in a rectangle or text box to select it; double-click to type in it. To drag-select inside a frame, hold Alt while you
+          start dragging.
         </p>
         <p>
           <b>Pan:</b> right-drag, the Hand tool (<kbd>H</kbd>), drag the grey area, scroll, middle-drag or Space-drag. <b>Zoom:</b> Ctrl+scroll.

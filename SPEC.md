@@ -123,6 +123,13 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 **Phase 3**
 - Cable list, optional signal-type colors, auto-label numbering, quality-of-life polish
+- **Rack elevations** (details to be specified later):
+  - Equipment dimensions in the block definition / equipment properties: height, width, depth, and rack-unit (RU) count.
+  - A rack tool that generates a rack outline from a given RU count (numbered rack spaces).
+  - Drag equipment into the rack; it snaps to the nearest rack space (occupying its RU count).
+  - Front view shows manufacturer, model and friendly name on each unit's face.
+  - Generate a side view of the same rack using depth data.
+  - Rack units are the same project devices as on the schematics (one device, many views).
 
 ## 10. Implementation notes (decisions made while building)
 
@@ -143,12 +150,12 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 ### Canvas interaction
 - Blocks move by dragging the header, footer or centre (the area next to the divider); the outer ~45% of each port row (plus a few points outside the edge) starts a line. Click a port row to select it, Shift-click to extend a run, Ctrl-click to toggle; `Shift+C` = range connect (side with more OUTs becomes the source; pairs in display order; warns if counts differ).
-- Alt-drag from a text box or rectangle starts a line from it; lines attach to the centre of the nearest side.
+- Drag from a connection dot on a text box or rectangle to start a line from it; lines attach to the centre of the nearest side.
 - Lines are drawn OUT → IN where possible (endpoints are swapped automatically). Mismatched signal types only warn.
-- Unfilled rectangles are only grabbed by their outline or text, so you can click and drag-select inside them.
+- Clicking anywhere inside a rectangle / text box selects it, like a block (round 5). Alt+drag starting on an object draws a selection box instead (e.g. to select blocks inside a rack/room frame).
 - Marquee (round 3): selects what is fully inside, in any drag direction (PowerPoint); hold Alt for touch-select (green, dashed).
 - Pan: right-drag, middle-drag, Space-drag, Hand tool (`H`), or drag the grey area outside the page; wheel scrolls. Left-drag on blank page space stays marquee-select.
-- Text boxes grow to fit after typing. Shrinking a box first eats the 3 pt padding; the font only shrinks once the text would touch the edge (0.75 pt), never below 2 pt (round 4). New text boxes don't word-wrap (Wrap checkbox); rectangles do.
+- Text boxes grow to fit after typing. Shrinking a box first eats the 3 pt padding; the font only shrinks once the text would touch the edge (0.75 pt), never below 2 pt (round 4). Shrunk text scales about the box centre like a block, whatever its vertical alignment; vertical centring is optical (cap height to last baseline) (round 5). New text boxes don't word-wrap (Wrap checkbox); rectangles do.
 - History labels: actions call `nextLabel()` before recording; drags name their checkpoint; `labelLast()` adds details afterwards.
 - Route model: a line stores alternating bend coordinates (null = automatic). The end segments always stretch to the anchors, so lines stay attached when blocks move while keeping manual edits. Dragging a middle segment moves it; dragging an end segment inserts a jog. "Reset route" returns to automatic.
 - Automatic routing: the simple Z/L route is used when it's clear of obstacles; otherwise a shortest orthogonal path around them (8 pt clearance, penalty per bend) is found on a grid built from obstacle edges (A*, cached). Obstacles = every object on the page (blocks, rectangles, text boxes). A shape that encloses a line's end (a rack/room frame) doesn't block that line. When something sits closer than the 12 pt stub, the stub and clearance shrink so the line still goes around.
@@ -166,6 +173,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - No obstacle-avoiding autorouter (spec). "Used elsewhere" port markers and reference tags are Phase 2.
 
 ## 11. Feedback log
+
+**Round 5** (all addressed): shrunk text stays centred in its box · click anywhere inside a rectangle / text box to select it · Phase 3: rack elevations added to the plan.
 
 **Round 4** (all addressed): floating divider under the designer section · Title block window vs. app-only Prefs · text shrinks only on physical overlap with the box edge.
 

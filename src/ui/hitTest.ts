@@ -1,7 +1,6 @@
 import type { BlockObj, Page, PageObject, Project, Side } from '../model/types';
 import { blockFor, blockLayout, BLK } from '../model/blockGeometry';
 import { objBounds } from '../model/routing';
-import { fitTextBox, textTop } from '../render/buildPage';
 import type { PortRef } from '../state/store';
 
 export interface PortHit extends PortRef {
@@ -39,24 +38,12 @@ export function hitPort(project: Project, page: Page, x: number, y: number): Por
   return null;
 }
 
-/**
- * Topmost object under a point. An unfilled rectangle is only "solid" along its outline and its
- * text, so you can marquee-select or click things inside it (pass wholeArea to ignore that).
- */
-export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0, wholeArea = false, edgeTol = 4): PageObject | null {
+/** Topmost object under a point: anywhere inside its bounds counts, for every kind of object. */
+export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
     const b = objBounds(project, o);
-    if (!(x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad)) continue;
-    if (wholeArea || o.kind !== 'rect' || o.fill) return o;
-    const nearEdge = x - b.x <= edgeTol || b.x + b.w - x <= edgeTol || y - b.y <= edgeTol || b.y + b.h - y <= edgeTol;
-    if (nearEdge) return o;
-    if (o.text) {
-      const top = textTop(o);
-      const f = fitTextBox(o);
-      const bottom = top + f.lines.length * f.size * 1.2;
-      if (y >= top && y <= bottom) return o;
-    }
+    if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return o;
   }
   return null;
 }

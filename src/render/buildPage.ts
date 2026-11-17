@@ -120,7 +120,13 @@ export function textTop(o: TextBox) {
   // Line boxes have (lh - size)/2 of leading above the ink; let that leading eat into the padding.
   const lead = (lh - size) / 2;
   const total = (o.text ? lines.length : 1) * lh;
-  if (o.valign === 'middle') return o.y + (o.h - total) / 2;
+  // Text that has been shrunk to fit scales about the box centre (like a block), whatever its
+  // vertical alignment. Centring is optical: cap height of the first line to the last baseline.
+  if (o.valign === 'middle' || (o.text && size < o.fontSize - 1e-6)) {
+    const cap = size * capHeightEm(o.bold ? 'narrowBold' : 'narrow');
+    const body = cap + (Math.max(1, lines.length) - 1) * lh;
+    return o.y + o.h / 2 - body / 2 - lead;
+  }
   if (o.valign === 'bottom') return o.y + o.h - padY - total + lead;
   return o.y + padY - lead;
 }
