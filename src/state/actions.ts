@@ -25,11 +25,11 @@ import { isPortEndpoint } from '../model/types';
 import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
 import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } from '../model/defaults';
-import { findPort } from '../model/blockGeometry';
+import { blockFor, findPort, portAnchor } from '../model/blockGeometry';
 import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
 import { normDeg, rotOf } from '../model/geom';
 import { devicePages, tagSize, tagTargetPage, tagText } from '../model/tags';
-import { labelBox, labelTAt } from '../render/buildPage';
+import { calloutTip, labelBox, labelTAt } from '../render/buildPage';
 import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
 
@@ -62,10 +62,12 @@ export function duplicatePage(id: Id) {
   const s = getState();
   const src = s.project.pages.find((p) => p.id === id);
   if (!src) return;
-  const copy = copyObjectsInto(s.project, src.objects, src.connections, 0, 0, src.bundles ?? []);
+  // The copy shows the same devices (instances), like pasting onto another page.
+  const copy = copyObjectsInto(s.project, s.project, src.objects, src.connections, 0, 0, src.bundles ?? [], { onPage: null, forceNew: false });
   const pg: Page = { ...newPage(src.name + ' (copy)', src.size), objects: copy.objects, connections: copy.connections, bundles: copy.bundles };
   updateProject((d) => {
     Object.assign(d.devices, copy.devices);
+    Object.assign(d.blockDefs, copy.defs);
     const i = d.pages.findIndex((p) => p.id === id);
     d.pages.splice(i + 1, 0, pg as Draft<Page>);
   });
@@ -317,7 +319,102 @@ export function patchTag(id: Id, fn: (t: Draft<TagObj>) => void, label = 'Change
 export function setTagTarget(id: Id, target: TagObj['target']) {
   const p = getState().project;
   const dev = target && p.devices[target.deviceId];
-  patchTag(id, (o) => void (o.target = target), dev ? `Point tag to ${dev.name}` : 'Clear tag target');
+  patchTag(
+    id,
+    (o) => {
+      o.target = target;
+      o.auto = undefined; // a tag the user points somewhere is theirs
+    },
+    dev ? `Point tag to ${dev.name}` : 'Clear tag target',
+  );
+  syncTagPair(id);
+}
+
+const PAIR_GAP = 36;
+
+/**
+ * A tag on a line from a port that points to a specific port elsewhere gets a matching tag at that
+ * port (on the page where it's drawn), pointing back: "TO (2) DISP-1 HDMI 1" here,
+ * "FROM (1) VR-1 SDI OUT 8" there. Re-pointing the tag replaces its automatic partner.
+ * Part of the same undo step as the change that triggered it.
+ */
+function syncTagPair(id: Id) {
+  // 1. Drop the old automatic partner (a partner the user made stays, just unlinked).
+  updateProject((d) => {
+    for (const pg of d.pages) {
+      pg.objects = pg.objects.filter((o) => !(o.kind === 'tag' && o.auto && o.pairId === id));
+      for (const o of pg.objects) if (o.kind === 'tag' && (o.pairId === id || o.id === id)) delete o.pairId;
+    }
+    gc(d);
+  }, false);
+  // 2. Work out whether a partner belongs somewhere.
+  const p = getState().project;
+  const own = p.pages.find((pg) => pg.objects.some((o) => o.id === id));
+  const tag = own?.objects.find((o) => o.id === id);
+  if (!own || !tag || tag.kind !== 'tag' || !tag.target?.portId) return;
+  const conn = own.connections.find((c) => c.from.objId === id || c.to.objId === id);
+  const srcEnd = conn && (conn.from.objId === id ? conn.to : conn.from);
+  if (!srcEnd || !isPortEndpoint(srcEnd)) return;
+  const srcObj = own.objects.find((o) => o.id === srcEnd.objId);
+  if (!srcObj || srcObj.kind !== 'block') return;
+  const ti = tagTargetPage(p, tag);
+  const tp = p.pages[ti];
+  if (!tp || tp === own) return;
+  const target = tag.target;
+  const inst = tp.objects.find((o): o is BlockObj => o.kind === 'block' && o.deviceId === target.deviceId);
+  const a = inst && portAnchor(p, inst, target.portId!);
+  if (!inst || !a) return;
+  const isTagAtPort = (t: PageObject) =>
+    tp.connections.some((c) => [c.from, c.to].some((e) => e.objId === t.id) && [c.from, c.to].some((e) => isPortEndpoint(e) && e.objId === inst.id && e.portId === target.portId));
+  // A tag already there pointing back: just link the two.
+  const existing = tp.objects.find((o) => o.kind === 'tag' && o.target?.deviceId === srcObj.deviceId && o.target?.portId === srcEnd.portId && isTagAtPort(o));
+  if (existing) {
+    updateProject((d) => {
+      for (const pg of d.pages)
+        for (const o of pg.objects) {
+          if (o.id === id && o.kind === 'tag') o.pairId = existing.id;
+          if (o.id === existing.id && o.kind === 'tag') o.pairId = id;
+        }
+    }, false);
+    return;
+  }
+  const partner: TagObj = {
+    ...tag,
+    id: newId('ob'),
+    x: a.x,
+    y: a.y,
+    target: { deviceId: srcObj.deviceId, portId: srcEnd.portId },
+    dir: 'auto',
+    note: '',
+    pairId: id,
+    auto: true,
+  };
+  // Inputs (left column) get the tag on the left with the line running tag → port; outputs the reverse.
+  const left = a.dir[0] < 0;
+  const line: Connection = {
+    id: newId('cn'),
+    from: left ? { objId: partner.id, fx: 1, fy: 0.5 } : { objId: inst.id, portId: target.portId! },
+    to: left ? { objId: inst.id, portId: target.portId! } : { objId: partner.id, fx: 0, fy: 0.5 },
+    bends: null,
+    label: conn.label,
+    labelT: null,
+    style: { ...conn.style },
+  };
+  updateProject((d) => {
+    const pg = d.pages.find((x) => x.id === tp.id)!;
+    pg.objects.push(partner as Draft<TagObj>);
+    pg.connections.push(line as Draft<Connection>);
+    for (const o of d.pages.find((x) => x.id === own.id)!.objects) if (o.id === id && o.kind === 'tag') o.pairId = partner.id;
+  }, false);
+  // Size depends on the text, which needs the tag in place: position it now.
+  const placed = getState().project.pages.find((x) => x.id === tp.id)!.objects.find((o) => o.id === partner.id) as TagObj;
+  const sz = tagSize(getState().project, placed);
+  updateProject((d) => {
+    const t = d.pages.find((x) => x.id === tp.id)!.objects.find((o) => o.id === partner.id)!;
+    t.x = left ? a.x - PAIR_GAP - sz.w : a.x + PAIR_GAP;
+    t.y = a.y - sz.h / 2;
+  }, false);
+  toast(`Added the matching tag at ${p.devices[target.deviceId]?.name} on page ${ti + 1}.`);
 }
 
 /** Go to the page of a tag's device and select the instance there (and its port). */
@@ -371,10 +468,12 @@ export function setRotation(ids: Id[], deg: number | ((cur: number) => number), 
 }
 
 export function setCurved(ids: Id[], curved: boolean) {
-  nextLabel(curved ? 'Curved line' : 'Right-angle line');
-  patchConnections(ids, (c) => {
-    c.curved = curved || undefined;
-    if (curved) c.labelT = null;
+  nextLabel(curved ? 'Curved' : 'Right-angle');
+  const set = new Set(ids);
+  updateProject((d) => {
+    const pg = pageDraft(d);
+    for (const c of pg.connections) if (set.has(c.id)) c.curved = curved || undefined;
+    for (const b of pg.bundles ?? []) if (set.has(b.id)) b.curved = curved || undefined;
   });
 }
 
@@ -385,6 +484,8 @@ export function deleteSelection() {
   const trunkLines = (page0.bundles ?? []).filter((b) => s.selection.includes(b.id)).flatMap((b) => b.connIds);
   const sel = new Set([...s.selection, ...trunkLines]);
   if (!sel.size) return;
+  // A tag's automatic partner at the far end goes too.
+  const partners = new Set(page0.objects.filter((o): o is TagObj => o.kind === 'tag' && sel.has(o.id) && !!o.pairId).map((o) => o.pairId!));
   const page = page0;
   const objs = page.objects.filter((o) => sel.has(o.id));
   const alive = new Set(page.objects.filter((o) => !sel.has(o.id)).map((o) => o.id));
@@ -399,6 +500,10 @@ export function deleteSelection() {
     const alive = new Set(pg.objects.map((o) => o.id));
     pg.connections = pg.connections.filter((c) => !sel.has(c.id) && alive.has(c.from.objId) && alive.has(c.to.objId));
     pg.bundles = (pg.bundles ?? []).filter((b) => !sel.has(b.id));
+    for (const p of d.pages) {
+      p.objects = p.objects.filter((o) => !(partners.has(o.id) && o.kind === 'tag' && o.auto));
+      for (const o of p.objects) if (o.kind === 'tag' && o.pairId && sel.has(o.pairId)) delete o.pairId;
+    }
     gc(d);
   });
   setState({ selection: [], selectedPorts: [] });
@@ -410,6 +515,7 @@ export function gc(d: D) {
   for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block') usedDevices.add(o.deviceId);
   for (const id of Object.keys(d.devices)) if (!usedDevices.has(id)) delete d.devices[id];
   const usedDefs = new Set(Object.values(d.devices).map((v) => v.defId));
+  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block' && o.defId) usedDefs.add(o.defId);
   for (const id of Object.keys(d.blockDefs)) if (!usedDefs.has(id)) delete d.blockDefs[id];
   for (const pg of d.pages) {
     const objs = new Map(pg.objects.map((o) => [o.id, o]));
@@ -436,7 +542,7 @@ function endpointAlive(d: D, objs: Map<string, Draft<PageObject>>, e: Endpoint) 
   if (!isPortEndpoint(e)) return o.kind !== 'block';
   if (o.kind !== 'block') return false;
   const dev = d.devices[o.deviceId];
-  const def = dev && d.blockDefs[dev.defId];
+  const def = dev && (d.blockDefs[o.defId ?? ''] ?? d.blockDefs[dev.defId]);
   return !!def && !!findPort(def as BlockDef, e.portId);
 }
 
@@ -546,12 +652,159 @@ export function setStroke(ids: Id[], style: Partial<StrokeStyle>) {
   });
 }
 
+/**
+ * Rename a device (every instance shows the new name). Renaming to the name of another device of
+ * the same model offers to make them one device: the friendly name is the device's identity.
+ */
 export function renameDevice(deviceId: Id, name: string) {
-  nextLabel(`Rename device "${getState().project.devices[deviceId]?.name}" → "${name}"`);
+  const p = getState().project;
+  const dev = p.devices[deviceId];
+  if (!dev) return;
+  const other = Object.values(p.devices).find((d) => d.id !== deviceId && d.name.trim().toLowerCase() === name.trim().toLowerCase());
+  if (other) {
+    const a = p.blockDefs[dev.defId];
+    const b = p.blockDefs[other.defId];
+    const sameModel = a && b && a.manufacturer === b.manufacturer && a.model === b.model;
+    const pagesA = devicePages(p, deviceId);
+    const pagesB = devicePages(p, other.id);
+    const clash = pagesA.some((i) => pagesB.includes(i));
+    if (sameModel && !clash) {
+      const where = pagesB.map((i) => i + 1).join(', ');
+      if (confirm(`"${other.name}" already exists (page ${where}).\n\nOK — it's the same device: show it here too (one name, shared ports).\nCancel — keep them as two separate devices.`)) {
+        mergeDevices(deviceId, other.id);
+        return;
+      }
+    } else if (!sameModel) toast(`Another device is already named "${other.name}" (${b?.manufacturer} ${b?.model}).`, 'warn', 5000);
+    else toast(`"${other.name}" is already on this page — kept as two devices with the same name.`, 'warn', 5000);
+  }
+  nextLabel(`Rename device "${dev.name}" → "${name}"`);
   updateProject((d) => {
-    const dev = d.devices[deviceId];
-    if (dev) dev.name = name;
+    const dv = d.devices[deviceId];
+    if (dv) dv.name = name;
   });
+}
+
+/** Make every instance of device `from` an instance of device `into` (lines are kept by port id, else by port name). */
+export function mergeDevices(from: Id, into: Id) {
+  const p = getState().project;
+  const fromDef = p.blockDefs[p.devices[from].defId];
+  const intoDef = p.blockDefs[p.devices[into].defId];
+  const portMap = new Map<Id, Id>();
+  if (fromDef && intoDef) {
+    for (const col of ['left', 'right'] as const)
+      for (const pt of fromDef[col]) {
+        const m = intoDef[col].find((x) => x.id === pt.id) ?? intoDef[col].find((x) => x.name === pt.name);
+        if (m) portMap.set(pt.id, m.id);
+      }
+  }
+  const before = p;
+  nextLabel(`Merge "${p.devices[from].name}" into "${p.devices[into].name}" (same device)`);
+  updateProject((d) => {
+    for (const pg of d.pages) {
+      const objs = new Set<Id>();
+      for (const o of pg.objects)
+        if (o.kind === 'block' && o.deviceId === from) {
+          o.deviceId = into;
+          objs.add(o.id);
+          // Rows hidden by id follow the mapping.
+          if (o.hidden) o.hidden = o.hidden.map((h) => portMap.get(h) ?? h);
+        }
+      for (const c of pg.connections)
+        for (const e of [c.from, c.to]) {
+          const own = pg.objects.find((o) => o.id === e.objId);
+          if (isPortEndpoint(e) && objs.has(e.objId) && !(own?.kind === 'block' && own.defId)) e.portId = portMap.get(e.portId) ?? e.portId;
+        }
+      for (const o of pg.objects)
+        if (o.kind === 'tag' && o.target?.deviceId === from) {
+          o.target.deviceId = into;
+          if (o.target.portId) o.target.portId = portMap.get(o.target.portId);
+        }
+    }
+    gc(d);
+  });
+  const lost = lostConnections(before, getState().project);
+  if (lost.length) {
+    labelLast(`Merge into "${before.devices[into].name}" — ${plural(lost.length, 'connection')} removed`, lost.map((l) => 'Removed: ' + l));
+    toast(`${plural(lost.length, 'line')} removed: those ports don't exist on "${before.devices[into].name}". See History.`, 'warn', 8000);
+  } else toast(`Now one device: "${before.devices[into].name}".`);
+}
+
+/** Split one placed block off into a new device of the same model (e.g. a second console). */
+export function makeSeparateDevice(objId: Id, name: string) {
+  const s = getState();
+  const o = currentPage(s).objects.find((x) => x.id === objId);
+  if (!o || o.kind !== 'block') return;
+  const dev = s.project.devices[o.deviceId];
+  const nd: ProjectDevice = { id: newId('dv'), defId: dev.defId, name: name.trim() || uniqueDeviceName(s.project, dev.name) };
+  nextLabel(`Make "${nd.name}" a separate device (was "${dev.name}")`);
+  updateProject((d) => {
+    d.devices[nd.id] = nd;
+    const t = pageDraft(d).objects.find((x) => x.id === objId);
+    if (t?.kind === 'block') t.deviceId = nd.id;
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rows / ports of one placed block
+
+/** Show or hide rows on one block (other instances and the library are unchanged). */
+export function setHiddenPorts(objId: Id, hidden: Id[]) {
+  const s = getState();
+  const page = currentPage(s);
+  const o = page.objects.find((x) => x.id === objId);
+  if (!o || o.kind !== 'block') return false;
+  const used = page.connections.flatMap((c) => [c.from, c.to]).filter((e) => isPortEndpoint(e) && e.objId === objId && hidden.includes(e.portId));
+  if (used.length) {
+    const { base } = blockFor(s.project, o);
+    const names = [...new Set(used.map((e) => (base && isPortEndpoint(e) ? findPort(base, e.portId)?.port.name : '') ?? ''))].join(', ');
+    toast(`Can't hide ${names}: there's a line on it on this page. Delete the line first.`, 'warn', 6000);
+    return false;
+  }
+  nextLabel(`${hidden.length > (o.hidden?.length ?? 0) ? 'Hide' : 'Show'} rows on ${s.project.devices[o.deviceId]?.name}`);
+  patchObjects([objId], (t) => void (t.kind === 'block' && (t.hidden = hidden.length ? hidden : undefined)));
+  return true;
+}
+
+/** Save ports edited for this block only: the block gets its own port list (connections keep port ids). */
+export function saveInstanceDef(objId: Id, def: BlockDef): string[] {
+  const s = getState();
+  const o = currentPage(s).objects.find((x) => x.id === objId);
+  if (!o || o.kind !== 'block') return [];
+  const id = o.defId ?? newId('bd');
+  const name = s.project.devices[o.deviceId]?.name;
+  const before = s.project;
+  updateProject((d) => {
+    d.blockDefs[id] = { ...def, id } as Draft<BlockDef>;
+    const t = pageDraft(d).objects.find((x) => x.id === objId);
+    if (t?.kind === 'block') {
+      t.defId = id;
+      // Hidden rows that no longer exist are forgotten.
+      if (t.hidden) t.hidden = t.hidden.filter((h) => findPort(def, h));
+    }
+    gc(d);
+  }, `Edit ports of ${name} (this block only)`);
+  const lost = lostConnections(before, getState().project);
+  if (lost.length) labelLast(`Edit ports of ${name} (this block only) — ${plural(lost.length, 'connection')} removed`, lost.map((l) => 'Removed: ' + l));
+  return lost;
+}
+
+/** Back to the device's shared ports. */
+export function revertInstanceDef(objId: Id) {
+  const s = getState();
+  const o = currentPage(s).objects.find((x) => x.id === objId);
+  if (!o || o.kind !== 'block' || !o.defId) return;
+  const before = s.project;
+  nextLabel(`Use shared ports for ${s.project.devices[o.deviceId]?.name}`);
+  updateProject((d) => {
+    const t = pageDraft(d).objects.find((x) => x.id === objId);
+    if (t?.kind === 'block') delete t.defId;
+    gc(d);
+  });
+  const lost = lostConnections(before, getState().project);
+  if (lost.length) {
+    labelLast(`Use shared ports for ${before.devices[o.deviceId]?.name} — ${plural(lost.length, 'connection')} removed`, lost.map((l) => 'Removed: ' + l));
+    toast(`${plural(lost.length, 'line')} removed (their ports only existed on this block). See History.`, 'warn', 7000);
+  }
 }
 
 export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
@@ -671,6 +924,7 @@ export function selectAll() {
 // Clipboard
 
 interface ClipData {
+  pageId: Id;
   objects: PageObject[];
   connections: Connection[];
   bundles: Bundle[];
@@ -678,6 +932,7 @@ interface ClipData {
 }
 let clip: ClipData | null = null;
 let pasteCount = 0;
+const pastedOn = new Set<Id>();
 
 export function copySelection() {
   const s = getState();
@@ -689,8 +944,9 @@ export function copySelection() {
   const connections = pg.connections.filter((c) => ids.has(c.from.objId) && ids.has(c.to.objId));
   const cids = new Set(connections.map((c) => c.id));
   const bundles = (pg.bundles ?? []).filter((b) => b.connIds.every((id) => cids.has(id)));
-  clip = { objects, connections, bundles, project: s.project };
+  clip = { pageId: pg.id, objects, connections, bundles, project: s.project };
   pasteCount = 0;
+  pastedOn.clear();
 }
 
 export function cutSelection() {
@@ -698,22 +954,73 @@ export function cutSelection() {
   deleteSelection();
 }
 
-/** Copy objects (+ connections among them) with new ids. Blocks get new devices. */
-function copyObjectsInto(project: Project, objects: readonly PageObject[], connections: readonly Connection[], dx: number, dy: number, bundles: readonly Bundle[] = []) {
+interface CopyOpts {
+  /** Page the copies go to (devices already there get a new device); null = a new page. */
+  onPage: Page | null;
+  /** Always make new devices (Ctrl+Shift+V). */
+  forceNew: boolean;
+}
+
+/**
+ * Copy objects (+ connections and snakes among them) with new ids. A block becomes another
+ * instance of the same device when that device isn't on the target page yet (copying to another
+ * page shows the same equipment); otherwise — or when forced — it gets a new device.
+ */
+function copyObjectsInto(
+  project: Project,
+  src: Project,
+  objects: readonly PageObject[],
+  connections: readonly Connection[],
+  dx: number,
+  dy: number,
+  bundles: readonly Bundle[],
+  opts: CopyOpts,
+) {
   const idMap = new Map<string, string>();
   const devices: Record<string, ProjectDevice> = {};
+  const defs: Record<string, BlockDef> = {};
   const scratch = { ...project, devices: { ...project.devices } };
+  const onPage = new Set(opts.onPage?.objects.filter((o) => o.kind === 'block').map((o) => (o as BlockObj).deviceId) ?? []);
   const outObjs: PageObject[] = objects.map((o) => {
     const id = newId('ob');
     idMap.set(o.id, id);
     if (o.kind === 'block') {
-      const dev = project.devices[o.deviceId];
-      const nd: ProjectDevice = { id: newId('dv'), defId: dev.defId, name: uniqueDeviceName(scratch, dev.name) };
-      devices[nd.id] = nd;
-      scratch.devices[nd.id] = nd;
-      return { ...o, id, deviceId: nd.id, x: o.x + dx, y: o.y + dy, border: { ...o.border } };
+      const dev = src.devices[o.deviceId];
+      let deviceId = o.deviceId;
+      if (opts.forceNew || !project.devices[o.deviceId] || onPage.has(o.deviceId)) {
+        const nd: ProjectDevice = { id: newId('dv'), defId: dev.defId, name: uniqueDeviceName(scratch, dev.name) };
+        devices[nd.id] = nd;
+        scratch.devices[nd.id] = nd;
+        deviceId = nd.id;
+      }
+      onPage.add(deviceId);
+      // A block with its own port list gets its own copy of it.
+      let defId = o.defId;
+      if (defId && src.blockDefs[defId]) {
+        const c = { ...cloneDef(src.blockDefs[defId]), libraryId: src.blockDefs[defId].libraryId };
+        defs[c.id] = c;
+        defId = c.id;
+      }
+      return { ...o, id, deviceId, defId, hidden: o.hidden ? [...o.hidden] : undefined, x: o.x + dx, y: o.y + dy, border: { ...o.border } };
     }
-    return { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
+    const copy = { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
+    if (copy.kind === 'tag') {
+      delete copy.pairId;
+      delete copy.auto;
+    }
+    return copy;
+  });
+  // Callout pointers glued to an object: follow the copy of it, or keep pointing at the same spot.
+  outObjs.forEach((o, i) => {
+    if (o.kind !== 'callout' || !o.tailTo) return;
+    const orig = objects[i] as CalloutObj;
+    const to = idMap.get(o.tailTo.objId);
+    if (to) o.tailTo = { ...o.tailTo, objId: to };
+    else {
+      const tip = calloutTip(src, orig);
+      o.tail = { x: tip.x - orig.x, y: tip.y - orig.y };
+      delete o.tailTo;
+    }
   });
   const outConns: Connection[] = connections.map((c) => {
     const id = newId('cn');
@@ -733,15 +1040,24 @@ function copyObjectsInto(project: Project, objects: readonly PageObject[], conne
     connIds: b.connIds.map((id) => idMap.get(id)!),
     bends: b.bends ? b.bends.map((v, i) => v + (i % 2 === 0 ? dx : dy)) : null,
   }));
-  return { objects: outObjs, connections: outConns, bundles: outBundles, devices };
+  return { objects: outObjs, connections: outConns, bundles: outBundles, devices, defs };
 }
 
-export function paste() {
-  nextLabel('Paste');
+/**
+ * Paste. Blocks pasted onto a page where their device isn't yet become the same device (one
+ * friendly name, shared ports); on the same page — or with Ctrl+Shift+V (`newDevices`) — they're
+ * new devices of the same model.
+ */
+export function paste(newDevices = false) {
+  nextLabel(newDevices ? 'Paste as new devices' : 'Paste');
   if (!clip) return;
   const s = getState();
   pasteCount++;
-  const off = 18 * pasteCount;
+  const page = currentPage(s);
+  // Same position when going to another page, offset when duplicating on the same page.
+  const samePage = clip.pageId === page.id || pastedOn.has(page.id);
+  pastedOn.add(page.id);
+  const off = samePage || newDevices ? 18 * pasteCount : 0;
   // Bring over block defs if pasting from another project.
   const defs: Record<string, BlockDef> = {};
   for (const o of clip.objects) {
@@ -752,10 +1068,10 @@ export function paste() {
   // Images bring their assets along (e.g. pasting from another project).
   const assets: Record<string, Asset> = {};
   for (const o of clip.objects) if (o.kind === 'image' && !s.project.assets[o.assetId] && clip.project.assets[o.assetId]) assets[o.assetId] = clip.project.assets[o.assetId];
-  const merged = { ...s.project, devices: { ...s.project.devices, ...clip.project.devices } };
-  const copy = copyObjectsInto(merged, clip.objects, clip.connections, off, off, clip.bundles);
+  const copy = copyObjectsInto(s.project, clip.project, clip.objects, clip.connections, off, off, clip.bundles, { onPage: page, forceNew: newDevices });
+  const reused = copy.objects.filter((o) => o.kind === 'block' && s.project.devices[o.deviceId]).length;
   updateProject((d) => {
-    Object.assign(d.blockDefs, defs);
+    Object.assign(d.blockDefs, defs, copy.defs);
     Object.assign(d.devices, copy.devices);
     Object.assign(d.assets, assets);
     const pg = pageDraft(d);
@@ -764,32 +1080,7 @@ export function paste() {
     (pg.bundles ??= []).push(...(copy.bundles as Draft<Bundle>[]));
   });
   setState({ selection: [...copy.objects.map((o) => o.id), ...copy.connections.map((c) => c.id), ...copy.bundles.map((b) => b.id)], selectedPorts: [] });
-}
-
-/**
- * Paste the copied blocks as further instances of the same devices (e.g. the network switch on
- * the audio page). Only within the same project; blocks already on this page are skipped.
- */
-export function pasteAsInstance() {
-  if (!clip) return;
-  const s = getState();
-  const blocks = clip.objects.filter((o): o is BlockObj => o.kind === 'block' && !!s.project.devices[o.deviceId]);
-  if (!blocks.length) {
-    toast('Copy blocks from this project first (Ctrl+C), then Ctrl+Shift+V places the same devices here.', 'warn', 6000);
-    return;
-  }
-  const pg = currentPage(s);
-  const here = new Set(pg.objects.filter((o) => o.kind === 'block').map((o) => (o as BlockObj).deviceId));
-  const add = blocks.filter((b) => !here.has(b.deviceId));
-  if (!add.length) {
-    toast('Those devices are already on this page.', 'warn');
-    return;
-  }
-  const objs: BlockObj[] = add.map((b) => ({ ...b, id: newId('ob'), border: { ...b.border } }));
-  nextLabel(`Place ${plural(objs.length, 'device')} on this page too`, objs.map((o) => s.project.devices[o.deviceId].name));
-  updateProject((d) => void pageDraft(d).objects.push(...(objs as Draft<BlockObj>[])));
-  setState({ selection: objs.map((o) => o.id), selectedPorts: [] });
-  if (add.length < blocks.length) toast(`${plural(blocks.length - add.length, 'device')} already on this page — skipped.`, 'info');
+  if (reused) toast(`${plural(reused, 'block')} pasted as the same device${reused === 1 ? '' : 's'} (shared name). Ctrl+Shift+V pastes new devices instead.`, 'info', 5000);
 }
 
 export function duplicateSelection() {
@@ -804,9 +1095,8 @@ export function portInfo(project: Project, page: Page, e: Endpoint) {
   if (!isPortEndpoint(e)) return null;
   const o = page.objects.find((x) => x.id === e.objId);
   if (!o || o.kind !== 'block') return null;
-  const dev = project.devices[o.deviceId];
-  const def = dev && project.blockDefs[dev.defId];
-  if (!def) return null;
+  const { dev, def } = blockFor(project, o);
+  if (!def || !dev) return null;
   const f = findPort(def, e.portId);
   return f ? { ...f, device: dev } : null;
 }
@@ -838,6 +1128,11 @@ export function connect(from: Endpoint, to: Endpoint, opts: { record?: boolean; 
     pageDraft(d).connections.push(c);
   }, opts.record ?? true);
   if (warnings.length && !opts.quiet) toast(warnings.join(' '), 'warn', 5000);
+  // A line drawn to a tag that already points at a port: add its partner at the far end.
+  for (const e of [a, b]) {
+    const o = pg.objects.find((x) => x.id === e.objId);
+    if (o?.kind === 'tag' && o.target?.portId && !o.pairId) syncTagPair(o.id);
+  }
   return c.id;
 }
 
@@ -1105,14 +1400,16 @@ export function bundleProblem(project: Project, page: Page, connIds: Id[]): stri
   const signals = new Set<string>();
   for (const c of conns) {
     for (const e of [c.from, c.to]) {
+      // Shapes (e.g. owner-furnished equipment drawn as a rectangle) have no ports: anything goes.
+      if (!isPortEndpoint(e)) continue;
       const info = portInfo(project, page, e);
-      if (!info) return 'Snakes connect block ports only.';
+      if (!info) return 'A line ends on a missing port.';
       if (!sides.has(e.objId)) sides.set(e.objId, new Set());
       sides.get(e.objId)!.add(info.side);
       signals.add((info.port.signal || '').toUpperCase());
     }
   }
-  if (signals.size !== 1) return `All lines must carry the same signal type (found ${[...signals].map((x) => x || 'none').join(', ')}).`;
+  if (signals.size > 1) return `All lines must carry the same signal type (found ${[...signals].map((x) => x || 'none').join(', ')}).`;
   if ([...sides.values()].some((x) => x.size > 1)) return 'On each device the ports must be in the same column.';
   return null;
 }

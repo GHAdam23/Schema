@@ -52,6 +52,10 @@ export interface BlockObj extends ObjBase {
   deviceId: Id;
   scale: number;
   border: StrokeStyle;
+  /** This block's own port list (edited for this block only); otherwise the device's definition. */
+  defId?: Id;
+  /** Rows hidden on this block (e.g. the audio ports on a network page). */
+  hidden?: Id[];
 }
 
 export type TextAlign = 'left' | 'center' | 'right';
@@ -104,12 +108,16 @@ export interface ContainerObj extends BoxBase, TextProps {
   headerFill: string | null;
 }
 
-/** Text box with a pointer. `tail` is relative to the box's top-left, in unrotated box coordinates. */
+/**
+ * Text box with a pointer. The pointer's tip is `tail` (offset from the box's x/y, page-oriented,
+ * so rotating the callout doesn't move it), or glued to a point of another object (`tailTo`).
+ */
 export interface CalloutObj extends BoxBase, TextProps {
   kind: 'callout';
   border: StrokeStyle;
   fill: string | null;
   tail: { x: number; y: number };
+  tailTo?: { objId: Id; fx: number; fy: number };
 }
 
 /** Imported image (PNG/JPG), single PDF page (stays vector) or SVG (converted to vector paths). */
@@ -134,6 +142,10 @@ export interface TagObj extends ObjBase {
   fontSize: number;
   border: StrokeStyle;
   fill: string | null;
+  /** The matching tag at the far end (on the other page), kept in step automatically. */
+  pairId?: Id;
+  /** Created automatically as the far end of another tag. */
+  auto?: boolean;
 }
 
 export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj;
@@ -174,6 +186,8 @@ export interface Bundle {
   /** Trunk route (same encoding as Connection.bends). null = automatic. */
   bends: number[] | null;
   style: StrokeStyle;
+  /** Curved trunk. */
+  curved?: boolean;
 }
 
 export type PageSizeId = 'letter' | 'tabloid';

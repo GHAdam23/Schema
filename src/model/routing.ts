@@ -147,8 +147,13 @@ export interface ResolvedRoute {
   /** Raw points including possibly zero-length segments (index-aligned with bends for editing). */
   raw: Pt[];
   pts: Pt[];
-  /** Curved line: the Bézier (pts/raw are then a flattened copy, used for hit-testing and labels). */
-  curve?: Bezier;
+  /**
+   * Curved line: the right-angle route smoothed into Bézier pieces through the middle of every
+   * segment. `raw`/`bends` stay the right-angle route (its segments are what the handles drag);
+   * `pts` is the flattened curve (hit-testing, labels); `ortho` the simplified right-angle points.
+   */
+  curve?: Bezier[];
+  ortho?: Pt[];
   /** Line in a snake: the two short legs actually drawn (each starts at its block's port). */
   legs?: [Pt, Pt][];
   /** Snake trunk (keyed by the bundle id): the bars joining the legs, and the member lines. */
@@ -158,16 +163,27 @@ export interface ResolvedRoute {
 // ---------------------------------------------------------------------------------------------
 // Curved lines
 
-/** Bézier between two anchors leaving each along its outward direction. */
-export function curveFor(s: Anchor, e: Anchor): Bezier {
-  const dist = Math.hypot(e.x - s.x, e.y - s.y);
-  const k = Math.max(STUB * 1.5, Math.min(dist * 0.45, 180));
-  return [
-    { x: s.x, y: s.y },
-    { x: s.x + s.dx * k, y: s.y + s.dy * k },
-    { x: e.x + e.dx * k, y: e.y + e.dy * k },
-    { x: e.x, y: e.y },
-  ];
+/**
+ * Smooth a right-angle polyline: straight from the start to the middle of the first segment, then
+ * at every corner a curve (control point at the corner) from one segment's middle to the next.
+ * The curve follows the route — so it goes around what the route goes around — and passes
+ * through the middle of every segment, where the segment handles sit.
+ */
+export function smoothRoute(pts: Pt[]): Bezier[] {
+  const line = (a: Pt, b: Pt): Bezier => [a, { x: a.x + (b.x - a.x) / 3, y: a.y + (b.y - a.y) / 3 }, { x: a.x + ((b.x - a.x) * 2) / 3, y: a.y + ((b.y - a.y) * 2) / 3 }, b];
+  if (pts.length < 3) return [line(pts[0], pts[pts.length - 1] ?? pts[0])];
+  const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const ms = pts.slice(1).map((p, i) => mid(pts[i], p));
+  const out: Bezier[] = [line(pts[0], ms[0])];
+  for (let k = 1; k < pts.length - 1; k++) {
+    const a = ms[k - 1];
+    const c = pts[k];
+    const b = ms[k];
+    // Quadratic (a, c, b) as a cubic.
+    out.push([a, { x: a.x + ((c.x - a.x) * 2) / 3, y: a.y + ((c.y - a.y) * 2) / 3 }, { x: b.x + ((c.x - b.x) * 2) / 3, y: b.y + ((c.y - b.y) * 2) / 3 }, b]);
+  }
+  out.push(line(ms[ms.length - 1], pts[pts.length - 1]));
+  return out;
 }
 
 export function bezierAt(c: Bezier, t: number): Pt {
@@ -179,10 +195,20 @@ export function bezierAt(c: Bezier, t: number): Pt {
   return { x: a * c[0].x + b * c[1].x + d * c[2].x + e * c[3].x, y: a * c[0].y + b * c[1].y + d * c[2].y + e * c[3].y };
 }
 
-export const CURVE_SAMPLES = 48;
+/** Samples per Bézier piece. */
+export const CURVE_SAMPLES = 16;
 
-export function sampleCurve(c: Bezier, n = CURVE_SAMPLES): Pt[] {
-  return Array.from({ length: n + 1 }, (_, i) => bezierAt(c, i / n));
+/** Flatten curve pieces: sample k (k ≥ 1) lies on piece ceil(k / N) - 1. */
+export function sampleCurves(cs: Bezier[], n = CURVE_SAMPLES): Pt[] {
+  const out: Pt[] = [cs[0][0]];
+  for (const c of cs) for (let i = 1; i <= n; i++) out.push(bezierAt(c, i / n));
+  return out;
+}
+
+/** Make a resolved right-angle route curved. */
+function curveOf(r: ResolvedRoute): ResolvedRoute {
+  const curve = smoothRoute(r.pts);
+  return { ...r, ortho: r.pts, curve, pts: sampleCurves(curve) };
 }
 
 /** The part of a Bézier between parameters t0 and t1 (de Casteljau). */
@@ -224,14 +250,10 @@ export function resolveRoute(project: Project, page: Page, conn: Connection, obs
   const s = resolveEndpoint(project, page, conn.from);
   const e = resolveEndpoint(project, page, conn.to);
   if (!s || !e) return null;
-  if (conn.curved) {
-    const curve = curveFor(s, e);
-    const pts = sampleCurve(curve);
-    return { conn, s, e, bends: [], raw: pts, pts, curve };
-  }
   const bends = conn.bends && bendsValid(conn.bends, s, e) ? conn.bends : autoRoute(s, e, obstacles);
   const raw = rawPoints(s, e, bends);
-  return { conn, s, e, bends, raw, pts: simplify(raw) };
+  const r: ResolvedRoute = { conn, s, e, bends, raw, pts: simplify(raw) };
+  return conn.curved ? curveOf(r) : r;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -587,58 +609,56 @@ function resolveBundle(project: Project, page: Page, b: Bundle, out: Map<string,
   for (const c of members) {
     const s = resolveEndpoint(project, page, c.from);
     const e = resolveEndpoint(project, page, c.to);
-    if (!s || !e || axisOf(s) !== 'h' || axisOf(e) !== 'h') return false;
+    if (!s || !e) return false;
     const aIsFrom = c.from.objId === objA;
-    ends.push({ c, a: aIsFrom ? s : e, b: aIsFrom ? e : s, aIsFrom });
+    ends.push({ c, a: aIsFrom ? s : e, b: aIsFrom ? e : s, aIsFrom, pa: isPortEndpoint(aIsFrom ? c.from : c.to), pb: isPortEndpoint(aIsFrom ? c.to : c.from) });
   }
-  const dxA = ends[0].a.dx;
-  const dxB = ends[0].b.dx;
-  if (ends.some((x) => x.a.dx !== dxA || x.b.dx !== dxB)) return false;
+  // A block end gets legs + a bar; a shape end (e.g. owner-furnished equipment drawn as a
+  // rectangle) takes the trunk directly at the first line's attachment point.
+  const portA = ends.every((x) => x.pa);
+  const portB = ends.every((x) => x.pb);
   const labelW = Math.max(0, ...members.map((c) => (c.label ? labelGapWidth(c.label) : 0)));
   const leg = Math.max(LEG_MIN, labelW + 12);
-  const ext = (xs: number[], dx: number) => (dx > 0 ? Math.max(...xs) + leg : Math.min(...xs) - leg);
-  const ax = ext(ends.map((x) => x.a.x), dxA);
-  const bx = ext(ends.map((x) => x.b.x), dxB);
-  const aYs = ends.map((x) => x.a.y);
-  const bYs = ends.map((x) => x.b.y);
-  const midA = (Math.min(...aYs) + Math.max(...aYs)) / 2;
-  const midB = (Math.min(...bYs) + Math.max(...bYs)) / 2;
-  const sT: Anchor = { x: ax, y: midA, dx: dxA, dy: 0 };
-  const eT: Anchor = { x: bx, y: midB, dx: dxB, dy: 0 };
+  const side = (anchors: Anchor[], isPort: boolean) => {
+    if (!isPort) return { anchor: { ...anchors[0] }, bar: null as [Pt, Pt] | null };
+    const dx = anchors[0].dx;
+    if (anchors.some((a) => axisOf(a) !== 'h' || a.dx !== dx)) return null;
+    const xs = anchors.map((a) => a.x);
+    const ys = anchors.map((a) => a.y);
+    const x = dx > 0 ? Math.max(...xs) + leg : Math.min(...xs) - leg;
+    const y0 = Math.min(...ys);
+    const y1 = Math.max(...ys);
+    return { anchor: { x, y: (y0 + y1) / 2, dx, dy: 0 } as Anchor, bar: [{ x, y: y0 }, { x, y: y1 }] as [Pt, Pt] };
+  };
+  const A = side(ends.map((x) => x.a), portA);
+  const B = side(ends.map((x) => x.b), portB);
+  if (!A || !B) return false;
+  const sT = A.anchor;
+  const eT = B.anchor;
   const bends = b.bends && bendsValid(b.bends, sT, eT) ? b.bends : autoRoute(sT, eT, obstacles);
   const raw = rawPoints(sT, eT, bends);
-  const pts = simplify(raw);
-  const pseudo: Connection = { id: b.id, from: members[0].from, to: members[0].to, bends: b.bends, label: b.label, labelT: null, style: b.style };
-  out.set(b.id, {
+  const pseudo: Connection = { id: b.id, from: members[0].from, to: members[0].to, bends: b.bends, label: b.label, labelT: null, style: b.style, curved: b.curved };
+  let trunk: ResolvedRoute = {
     conn: pseudo,
     s: sT,
     e: eT,
     bends,
     raw,
-    pts,
-    trunk: {
-      bundle: b,
-      bars: [
-        [{ x: ax, y: Math.min(...aYs) }, { x: ax, y: Math.max(...aYs) }],
-        [{ x: bx, y: Math.min(...bYs) }, { x: bx, y: Math.max(...bYs) }],
-      ],
-      members: members.map((c) => c.id),
-    },
-  });
+    pts: simplify(raw),
+    trunk: { bundle: b, bars: [A.bar, B.bar].filter((x): x is [Pt, Pt] => !!x), members: members.map((c) => c.id) },
+  };
+  if (b.curved) trunk = curveOf(trunk);
+  out.set(b.id, trunk);
+  const pts = trunk.pts;
   for (const x of ends) {
-    let full = simplify([x.a, { x: ax, y: x.a.y }, { x: ax, y: midA }, ...pts.slice(1, -1), { x: bx, y: midB }, { x: bx, y: x.b.y }, x.b]);
+    const pre: Pt[] = portA ? [x.a, { x: sT.x, y: x.a.y }, sT] : [sT];
+    const post: Pt[] = portB ? [eT, { x: eT.x, y: x.b.y }, x.b] : [eT];
+    let full = simplify([...pre, ...pts.slice(1, -1), ...post]);
     if (!x.aIsFrom) full = full.reverse();
-    const legA: [Pt, Pt] = [{ x: x.a.x, y: x.a.y }, { x: ax, y: x.a.y }];
-    const legB: [Pt, Pt] = [{ x: x.b.x, y: x.b.y }, { x: bx, y: x.b.y }];
-    out.set(x.c.id, {
-      conn: x.c,
-      s: x.aIsFrom ? x.a : x.b,
-      e: x.aIsFrom ? x.b : x.a,
-      bends: [],
-      raw: full,
-      pts: full,
-      legs: x.aIsFrom ? [legA, legB] : [legB, legA],
-    });
+    const legA: [Pt, Pt] | null = portA ? [{ x: x.a.x, y: x.a.y }, { x: sT.x, y: x.a.y }] : null;
+    const legB: [Pt, Pt] | null = portB ? [{ x: x.b.x, y: x.b.y }, { x: eT.x, y: x.b.y }] : null;
+    const legs = (x.aIsFrom ? [legA, legB] : [legB, legA]).filter((l): l is [Pt, Pt] => !!l);
+    out.set(x.c.id, { conn: x.c, s: x.aIsFrom ? x.a : x.b, e: x.aIsFrom ? x.b : x.a, bends: [], raw: full, pts: full, legs });
   }
   return true;
 }

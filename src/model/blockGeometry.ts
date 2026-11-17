@@ -54,10 +54,28 @@ export function blockLayout(def: BlockDef, name: string): BlockLayout {
   return res;
 }
 
+const hiddenCache = new WeakMap<BlockDef, Map<string, BlockDef>>();
+
+/**
+ * A placed block's device and the definition it draws: its own port list if it has one,
+ * otherwise the device's, minus the rows hidden on this block. `base` is before hiding.
+ */
 export function blockFor(project: Project, obj: BlockObj) {
   const dev = project.devices[obj.deviceId];
-  const def = dev ? project.blockDefs[dev.defId] : undefined;
-  return { dev, def };
+  const base = dev ? project.blockDefs[obj.defId ?? ''] ?? project.blockDefs[dev.defId] : undefined;
+  let def = base;
+  if (base && obj.hidden?.length) {
+    const key = [...obj.hidden].sort().join(',');
+    let m = hiddenCache.get(base);
+    if (!m) hiddenCache.set(base, (m = new Map()));
+    def = m.get(key);
+    if (!def) {
+      const h = new Set(obj.hidden);
+      def = { ...base, left: base.left.filter((p) => !h.has(p.id)), right: base.right.filter((p) => !h.has(p.id)) };
+      m.set(key, def);
+    }
+  }
+  return { dev, def, base };
 }
 
 export function blockSize(project: Project, obj: BlockObj) {

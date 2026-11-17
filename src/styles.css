@@ -730,3 +730,73 @@ table.backups th {
 .devpick {
   max-height: 260px;
 }
+
+/* Feedback round 1 (phase 2) */
+.swatchwrap {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+.swatch {
+  width: 22px;
+  height: 18px;
+  min-width: 0;
+  padding: 0;
+  border: 1px solid #94a3b8;
+  border-radius: 3px;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.swatch.none {
+  display: inline-block;
+  background: linear-gradient(to top right, #fff calc(50% - 1px), #dc2626 calc(50% - 1px), #dc2626 calc(50% + 1px), #fff calc(50% + 1px));
+}
+.swatch.cur {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 1px;
+}
+.swatchpop {
+  position: fixed;
+  z-index: 500;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 8px;
+  width: 214px;
+}
+.swatchgrid {
+  display: grid;
+  grid-template-columns: repeat(8, 22px);
+  gap: 4px;
+  margin: 6px 0;
+}
+.swatchnone {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.swatchcustom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+details.rows {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  max-height: 220px;
+  overflow: auto;
+  background: #fff;
+}
+details.rows summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.rowcheck {
+  display: block;
+  font-size: 12px;
+  white-space: nowrap;
+}

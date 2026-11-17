@@ -52,7 +52,8 @@ export interface HistoryEntry {
 export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'tag' | 'pan';
 
 export type Modal =
-  | { kind: 'blockEditor'; target: 'library' | 'project'; defId: Id | null }
+  /** library: a library block; project: the ports shared by a model's devices; instance: one placed block only. */
+  | { kind: 'blockEditor'; target: 'library' | 'project' | 'instance'; defId: Id | null; objId?: Id }
   | { kind: 'quickInsert' }
   | { kind: 'prefs' }
   | { kind: 'titleBlock' }

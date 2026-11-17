@@ -25,7 +25,28 @@ import {
 import { DEFAULT_LINE } from '../model/defaults';
 import { fitTextBox, textBoxOf, titleBlockObjects } from '../render/buildPage';
 import { devicePages, tagTargetPage, tagText } from '../model/tags';
-import { setPage } from '../state/actions';
+import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject } from '../state/actions';
+import { blockFor } from '../model/blockGeometry';
+import { useEffect, useRef, useState } from 'react';
+import { calloutTip } from '../render/buildPage';
+import { getState } from '../state/store';
+import type { CalloutObj } from '../model/types';
+
+function describeTarget(id: string) {
+  const s = getState();
+  const o = currentPage(s).objects.find((x) => x.id === id);
+  return o ? describeObject(s.project, o) : 'a deleted object';
+}
+
+/** Unglue a callout's pointer, leaving the tip where it is now. */
+function detachCallout(o: CalloutObj) {
+  const tip = calloutTip(getState().project, o);
+  patchObjects([o.id], (t) => {
+    if (t.kind !== 'callout') return;
+    t.tail = { x: Math.round(tip.x - t.x), y: Math.round(tip.y - t.y) };
+    delete t.tailTo;
+  });
+}
 
 function StrokeEditor({ value, onChange, allowNone }: { value: StrokeStyle | null; onChange: (s: Partial<StrokeStyle> | null) => void; allowNone?: boolean }) {
   const v = value ?? { color: '#000000', width: 0, dash: 'solid' as const };
@@ -167,16 +188,19 @@ function PageSection({ s }: { s: AppState }) {
           converted to vector shapes.
         </p>
         <p>
-          <b>Same device on several pages:</b> drag it from the <b>Devices</b> tab of the library, or copy it and press <kbd>Ctrl+Shift+V</kbd>.
-          A small blue dot marks ports that are connected on another page.
+          <b>Same device on several pages:</b> copy a block and paste it on another page (or drag it from the <b>Devices</b> tab) — it's the
+          same device, with one friendly name. <kbd>Ctrl+Shift+V</kbd> pastes a new device of the same model instead. Renaming a block to an
+          existing device's name offers to make them one device. A small blue dot marks ports that are connected on another page. In a block's
+          properties you can hide rows or edit its ports for that block only.
         </p>
         <p>
           <b>Reference tags:</b> drag a line from a port and let go on empty space, or use the Tag tool (<kbd>G</kbd>). The text
           (<i>TO (3) DISP-1</i>) updates itself; double-click a tag to jump to that device.
         </p>
         <p>
-          <b>Snakes:</b> select ≥4 lines of one signal type between the same two devices and press <kbd>B</kbd>. <b>Curved lines:</b> in the line's
-          properties.
+          <b>Snakes:</b> select ≥4 lines of one signal type between the same two devices (or a device and a shape) and press <kbd>B</kbd>; click
+          the trunk and type to label it. <b>Curved lines</b> (lines and snakes): in their properties — they route around objects, and the
+          square handles on a selected curve reshape it.
         </p>
       </div>
     </div>
@@ -197,10 +221,24 @@ function PortsSection({ s }: { s: AppState }) {
           </li>
         ))}
       </ul>
-      <button disabled={blocks !== 2} onClick={rangeConnect} title="Pairs ports in order (Shift+C)">
-        Range connect
-      </button>
-      {blocks !== 2 && <div className="muted">Select ports on exactly two blocks.</div>}
+      <div className="btnrow">
+        <button disabled={blocks !== 2} onClick={rangeConnect} title="Pairs ports in order (Shift+C)">
+          Range connect
+        </button>
+        <button
+          disabled={blocks !== 1}
+          title="Hide these rows on this block only (show them again from the block's properties)"
+          onClick={() => {
+            const objId = s.selectedPorts[0].objId;
+            const o = page.objects.find((x) => x.id === objId);
+            if (o?.kind !== 'block') return;
+            if (setHiddenPorts(objId, [...new Set([...(o.hidden ?? []), ...s.selectedPorts.map((p) => p.portId)])])) setState({ selectedPorts: [], selection: [objId] });
+          }}
+        >
+          Hide these rows
+        </button>
+      </div>
+      {blocks !== 2 && <div className="muted">Range connect: select ports on exactly two blocks.</div>}
     </div>
   );
 }
@@ -231,19 +269,14 @@ function ShapeSection({ o }: { o: TextualObj }) {
         <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
       )}
       <FillEditor value={o.fill} onChange={(f) => patch((t) => (t.fill = f))} />
-      {o.kind === 'container' && (
-        <div className="fieldgroup">
-          <label>
-            <input
-              type="checkbox"
-              checked={!!o.headerFill}
-              onChange={(e) => patch((t) => t.kind === 'container' && (t.headerFill = e.target.checked ? '#e2e8f0' : null))}
-            />{' '}
-            Label band fill
-          </label>
-          {o.headerFill && <input type="color" value={o.headerFill} onChange={(e) => patch((t) => t.kind === 'container' && (t.headerFill = e.target.value))} />}
+      {o.kind === 'container' && <FillEditor label="Label band" value={o.headerFill} onChange={(f) => patch((t) => t.kind === 'container' && (t.headerFill = f))} />}
+      {o.kind === 'callout' && o.tailTo && (
+        <div className="btnrow small">
+          <span className="muted">Pointer glued to {describeTarget(o.tailTo.objId)}.</span>
+          <button onClick={() => detachCallout(o)}>Detach</button>
         </div>
       )}
+      {o.kind === 'callout' && !o.tailTo && <div className="muted small">Drop the yellow diamond on an object to glue the pointer to it.</div>}
       {o.kind === 'container' && <div className="muted small">Moving the container moves everything inside it. Click inside it to select what's there.</div>}
     </div>
   );
@@ -340,13 +373,61 @@ function TagSection({ s, o }: { s: AppState; o: TagObj }) {
   );
 }
 
-function FillEditor({ value, onChange }: { value: string | null; onChange: (v: string | null) => void }) {
+const SWATCHES = [
+  '#ffffff', '#f1f5f9', '#e2e8f0', '#cbd5e1', '#94a3b8', '#475569', '#1e293b', '#000000',
+  '#fee2e2', '#fecaca', '#fca5a5', '#ef4444', '#ffedd5', '#fed7aa', '#fb923c', '#ea580c',
+  '#fef9c3', '#fde68a', '#facc15', '#ca8a04', '#dcfce7', '#bbf7d0', '#4ade80', '#16a34a',
+  '#dbeafe', '#bfdbfe', '#60a5fa', '#2563eb', '#ede9fe', '#ddd6fe', '#a78bfa', '#7c3aed',
+];
+
+/** Colour swatch that is always visible; click for a palette with "No fill" and a custom colour. */
+function ColorSwatch({ value, onChange, noneLabel = 'No fill' }: { value: string | null; onChange: (v: string | null) => void; noneLabel?: string }) {
+  const [open, setOpen] = useState<{ left: number; top: number } | null>(null);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(null);
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [open]);
+  const pick = (v: string | null) => {
+    onChange(v);
+    setOpen(null);
+  };
+  return (
+    <span className="swatchwrap" ref={ref}>
+      <button className={'swatch' + (value ? '' : ' none')} style={value ? { background: value } : undefined} title={value ?? noneLabel}
+        onClick={(e) => {
+          // Fixed position so the palette isn't clipped by the scrolling panel.
+          const r = e.currentTarget.getBoundingClientRect();
+          setOpen(open ? null : { left: Math.max(4, Math.min(r.left, window.innerWidth - 236)), top: Math.min(r.bottom + 4, window.innerHeight - 200) });
+        }}
+      />
+      {open && (
+        <div className="swatchpop" style={open}>
+          <button className="swatchnone" onClick={() => pick(null)}>
+            <span className="swatch none" /> {noneLabel}
+          </button>
+          <div className="swatchgrid">
+            {SWATCHES.map((c) => (
+              <button key={c} className={'swatch' + (c === value ? ' cur' : '')} style={{ background: c }} title={c} onClick={() => pick(c)} />
+            ))}
+          </div>
+          <label className="swatchcustom">
+            Custom <input type="color" value={value ?? '#ffffff'} onChange={(e) => onChange(e.target.value)} />
+          </label>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function FillEditor({ value, onChange, label = 'Fill' }: { value: string | null; onChange: (v: string | null) => void; label?: string }) {
   return (
     <div className="fieldgroup">
       <label>
-        <input type="checkbox" checked={!!value} onChange={(e) => onChange(e.target.checked ? '#f1f5f9' : null)} /> Fill
+        {label} <ColorSwatch value={value} onChange={onChange} />
       </label>
-      {value && <input type="color" value={value} onChange={(e) => onChange(e.target.value)} />}
     </div>
   );
 }
@@ -380,14 +461,19 @@ function Geometry({ o }: { o: BoxObj }) {
 }
 
 function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
-  const dev = s.project.devices[o.deviceId];
+  const { dev, def: shown, base } = blockFor(s.project, o);
   const def = dev && s.project.blockDefs[dev.defId];
-  if (!dev || !def) return <div className="section">Missing device.</div>;
+  if (!dev || !def || !base) return <div className="section">Missing device.</div>;
   const usage = Object.values(s.project.devices).filter((d) => d.defId === def.id).length;
   const pages = devicePages(s.project, dev.id);
   const here = s.project.pages.findIndex((p) => p.id === s.pageId);
   const lib = s.library.find((l) => l.id === def.libraryId);
   const differs = !!lib && !sameDef(lib, def);
+  const hidden = new Set(o.hidden ?? []);
+  const all = [...base.left, ...base.right];
+  const signals = [...new Set(all.map((p) => p.signal).filter(Boolean))].sort();
+  const toggle = (ids: string[], hide: boolean) => setHiddenPorts(o.id, hide ? [...new Set([...hidden, ...ids])] : [...hidden].filter((h) => !ids.includes(h)));
+  const model = `${def.manufacturer} ${def.model}`.trim();
   return (
     <div className="section">
       <div className="section-title">Block</div>
@@ -395,11 +481,11 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
         <input key={dev.id + dev.name} defaultValue={dev.name} onBlur={(e) => e.target.value.trim() && e.target.value !== dev.name && renameDevice(dev.id, e.target.value.trim())} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
       </Field>
       <div className="muted">
-        {def.manufacturer} | {def.model} · {def.left.length} in / {def.right.length} out
+        {def.manufacturer} | {def.model} · {shown!.left.length} in / {shown!.right.length} out{hidden.size ? ` (${hidden.size} hidden)` : ''}
       </div>
       {pages.length > 1 && (
         <div className="btnrow small">
-          <span className="muted">Also on page</span>
+          <span className="muted">Same device on page</span>
           {pages
             .filter((i) => i !== here)
             .map((i) => (
@@ -407,6 +493,15 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
                 {i + 1}
               </button>
             ))}
+          <button
+            title="This one is actually another unit of the same model: give it its own name"
+            onClick={() => {
+              const n = prompt(`New friendly name for this ${model} (the one on the other page${pages.length > 2 ? 's' : ''} stays "${dev.name}"):`, '');
+              if (n?.trim()) makeSeparateDevice(o.id, n.trim());
+            }}
+          >
+            Make separate device…
+          </button>
         </div>
       )}
       <Field label="Scale">
@@ -414,16 +509,58 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
       </Field>
       <div className="sub">Border</div>
       <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
-      <div className="sub">Definition</div>
-      <div className="muted">
-        {usage > 1 ? `Used by ${usage} devices in this project. ` : ''}
-        {!lib ? 'Not in your library.' : differs ? 'This project’s copy differs from your library.' : 'Matches your library.'}
-      </div>
+      <div className="sub">Rows shown on this block</div>
+      {signals.length > 1 && (
+        <div className="btnrow small">
+          {signals.map((sig) => {
+            const ids = all.filter((p) => p.signal === sig).map((p) => p.id);
+            const off = ids.every((id) => hidden.has(id));
+            return (
+              <button key={sig} className={off ? '' : 'active'} title={off ? `Show the ${sig} rows` : `Hide the ${sig} rows on this block`} onClick={() => toggle(ids, !off)}>
+                {sig}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <details className="rows">
+        <summary>
+          {all.length - hidden.size} of {all.length} rows shown
+        </summary>
+        {(['left', 'right'] as const).map((col) =>
+          base[col].map((p) => (
+            <label key={p.id} className="rowcheck">
+              <input type="checkbox" checked={!hidden.has(p.id)} onChange={(e) => toggle([p.id], !e.target.checked)} /> {col === 'left' ? 'IN' : 'OUT'} · {p.name}
+              <span className="muted"> {p.signal}</span>
+            </label>
+          )),
+        )}
+      </details>
+      <div className="muted small">Hiding rows only affects this block; the device keeps its ports everywhere else.</div>
+      <div className="sub">Ports</div>
+      {o.defId && <div className="muted small">This block has its own port list (edited for this block only).</div>}
       <div className="btnrow">
-        <button onClick={() => setState({ modal: { kind: 'blockEditor', target: 'project', defId: def.id } })}>Edit definition…</button>
+        <button title="Add, delete or rename rows on this block only — other pages, other devices and your library don't change" onClick={() => setState({ modal: { kind: 'blockEditor', target: 'instance', defId: null, objId: o.id } })}>
+          Edit ports — this block only…
+        </button>
+        <button
+          title={`Changes every ${model} in this project${o.defId ? ' (except blocks with their own port list, like this one)' : ''}; your library stays as it is`}
+          onClick={() => setState({ modal: { kind: 'blockEditor', target: 'project', defId: def.id } })}
+        >
+          Edit ports — every {def.model || 'block of this model'}{usage > 1 ? ` (${usage} devices)` : ''}…
+        </button>
+        {o.defId && (
+          <button onClick={() => revertInstanceDef(o.id)} title="Drop this block's own port list and use the device's again">
+            Use shared ports
+          </button>
+        )}
+      </div>
+      <div className="sub">Library</div>
+      <div className="muted">{!lib ? 'Not in your library.' : differs ? 'This project’s ports differ from your library.' : 'Matches your library.'}</div>
+      <div className="btnrow">
         {differs && (
           <>
-            <button onClick={() => updateFromLibrary(def.id)} title="Replace this project's copy with your library version">
+            <button onClick={() => updateFromLibrary(def.id)} title="Replace this project's ports for this model with your library version">
               Use library version
             </button>
             <button onClick={() => projectDefToLibrary(def.id)} title="Save this project's version into your library for future projects">
@@ -576,6 +713,15 @@ function BundleSection({ b }: { b: Bundle }) {
         <input key={b.id + b.label} defaultValue={b.label} placeholder="e.g. SNAKE-1 (optional)" onBlur={(e) => e.target.value !== b.label && patchBundles([b.id], (x) => void (x.label = e.target.value.trim()))} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
       </Field>
       <div className="muted small">Each line keeps its own label on its legs at both ends. Drag trunk segments to reroute.</div>
+      <div className="fieldgroup">
+        <label>
+          Routing{' '}
+          <select value={b.curved ? 'curved' : 'orth'} onChange={(e) => setCurved([b.id], e.target.value === 'curved')}>
+            <option value="orth">Right-angle</option>
+            <option value="curved">Curved</option>
+          </select>
+        </label>
+      </div>
       <div className="sub">Trunk</div>
       <StrokeEditor value={b.style} onChange={(st) => st && setStroke([b.id], st)} />
       <div className="btnrow">
@@ -583,7 +729,7 @@ function BundleSection({ b }: { b: Bundle }) {
           Reset route
         </button>
         <button onClick={() => setState({ selection: [...b.connIds] })}>Select lines</button>
-        <button onClick={() => unbundle([b.id])} title="Back to separate lines (U)">
+        <button onClick={() => unbundle([b.id])} title="Back to separate lines (Ctrl+Shift+B)">
           Unbundle
         </button>
       </div>

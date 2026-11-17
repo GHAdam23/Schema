@@ -24,14 +24,15 @@ import {
   labelGapWidth,
   pathLength,
   pointAt,
+  projectOnPath,
   resolvePageRoutes,
   subCurve,
   type Bezier,
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { localBox, objBounds, rotMatrix, rotOf } from '../model/geom';
-import { tagText, TAG_PAD_Y } from '../model/tags';
+import { fromLocal, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
+import { pageOfObject, tagText, TAG_PAD_Y } from '../model/tags';
 import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
 import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
 
@@ -79,7 +80,7 @@ export function drawObject(out: DLItem[], project: Project, o: PageObject) {
       drawContainer(dst, o);
       break;
     case 'callout':
-      drawCallout(dst, o);
+      drawCallout(dst, project, o);
       break;
     case 'image':
       drawImage(dst, project, o);
@@ -136,11 +137,23 @@ function drawContainer(out: DLItem[], o: ContainerObj) {
   out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: null, stroke: strokeOf(o.border) });
 }
 
-/** Outline of a callout: its box with a wedge towards the tail point (if the tail is outside). */
-export function calloutPath(o: CalloutObj): PathCmd[] {
+/** Page position of a callout's pointer tip: glued to an object on its page, or its own offset. */
+export function calloutTip(project: Project, o: CalloutObj): Pt {
+  if (o.tailTo) {
+    const t = pageOfObject(project, o.id)?.objects.find((x) => x.id === o.tailTo!.objId);
+    if (t) {
+      const b = localBox(project, t);
+      return fromLocal(project, t, { x: b.x + o.tailTo.fx * b.w, y: b.y + o.tailTo.fy * b.h });
+    }
+  }
+  return { x: o.x + o.tail.x, y: o.y + o.tail.y };
+}
+
+/** Outline of a callout: its box with a wedge towards the tip (given in the box's unrotated frame). */
+export function calloutPath(o: CalloutObj, tip: Pt): PathCmd[] {
   const { x, y, w, h } = o;
-  const tx = x + o.tail.x;
-  const ty = y + o.tail.y;
+  const tx = tip.x;
+  const ty = tip.y;
   const cs: Pt[] = [
     { x, y },
     { x: x + w, y },
@@ -174,8 +187,10 @@ export function calloutPath(o: CalloutObj): PathCmd[] {
   return [...pts.map((p, i): PathCmd => ({ c: i ? 'L' : 'M', x: p.x, y: p.y })), { c: 'Z' }];
 }
 
-function drawCallout(out: DLItem[], o: CalloutObj) {
-  out.push({ t: 'path', d: calloutPath(o), fill: o.fill, stroke: strokeOf(o.border) });
+function drawCallout(out: DLItem[], project: Project, o: CalloutObj) {
+  // The tip is fixed on the page; the outline is drawn in the (possibly rotated) box frame.
+  const tip = rotatePt(calloutTip(project, o), { x: o.x + o.w / 2, y: o.y + o.h / 2 }, -rotOf(o));
+  out.push({ t: 'path', d: calloutPath(o, tip), fill: o.fill, stroke: strokeOf(o.border) });
   drawTextIn(out, textBoxOf(o));
 }
 
@@ -409,9 +424,10 @@ function drawBlock(out: DLItem[], project: Project, o: BlockObj) {
 export const HOP_R = 2.5;
 
 /** Distance along the path of the automatic label position: middle of the longest horizontal run. */
-export function autoLabelDistance(pts: Pt[]): number {
+export function autoLabelDistance(pts: Pt[], curve?: Pt[]): number {
   let best = -1;
   let bestD = pathLength(pts) / 2;
+  let bestP: Pt | null = null;
   let acc = 0;
   for (let i = 1; i < pts.length; i++) {
     const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
@@ -419,9 +435,12 @@ export function autoLabelDistance(pts: Pt[]): number {
     if (horiz && len > best + 1e-6) {
       best = len;
       bestD = acc + len / 2;
+      bestP = { x: (pts[i].x + pts[i - 1].x) / 2, y: pts[i].y };
     }
     acc += len;
   }
+  // Curved line: the middle of that run lies on the curve too.
+  if (curve) return bestP ? projectOnPath(curve, bestP) : pathLength(curve) / 2;
   return bestD;
 }
 
@@ -451,7 +470,7 @@ export function labelBoxes(route: ResolvedRoute): LabelBox[] {
     });
   }
   const L = pathLength(route.pts);
-  const d = route.conn.labelT === null ? autoLabelDistance(route.pts) : route.conn.labelT * L;
+  const d = route.conn.labelT === null ? autoLabelDistance(route.ortho ?? route.pts, route.ortho ? route.pts : undefined) : route.conn.labelT * L;
   const { p, seg } = pointAt(route.pts, d);
   const a = route.pts[seg];
   const b = route.pts[seg + 1] ?? a;
@@ -475,8 +494,9 @@ export function labelBox(route: ResolvedRoute): LabelBox | null {
 
 /** Polylines actually drawn for a route, for hop detection. */
 function drawnPolylines(r: ResolvedRoute): Pt[][] {
-  if (r.legs || r.curve) return [];
-  if (r.trunk) return [r.pts, ...r.trunk.bars];
+  if (r.legs) return [];
+  if (r.trunk) return r.curve ? r.trunk.bars : [r.pts, ...r.trunk.bars];
+  if (r.curve) return [];
   return [r.pts];
 }
 
@@ -521,6 +541,7 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
     const gap = lb ? ([lb.d - lb.gap / 2, lb.d + lb.gap / 2] as [number, number]) : null;
     if (r.curve) {
       out.push({ t: 'path', d: curvePath(r.curve, r.pts, gap), fill: null, stroke: style });
+      if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, null, new Map()), fill: null, stroke: style });
       if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
       return;
     }
@@ -545,29 +566,43 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
   });
 }
 
-/** A Bézier drawn as true curves, with an optional gap given as distances along its flattened samples. */
-function curvePath(c: Bezier, samples: Pt[], gap: [number, number] | null): PathCmd[] {
-  const piece = (b: Bezier): PathCmd[] => [
-    { c: 'M', x: b[0].x, y: b[0].y },
-    { c: 'C', x1: b[1].x, y1: b[1].y, x2: b[2].x, y2: b[2].y, x: b[3].x, y: b[3].y },
-  ];
-  if (!gap) return piece(c);
-  // Distance → curve parameter through the cumulative lengths of the samples (uniform in t).
-  const cum = [0];
-  for (let i = 1; i < samples.length; i++) cum.push(cum[i - 1] + Math.hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y));
-  const tAt = (d: number) => {
-    if (d <= 0) return 0;
-    for (let i = 1; i < cum.length; i++) {
-      if (cum[i] >= d) return (i - 1 + (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1)) / CURVE_SAMPLES;
-    }
-    return 1;
-  };
-  const t0 = tAt(gap[0]);
-  const t1 = tAt(gap[1]);
+/** Curve pieces drawn as true Béziers, with an optional gap given as distances along the samples. */
+function curvePath(cs: Bezier[], samples: Pt[], gap: [number, number] | null): PathCmd[] {
   const out: PathCmd[] = [];
-  if (t0 > 0.001) out.push(...piece(subCurve(c, 0, t0)));
-  if (t1 < 0.999) out.push(...piece(subCurve(c, t1, 1)));
+  const piece = (b: Bezier, move: boolean) => {
+    if (move) out.push({ c: 'M', x: b[0].x, y: b[0].y });
+    out.push({ c: 'C', x1: b[1].x, y1: b[1].y, x2: b[2].x, y2: b[2].y, x: b[3].x, y: b[3].y });
+  };
+  if (!gap) {
+    cs.forEach((b, i) => piece(b, i === 0));
+    return out;
+  }
+  const a = curveParamAt(samples, gap[0]);
+  const z = curveParamAt(samples, gap[1]);
+  let pen = true;
+  for (let i = 0; i < a.piece; i++) (piece(cs[i], pen), (pen = false));
+  if (a.t > 0.001) piece(subCurve(cs[a.piece], 0, a.t), pen);
+  if (z.t < 0.999) piece(subCurve(cs[z.piece], z.t, 1), true);
+  for (let i = z.piece + 1; i < cs.length; i++) piece(cs[i], i === z.piece + 1 && z.t >= 0.999);
   return out;
+}
+
+/** Piece index and parameter at a distance along a curve's samples (see sampleCurves). */
+export function curveParamAt(samples: Pt[], d: number): { piece: number; t: number } {
+  const N = CURVE_SAMPLES;
+  if (d <= 0) return { piece: 0, t: 0 };
+  let acc = 0;
+  for (let k = 1; k < samples.length; k++) {
+    const len = Math.hypot(samples[k].x - samples[k - 1].x, samples[k].y - samples[k - 1].y);
+    if (acc + len >= d) {
+      const p = Math.ceil(k / N) - 1;
+      const t0 = (k - 1 - p * N) / N;
+      const f = len ? (d - acc) / len : 0;
+      return { piece: p, t: t0 + f / N };
+    }
+    acc += len;
+  }
+  return { piece: Math.max(0, Math.ceil((samples.length - 1) / N) - 1), t: 1 };
 }
 
 function sameSource(a: ResolvedRoute, b: ResolvedRoute) {
@@ -681,7 +716,10 @@ export function titleBlockObjects(project: Project): BoxObj[] {
 function scaleBoxObj(o: BoxObj, from: { x: number; y: number }, to: { x: number; y: number }, k: number): BoxObj {
   const moved = { ...o, x: to.x + (o.x - from.x) * k, y: to.y + (o.y - from.y) * k, w: o.w * k, h: o.h * k } as BoxObj;
   if ('fontSize' in moved) moved.fontSize *= k;
-  if (moved.kind === 'callout') moved.tail = { x: moved.tail.x * k, y: moved.tail.y * k };
+  if (moved.kind === 'callout') {
+    moved.tail = { x: moved.tail.x * k, y: moved.tail.y * k };
+    delete moved.tailTo;
+  }
   return moved;
 }
 
@@ -819,15 +857,18 @@ export function labelTAt(route: ResolvedRoute, axis: 'x' | 'y', value: number, n
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1];
     const b = pts[i];
-    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
     const horiz = Math.abs(a.y - b.y) < 1e-6;
-    if (len > 0 && horiz === (axis === 'x')) {
+    // Right-angle lines: runs along the axis only. Curves: wherever the curve crosses the value.
+    const along = route.curve ? Math.abs(axis === 'x' ? b.x - a.x : b.y - a.y) > 1e-6 : horiz === (axis === 'x');
+    if (len > 0 && along) {
       const lo = Math.min(axis === 'x' ? a.x : a.y, axis === 'x' ? b.x : b.y);
       const hi = Math.max(axis === 'x' ? a.x : a.y, axis === 'x' ? b.x : b.y);
       if (value >= lo && value <= hi) {
-        const p = axis === 'x' ? { x: value, y: a.y } : { x: a.x, y: value };
+        const f = (value - (axis === 'x' ? a.x : a.y)) / ((axis === 'x' ? b.x - a.x : b.y - a.y) || 1);
+        const p = { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
         const dist = Math.hypot(p.x - near.x, p.y - near.y);
-        const t = (acc + Math.abs((axis === 'x' ? p.x - a.x : p.y - a.y))) / L;
+        const t = (acc + len * f) / L;
         if (!best || dist < best.dist) best = { t, dist };
       }
     }

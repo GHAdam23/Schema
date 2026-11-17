@@ -16,7 +16,6 @@ import {
   duplicateSelection,
   moveObjects,
   paste,
-  pasteAsInstance,
   rangeConnect,
   selectAll,
   straighten,
@@ -68,7 +67,8 @@ export function App() {
       if (s.selection.length === 1 && !mod && !e.altKey) {
         const pg = currentPage(s);
         const id = s.selection[0];
-        const conn = pg.connections.find((c) => c.id === id);
+        // A line or a snake: typing labels it.
+        const conn = pg.connections.find((c) => c.id === id) ?? (pg.bundles ?? []).find((b) => b.id === id);
         const obj = pg.objects.find((o) => o.id === id);
         const edit = (detail: object) => {
           e.preventDefault();
@@ -96,8 +96,11 @@ export function App() {
         redo();
       } else if (mod && k === 'c') copySelection();
       else if (mod && k === 'x') cutSelection();
-      else if (mod && k === 'v') {
-        if (e.shiftKey) pasteAsInstance();
+      else if (mod && e.shiftKey && k === 'b') {
+        e.preventDefault();
+        unbundle(s.selection);
+      } else if (mod && k === 'v') {
+        if (e.shiftKey) paste(true);
         else {
           clearTimeout(pendingPaste);
           pendingPaste = window.setTimeout(paste, 80);
@@ -130,7 +133,6 @@ export function App() {
       else if (!mod && k === 'l') setState({ tool: 'callout' });
       else if (!mod && k === 'g') setState({ tool: 'tag' });
       else if (!mod && k === 'b') bundleSelection();
-      else if (!mod && k === 'u') unbundle(s.selection);
       else if (!mod && k === 's') straighten();
       else if (!mod && k === 'h') setState({ tool: 'pan' });
       else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
@@ -177,7 +179,7 @@ export function App() {
         </div>
         <PropertiesPanel />
       </div>
-      {modal?.kind === 'blockEditor' && <BlockEditor target={modal.target} defId={modal.defId} />}
+      {modal?.kind === 'blockEditor' && <BlockEditor target={modal.target} defId={modal.defId} objId={modal.objId} />}
       {modal?.kind === 'quickInsert' && <QuickInsert />}
       {modal?.kind === 'prefs' && <PrefsDialog />}
       {modal?.kind === 'titleBlock' && <TitleBlockDialog />}
