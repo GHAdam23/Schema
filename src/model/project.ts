@@ -3,7 +3,7 @@ import type { Prefs } from '../state/prefs';
 import { newId } from './ids';
 
 export function newPage(name: string, size: PageSizeId): Page {
-  return { id: newId('pg'), name, size, objects: [], connections: [] };
+  return { id: newId('pg'), name, size, objects: [], connections: [], bundles: [] };
 }
 
 export function newProject(prefs: Prefs): Project {
@@ -55,7 +55,7 @@ export function normalizeProject(p: Project): Project {
     pg.objects ??= [];
     for (const o of pg.objects) {
       // Older files: rectangles had no text, text boxes had no vertical alignment.
-      if (o.kind === 'rect' || o.kind === 'text') {
+      if (o.kind === 'rect' || o.kind === 'text' || o.kind === 'ellipse' || o.kind === 'container' || o.kind === 'callout') {
         o.text ??= '';
         o.fontSize ??= 9;
         o.bold ??= false;
@@ -65,6 +65,10 @@ export function normalizeProject(p: Project): Project {
       }
     }
     pg.connections ??= [];
+    pg.bundles ??= [];
+    // Drop bundle members that no longer exist.
+    const ids = new Set(pg.connections.map((c) => c.id));
+    pg.bundles = pg.bundles.map((b) => ({ ...b, connIds: b.connIds.filter((id) => ids.has(id)) })).filter((b) => b.connIds.length >= 2);
   }
   return p;
 }

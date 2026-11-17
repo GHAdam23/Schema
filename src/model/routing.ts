@@ -7,15 +7,16 @@
 // the end segments always stretch to the anchors, lines stay attached when objects move while
 // keeping the user's adjusted middle segments.
 
-import type { BlockObj, Connection, Endpoint, Page, PageObject, Project } from './types';
+import type { BlockObj, Bundle, Connection, Endpoint, Page, Project } from './types';
 import { isPortEndpoint } from './types';
-import { blockSize, portAnchor } from './blockGeometry';
+import { portAnchor } from './blockGeometry';
+import { fromLocal, localBox, objBounds, rotatePt, rotOf, type Pt, type Rect } from './geom';
+import { measureText } from '../text/fonts';
 
-export interface Pt {
-  x: number;
-  y: number;
-}
+export { objBounds };
+export type { Pt, Rect };
 export type Axis = 'h' | 'v';
+export const LABEL_SIZE = 6.5;
 
 export interface Anchor extends Pt {
   /** Outward direction from the object. */
@@ -24,14 +25,6 @@ export interface Anchor extends Pt {
 }
 
 export const STUB = 12;
-
-export function objBounds(project: Project, o: PageObject) {
-  if (o.kind === 'block') {
-    const s = blockSize(project, o);
-    return { x: o.x, y: o.y, w: s.w, h: s.h };
-  }
-  return { x: o.x, y: o.y, w: o.w, h: o.h };
-}
 
 export function resolveEndpoint(project: Project, page: Page, e: Endpoint): Anchor | null {
   const obj = page.objects.find((o) => o.id === e.objId);
@@ -42,17 +35,18 @@ export function resolveEndpoint(project: Project, page: Page, e: Endpoint): Anch
     if (!a) return null;
     return { x: a.x, y: a.y, dx: a.dir[0], dy: a.dir[1] };
   }
-  const b = objBounds(project, obj);
-  const x = b.x + e.fx * b.w;
-  const y = b.y + e.fy * b.h;
-  // Outward direction: nearest side.
+  const b = localBox(project, obj);
+  const p = fromLocal(project, obj, { x: b.x + e.fx * b.w, y: b.y + e.fy * b.h });
+  // Outward direction: nearest side, rotated with the shape and snapped to the nearest axis.
   const d = [
     { d: e.fx, dx: -1, dy: 0 },
     { d: 1 - e.fx, dx: 1, dy: 0 },
     { d: e.fy, dx: 0, dy: -1 },
     { d: 1 - e.fy, dx: 0, dy: 1 },
   ].sort((a, b) => a.d - b.d)[0];
-  return { x, y, dx: d.dx, dy: d.dy };
+  const n = rotatePt({ x: d.dx, y: d.dy }, { x: 0, y: 0 }, rotOf(obj));
+  const horiz = Math.abs(n.x) >= Math.abs(n.y);
+  return { x: p.x, y: p.y, dx: horiz ? Math.sign(n.x) : 0, dy: horiz ? 0 : Math.sign(n.y) };
 }
 
 export function axisOf(a: Anchor): Axis {
@@ -143,6 +137,8 @@ export function simplify(pts: Pt[]): Pt[] {
   return out;
 }
 
+export type Bezier = [Pt, Pt, Pt, Pt];
+
 export interface ResolvedRoute {
   conn: Connection;
   s: Anchor;
@@ -151,6 +147,62 @@ export interface ResolvedRoute {
   /** Raw points including possibly zero-length segments (index-aligned with bends for editing). */
   raw: Pt[];
   pts: Pt[];
+  /** Curved line: the Bézier (pts/raw are then a flattened copy, used for hit-testing and labels). */
+  curve?: Bezier;
+  /** Line in a snake: the two short legs actually drawn (each starts at its block's port). */
+  legs?: [Pt, Pt][];
+  /** Snake trunk (keyed by the bundle id): the bars joining the legs, and the member lines. */
+  trunk?: { bundle: Bundle; bars: [Pt, Pt][]; members: string[] };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Curved lines
+
+/** Bézier between two anchors leaving each along its outward direction. */
+export function curveFor(s: Anchor, e: Anchor): Bezier {
+  const dist = Math.hypot(e.x - s.x, e.y - s.y);
+  const k = Math.max(STUB * 1.5, Math.min(dist * 0.45, 180));
+  return [
+    { x: s.x, y: s.y },
+    { x: s.x + s.dx * k, y: s.y + s.dy * k },
+    { x: e.x + e.dx * k, y: e.y + e.dy * k },
+    { x: e.x, y: e.y },
+  ];
+}
+
+export function bezierAt(c: Bezier, t: number): Pt {
+  const u = 1 - t;
+  const a = u * u * u;
+  const b = 3 * u * u * t;
+  const d = 3 * u * t * t;
+  const e = t * t * t;
+  return { x: a * c[0].x + b * c[1].x + d * c[2].x + e * c[3].x, y: a * c[0].y + b * c[1].y + d * c[2].y + e * c[3].y };
+}
+
+export const CURVE_SAMPLES = 48;
+
+export function sampleCurve(c: Bezier, n = CURVE_SAMPLES): Pt[] {
+  return Array.from({ length: n + 1 }, (_, i) => bezierAt(c, i / n));
+}
+
+/** The part of a Bézier between parameters t0 and t1 (de Casteljau). */
+export function subCurve(c: Bezier, t0: number, t1: number): Bezier {
+  const split = (b: Bezier, t: number): [Bezier, Bezier] => {
+    const l = (p: Pt, q: Pt) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+    const p01 = l(b[0], b[1]);
+    const p12 = l(b[1], b[2]);
+    const p23 = l(b[2], b[3]);
+    const p012 = l(p01, p12);
+    const p123 = l(p12, p23);
+    const m = l(p012, p123);
+    return [
+      [b[0], p01, p012, m],
+      [m, p123, p23, b[3]],
+    ];
+  };
+  const right = split(c, t0)[1];
+  const t = t0 >= 1 ? 0 : (t1 - t0) / (1 - t0);
+  return split(right, Math.min(1, Math.max(0, t)))[0];
 }
 
 /** Raw (unsimplified) points: index i..i+1 is segment i; segment k (1..bends.length) is controlled by bends[k-1]. */
@@ -172,6 +224,11 @@ export function resolveRoute(project: Project, page: Page, conn: Connection, obs
   const s = resolveEndpoint(project, page, conn.from);
   const e = resolveEndpoint(project, page, conn.to);
   if (!s || !e) return null;
+  if (conn.curved) {
+    const curve = curveFor(s, e);
+    const pts = sampleCurve(curve);
+    return { conn, s, e, bends: [], raw: pts, pts, curve };
+  }
   const bends = conn.bends && bendsValid(conn.bends, s, e) ? conn.bends : autoRoute(s, e, obstacles);
   const raw = rawPoints(s, e, bends);
   return { conn, s, e, bends, raw, pts: simplify(raw) };
@@ -179,13 +236,6 @@ export function resolveRoute(project: Project, page: Page, conn: Connection, obs
 
 // ---------------------------------------------------------------------------------------------
 // Automatic routing around blocks
-
-export interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
 
 /** Everything on the page is an obstacle for automatic routing: blocks, rectangles, text boxes. */
 export function pageObstacles(project: Project, page: Page): Rect[] {
@@ -371,19 +421,21 @@ function searchRoute(s: Anchor, e: Anchor, obstacles: Rect[]): number[] | null {
   return bendsValid(bends, s, e) ? bends : null;
 }
 
+const segLen = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
+
 export function pathLength(pts: Pt[]): number {
   let L = 0;
-  for (let i = 1; i < pts.length; i++) L += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
+  for (let i = 1; i < pts.length; i++) L += segLen(pts[i - 1], pts[i]);
   return L;
 }
 
-/** Point at distance d along an orthogonal polyline, with the segment index. */
+/** Point at distance d along a polyline, with the segment index. */
 export function pointAt(pts: Pt[], d: number): { p: Pt; seg: number } {
   let acc = 0;
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1];
     const b = pts[i];
-    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    const len = segLen(a, b);
     if (acc + len >= d || i === pts.length - 1) {
       const t = len === 0 ? 0 : Math.min(1, Math.max(0, (d - acc) / len));
       return { p: { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, seg: i - 1 };
@@ -401,10 +453,10 @@ export function projectOnPath(pts: Pt[], q: Pt): number {
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1];
     const b = pts[i];
-    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    const len = segLen(a, b);
     let t = 0;
     if (len > 0) {
-      t = a.x === b.x ? (q.y - a.y) / (b.y - a.y) : (q.x - a.x) / (b.x - a.x);
+      t = ((q.x - a.x) * (b.x - a.x) + (q.y - a.y) * (b.y - a.y)) / (len * len);
       t = Math.min(1, Math.max(0, t));
     }
     const px = a.x + (b.x - a.x) * t;
@@ -426,15 +478,29 @@ export const LANE_SPACING = 6;
  * overlap are spread into parallel lanes, ordered so that they don't cross each other.
  * Lines leaving the same port share a lane (fan-out trunk).
  */
+const pageRouteCache = new WeakMap<Page, { project: Project; routes: Map<string, ResolvedRoute> }>();
+
 export function resolvePageRoutes(project: Project, page: Page): Map<string, ResolvedRoute> {
+  // Pages are immutable (immer), so a page + project pair always resolves the same way.
+  const hit = pageRouteCache.get(page);
+  if (hit && hit.project === project) return hit.routes;
+  const routes = computePageRoutes(project, page);
+  pageRouteCache.set(page, { project, routes });
+  return routes;
+}
+
+function computePageRoutes(project: Project, page: Page): Map<string, ResolvedRoute> {
   const out = new Map<string, ResolvedRoute>();
   const autoZ: ResolvedRoute[] = [];
   const obstacles = pageObstacles(project, page);
+  const bundled = new Set<string>();
+  for (const b of page.bundles ?? []) if (resolveBundle(project, page, b, out, obstacles)) b.connIds.forEach((id) => bundled.add(id));
   for (const c of page.connections) {
+    if (bundled.has(c.id)) continue;
     const r = resolveRoute(project, page, c, obstacles);
     if (!r) continue;
     out.set(c.id, r);
-    const usable = !(c.bends && bendsValid(c.bends, r.s, r.e));
+    const usable = !r.curve && !(c.bends && bendsValid(c.bends, r.s, r.e));
     if (usable && r.bends.length === 1 && axisOf(r.s) === axisOf(r.e)) autoZ.push(r);
   }
   // Group by the middle coordinate.
@@ -496,4 +562,83 @@ export function resolvePageRoutes(project: Project, page: Page): Map<string, Res
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Snakes (bundles)
+
+export const LEG_MIN = 18;
+
+/** Width of a line label's gap. */
+export function labelGapWidth(label: string) {
+  return measureText(label, 'narrow', LABEL_SIZE) + 4;
+}
+
+/**
+ * Resolve a bundle: a trunk route (stored in `out` under the bundle id) plus each member line as
+ * leg → bar → trunk → bar → leg. Returns false (members then draw as normal lines) if the
+ * geometry doesn't allow a bundle, e.g. an end isn't a block port.
+ */
+function resolveBundle(project: Project, page: Page, b: Bundle, out: Map<string, ResolvedRoute>, obstacles: Rect[]): boolean {
+  const members = b.connIds.map((id) => page.connections.find((c) => c.id === id)).filter((c): c is Connection => !!c);
+  if (members.length < 2) return false;
+  const objA = members[0].from.objId;
+  const ends = [];
+  for (const c of members) {
+    const s = resolveEndpoint(project, page, c.from);
+    const e = resolveEndpoint(project, page, c.to);
+    if (!s || !e || axisOf(s) !== 'h' || axisOf(e) !== 'h') return false;
+    const aIsFrom = c.from.objId === objA;
+    ends.push({ c, a: aIsFrom ? s : e, b: aIsFrom ? e : s, aIsFrom });
+  }
+  const dxA = ends[0].a.dx;
+  const dxB = ends[0].b.dx;
+  if (ends.some((x) => x.a.dx !== dxA || x.b.dx !== dxB)) return false;
+  const labelW = Math.max(0, ...members.map((c) => (c.label ? labelGapWidth(c.label) : 0)));
+  const leg = Math.max(LEG_MIN, labelW + 12);
+  const ext = (xs: number[], dx: number) => (dx > 0 ? Math.max(...xs) + leg : Math.min(...xs) - leg);
+  const ax = ext(ends.map((x) => x.a.x), dxA);
+  const bx = ext(ends.map((x) => x.b.x), dxB);
+  const aYs = ends.map((x) => x.a.y);
+  const bYs = ends.map((x) => x.b.y);
+  const midA = (Math.min(...aYs) + Math.max(...aYs)) / 2;
+  const midB = (Math.min(...bYs) + Math.max(...bYs)) / 2;
+  const sT: Anchor = { x: ax, y: midA, dx: dxA, dy: 0 };
+  const eT: Anchor = { x: bx, y: midB, dx: dxB, dy: 0 };
+  const bends = b.bends && bendsValid(b.bends, sT, eT) ? b.bends : autoRoute(sT, eT, obstacles);
+  const raw = rawPoints(sT, eT, bends);
+  const pts = simplify(raw);
+  const pseudo: Connection = { id: b.id, from: members[0].from, to: members[0].to, bends: b.bends, label: b.label, labelT: null, style: b.style };
+  out.set(b.id, {
+    conn: pseudo,
+    s: sT,
+    e: eT,
+    bends,
+    raw,
+    pts,
+    trunk: {
+      bundle: b,
+      bars: [
+        [{ x: ax, y: Math.min(...aYs) }, { x: ax, y: Math.max(...aYs) }],
+        [{ x: bx, y: Math.min(...bYs) }, { x: bx, y: Math.max(...bYs) }],
+      ],
+      members: members.map((c) => c.id),
+    },
+  });
+  for (const x of ends) {
+    let full = simplify([x.a, { x: ax, y: x.a.y }, { x: ax, y: midA }, ...pts.slice(1, -1), { x: bx, y: midB }, { x: bx, y: x.b.y }, x.b]);
+    if (!x.aIsFrom) full = full.reverse();
+    const legA: [Pt, Pt] = [{ x: x.a.x, y: x.a.y }, { x: ax, y: x.a.y }];
+    const legB: [Pt, Pt] = [{ x: x.b.x, y: x.b.y }, { x: bx, y: x.b.y }];
+    out.set(x.c.id, {
+      conn: x.c,
+      s: x.aIsFrom ? x.a : x.b,
+      e: x.aIsFrom ? x.b : x.a,
+      bends: [],
+      raw: full,
+      pts: full,
+      legs: x.aIsFrom ? [legA, legB] : [legB, legA],
+    });
+  }
+  return true;
 }

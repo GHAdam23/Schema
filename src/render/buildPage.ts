@@ -1,9 +1,41 @@
-import type { BlockObj, Page, PageObject, Project, RectObj, StrokeStyle, TextObj, TextProps } from '../model/types';
+import type {
+  Asset,
+  BlockObj,
+  BoxObj,
+  CalloutObj,
+  ContainerObj,
+  EllipseObj,
+  ImageObj,
+  Page,
+  PageObject,
+  Project,
+  RectObj,
+  StrokeStyle,
+  TagObj,
+  TextObj,
+  TextProps,
+  TextualObj,
+} from '../model/types';
 import { dashArray, PAGE_MARGIN, PAGE_SIZES, titleBlockWidth } from '../model/defaults';
 import { BLK, blockFor, blockLayout, portText } from '../model/blockGeometry';
-import { pathLength, pointAt, resolvePageRoutes, type Pt, type ResolvedRoute } from '../model/routing';
+import {
+  CURVE_SAMPLES,
+  LABEL_SIZE,
+  labelGapWidth,
+  pathLength,
+  pointAt,
+  resolvePageRoutes,
+  subCurve,
+  type Bezier,
+  type Pt,
+  type ResolvedRoute,
+} from '../model/routing';
+import { localBox, objBounds, rotMatrix, rotOf } from '../model/geom';
+import { tagText, TAG_PAD_Y } from '../model/tags';
 import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
-import type { DLItem, DLStroke, PathCmd } from './displayList';
+import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
+
+export { LABEL_SIZE };
 
 export function toDLStroke(s: StrokeStyle): DLStroke {
   return { color: s.color, width: s.width, dash: dashArray(s) };
@@ -29,19 +61,176 @@ export function buildPage(project: Project, page: Page, opts: BuildOptions): DLI
 // Objects
 
 export function drawObject(out: DLItem[], project: Project, o: PageObject) {
-  if (o.kind === 'block') drawBlock(out, project, o);
-  else if (o.kind === 'rect') drawRect(out, o);
-  else drawText(out, o);
+  if (o.kind === 'block') return drawBlock(out, project, o);
+  if (o.kind === 'tag') return drawTag(out, project, o);
+  const rot = rotOf(o);
+  const dst: DLItem[] = rot ? [] : out;
+  switch (o.kind) {
+    case 'rect':
+      drawRect(dst, o);
+      break;
+    case 'text':
+      drawText(dst, o);
+      break;
+    case 'ellipse':
+      drawEllipse(dst, o);
+      break;
+    case 'container':
+      drawContainer(dst, o);
+      break;
+    case 'callout':
+      drawCallout(dst, o);
+      break;
+    case 'image':
+      drawImage(dst, project, o);
+      break;
+  }
+  if (rot) out.push({ t: 'group', m: rotMatrix(localBox(project, o), rot), items: dst });
 }
 
+const strokeOf = (b: StrokeStyle | null) => (b && b.width > 0 ? toDLStroke(b) : null);
+
 function drawRect(out: DLItem[], o: RectObj) {
-  out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: o.border.width > 0 ? toDLStroke(o.border) : null });
-  drawTextIn(out, o);
+  out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: strokeOf(o.border) });
+  drawTextIn(out, textBoxOf(o));
+}
+
+const K_ELL = 0.5523;
+
+export function ellipsePath(x: number, y: number, w: number, h: number): PathCmd[] {
+  const rx = w / 2;
+  const ry = h / 2;
+  const cx = x + rx;
+  const cy = y + ry;
+  const kx = rx * K_ELL;
+  const ky = ry * K_ELL;
+  return [
+    { c: 'M', x: cx + rx, y: cy },
+    { c: 'C', x1: cx + rx, y1: cy + ky, x2: cx + kx, y2: cy + ry, x: cx, y: cy + ry },
+    { c: 'C', x1: cx - kx, y1: cy + ry, x2: cx - rx, y2: cy + ky, x: cx - rx, y: cy },
+    { c: 'C', x1: cx - rx, y1: cy - ky, x2: cx - kx, y2: cy - ry, x: cx, y: cy - ry },
+    { c: 'C', x1: cx + kx, y1: cy - ry, x2: cx + rx, y2: cy - ky, x: cx + rx, y: cy },
+    { c: 'Z' },
+  ];
+}
+
+function drawEllipse(out: DLItem[], o: EllipseObj) {
+  out.push({ t: 'path', d: ellipsePath(o.x, o.y, o.w, o.h), fill: o.fill, stroke: strokeOf(o.border) });
+  drawTextIn(out, textBoxOf(o));
+}
+
+/** Height of a container's label band. */
+export function containerBand(o: ContainerObj) {
+  return o.text ? Math.min(o.h, o.fontSize * LINE + TEXT_PAD * 2) : 0;
+}
+
+function drawContainer(out: DLItem[], o: ContainerObj) {
+  out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: null });
+  const band = containerBand(o);
+  if (band) {
+    if (o.headerFill) out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: band, fill: o.headerFill, stroke: null });
+    if (o.border.width > 0)
+      out.push({ t: 'path', d: [{ c: 'M', x: o.x, y: o.y + band }, { c: 'L', x: o.x + o.w, y: o.y + band }], fill: null, stroke: { ...toDLStroke(o.border), width: Math.min(o.border.width, 0.75) } });
+    drawTextIn(out, textBoxOf(o));
+  }
+  out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: null, stroke: strokeOf(o.border) });
+}
+
+/** Outline of a callout: its box with a wedge towards the tail point (if the tail is outside). */
+export function calloutPath(o: CalloutObj): PathCmd[] {
+  const { x, y, w, h } = o;
+  const tx = x + o.tail.x;
+  const ty = y + o.tail.y;
+  const cs: Pt[] = [
+    { x, y },
+    { x: x + w, y },
+    { x: x + w, y: y + h },
+    { x, y: y + h },
+  ];
+  const inside = tx >= x && tx <= x + w && ty >= y && ty <= y + h;
+  const pts: Pt[] = [];
+  // Which side does the tail leave from? Compare against the box diagonals.
+  const nx = (tx - (x + w / 2)) / (w / 2 || 1);
+  const ny = (ty - (y + h / 2)) / (h / 2 || 1);
+  const side = inside ? -1 : Math.abs(nx) > Math.abs(ny) ? (nx > 0 ? 1 : 3) : ny > 0 ? 2 : 0; // 0 top, 1 right, 2 bottom, 3 left
+  for (let i = 0; i < 4; i++) {
+    pts.push(cs[i]);
+    if (i !== side) continue;
+    const a = cs[i];
+    const b = cs[(i + 1) % 4];
+    const horiz = i % 2 === 0;
+    const len = horiz ? w : h;
+    const half = Math.max(2, Math.min(len * 0.15, 9));
+    // Wedge base centred on the tail's projection, kept inside the side.
+    const along = horiz ? tx : ty;
+    const lo = Math.min(horiz ? a.x : a.y, horiz ? b.x : b.y) + half + 2;
+    const hi = Math.max(horiz ? a.x : a.y, horiz ? b.x : b.y) - half - 2;
+    const c = lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, along));
+    const dir = Math.sign((horiz ? b.x - a.x : b.y - a.y) || 1);
+    const p1 = horiz ? { x: c - dir * half, y: a.y } : { x: a.x, y: c - dir * half };
+    const p2 = horiz ? { x: c + dir * half, y: a.y } : { x: a.x, y: c + dir * half };
+    pts.push(p1, { x: tx, y: ty }, p2);
+  }
+  return [...pts.map((p, i): PathCmd => ({ c: i ? 'L' : 'M', x: p.x, y: p.y })), { c: 'Z' }];
+}
+
+function drawCallout(out: DLItem[], o: CalloutObj) {
+  out.push({ t: 'path', d: calloutPath(o), fill: o.fill, stroke: strokeOf(o.border) });
+  drawTextIn(out, textBoxOf(o));
+}
+
+const vectorCache = new WeakMap<Asset, DLItem[]>();
+
+function vectorItems(a: Asset): DLItem[] {
+  let v = vectorCache.get(a);
+  if (!v) {
+    v = (a.vector ?? []).map(
+      (p): DLItem => ({
+        t: 'path',
+        d: parsePathData(p.d),
+        fill: p.fill,
+        stroke: p.stroke && p.width > 0 ? { color: p.stroke, width: p.width, dash: [] } : null,
+        evenOdd: p.evenOdd,
+      }),
+    );
+    vectorCache.set(a, v);
+  }
+  return v;
+}
+
+function drawImage(out: DLItem[], project: Project, o: ImageObj) {
+  const a = project.assets[o.assetId];
+  if (!a) out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: '#ffdddd', stroke: THIN });
+  else if (a.vector) out.push({ t: 'group', m: [o.w / a.w, 0, 0, o.h / a.h, o.x, o.y], items: vectorItems(a) });
+  else out.push({ t: 'image', x: o.x, y: o.y, w: o.w, h: o.h, assetId: o.assetId });
+  if (o.border && o.border.width > 0) out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: null, stroke: toDLStroke(o.border) });
+}
+
+function drawTag(out: DLItem[], project: Project, o: TagObj) {
+  const b = localBox(project, o);
+  out.push({ t: 'rect', x: b.x, y: b.y, w: b.w, h: b.h, fill: o.fill, stroke: strokeOf(o.border) });
+  const t = tagText(project, o);
+  const tw = measureText(t, 'narrow', o.fontSize);
+  const base = b.y + b.h / 2 + (o.fontSize * capHeightEm('narrow')) / 2;
+  out.push({ t: 'text', x: b.x + (b.w - tw) / 2, y: base, text: t, font: 'narrow', size: o.fontSize, color: '#000000' });
+  void TAG_PAD_Y;
 }
 
 export const TEXT_PAD = 3;
 
-type TextBox = TextProps & { x: number; y: number; w: number; h: number };
+export type TextBox = TextProps & { x: number; y: number; w: number; h: number };
+
+/** The area text is laid out in: the box; the inscribed rectangle of an ellipse; a container's label band. */
+export function textBoxOf(o: TextualObj): TextBox {
+  if (o.kind === 'ellipse') {
+    const k = 1 / Math.SQRT2;
+    const w = o.w * k;
+    const h = o.h * k;
+    return { ...o, x: o.x + (o.w - w) / 2, y: o.y + (o.h - h) / 2, w, h };
+  }
+  if (o.kind === 'container') return { ...o, h: containerBand(o) || o.h, valign: 'middle', wrap: false };
+  return o;
+}
 
 const LINE = 1.2;
 /** Text may come this close to the box edge (≈ half a border line) before it starts to shrink. */
@@ -71,7 +260,7 @@ interface Fit {
   padX: number;
   padY: number;
 }
-const fitCache = new WeakMap<object, Fit>();
+const fitCache = new Map<string, Fit>();
 
 /**
  * Text layout for a box. The padding collapses first; the font size only shrinks (never grows)
@@ -79,8 +268,8 @@ const fitCache = new WeakMap<object, Fit>();
  */
 export function fitTextBox(o: TextBox): Fit {
   const key = `${o.text}|${o.w}|${o.h}|${o.fontSize}|${o.bold}|${o.wrap}`;
-  const hit = fitCache.get(o);
-  if (hit && hit.key === key) return hit;
+  const hit = fitCache.get(key);
+  if (hit) return hit;
   const fits = (size: number) => {
     const L = layoutAt(o, size);
     return L.widest <= o.w - EDGE * 2 + 0.01 && L.ink <= o.h - EDGE * 2 + 0.01;
@@ -99,7 +288,8 @@ export function fitTextBox(o: TextBox): Fit {
   const L = layoutAt(o, size);
   const clamp = (v: number) => Math.min(TEXT_PAD, Math.max(EDGE, v));
   const res: Fit = { key, size, lines: L.lines, padX: clamp((o.w - L.widest) / 2), padY: clamp((o.h - L.ink) / 2) };
-  fitCache.set(o, res);
+  if (fitCache.size > 3000) fitCache.clear();
+  fitCache.set(key, res);
   return res;
 }
 
@@ -147,7 +337,7 @@ function drawTextIn(out: DLItem[], o: TextBox) {
 
 function drawText(out: DLItem[], o: TextObj) {
   if (o.fill || (o.border && o.border.width > 0)) {
-    out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: o.border && o.border.width > 0 ? toDLStroke(o.border) : null });
+    out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: o.fill, stroke: strokeOf(o.border) });
   }
   drawTextIn(out, o);
 }
@@ -216,7 +406,6 @@ function drawBlock(out: DLItem[], project: Project, o: BlockObj) {
 // ---------------------------------------------------------------------------------------------
 // Connections
 
-export const LABEL_SIZE = 6.5;
 export const HOP_R = 2.5;
 
 /** Distance along the path of the automatic label position: middle of the longest horizontal run. */
@@ -225,7 +414,7 @@ export function autoLabelDistance(pts: Pt[]): number {
   let bestD = pathLength(pts) / 2;
   let acc = 0;
   for (let i = 1; i < pts.length; i++) {
-    const len = Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
+    const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
     const horiz = Math.abs(pts[i].y - pts[i - 1].y) < 1e-6;
     if (horiz && len > best + 1e-6) {
       best = len;
@@ -236,21 +425,68 @@ export function autoLabelDistance(pts: Pt[]): number {
   return bestD;
 }
 
-/** Label placement: centre point, gap length along the line, and orientation (text follows the segment). */
-export function labelBox(route: ResolvedRoute) {
+export interface LabelBox {
+  p: Pt;
+  /** Distance along route.pts (not meaningful for snake legs). */
+  d: number;
+  gap: number;
+  tw: number;
+  /** Text reads horizontally (otherwise rotated, on a vertical run). */
+  horiz: boolean;
+  box: { x: number; y: number; w: number; h: number };
+}
+
+/**
+ * Label placements of a line: one for normal and curved lines, one per leg for a line in a snake
+ * (its full label is repeated at each end). Text follows right-angle segments; on curves it stays horizontal.
+ */
+export function labelBoxes(route: ResolvedRoute): LabelBox[] {
   const label = route.conn.label;
-  if (!label) return null;
+  if (!label) return [];
+  const tw = measureText(label, 'narrow', LABEL_SIZE);
+  if (route.legs) {
+    return route.legs.map(([a, b]) => {
+      const p = { x: (a.x + b.x) / 2, y: a.y };
+      return { p, d: 0, gap: tw + 4, tw, horiz: true, box: { x: p.x - (tw + 4) / 2, y: p.y - 5, w: tw + 4, h: 10 } };
+    });
+  }
   const L = pathLength(route.pts);
   const d = route.conn.labelT === null ? autoLabelDistance(route.pts) : route.conn.labelT * L;
   const { p, seg } = pointAt(route.pts, d);
   const a = route.pts[seg];
   const b = route.pts[seg + 1] ?? a;
+  if (route.curve) {
+    // Leave a gap where the line passes through the (horizontal) text's box.
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    const ux = Math.abs(b.x - a.x) / len;
+    const uy = Math.abs(b.y - a.y) / len;
+    const half = Math.min(ux > 1e-6 ? (tw / 2 + 2) / ux : Infinity, uy > 1e-6 ? 5 / uy : Infinity);
+    return [{ p, d, gap: half * 2, tw, horiz: true, box: { x: p.x - tw / 2 - 2, y: p.y - 5, w: tw + 4, h: 10 } }];
+  }
   const horiz = Math.abs(a.y - b.y) < 1e-6;
-  const tw = measureText(label, 'narrow', LABEL_SIZE);
   const gap = tw + 4;
-  // Hit/selection box in page coordinates.
   const box = horiz ? { x: p.x - gap / 2, y: p.y - 5, w: gap, h: 10 } : { x: p.x - 5, y: p.y - gap / 2, w: 10, h: gap };
-  return { p, d, gap, tw, horiz, box };
+  return [{ p, d, gap, tw, horiz, box }];
+}
+
+export function labelBox(route: ResolvedRoute): LabelBox | null {
+  return labelBoxes(route)[0] ?? null;
+}
+
+/** Polylines actually drawn for a route, for hop detection. */
+function drawnPolylines(r: ResolvedRoute): Pt[][] {
+  if (r.legs || r.curve) return [];
+  if (r.trunk) return [r.pts, ...r.trunk.bars];
+  return [r.pts];
+}
+
+function labelText(out: DLItem[], lb: LabelBox, text: string, color: string) {
+  const capH = LABEL_SIZE * capHeightEm('narrow');
+  out.push(
+    lb.horiz
+      ? { t: 'text', x: lb.p.x - lb.tw / 2, y: lb.p.y + capH / 2, text, font: 'narrow', size: LABEL_SIZE, color }
+      : { t: 'text', x: lb.p.x + capH / 2, y: lb.p.y + lb.tw / 2, text, font: 'narrow', size: LABEL_SIZE, color, rot: -90 },
+  );
 }
 
 export function drawConnections(out: DLItem[], project: Project, page: Page, onlyIds?: Set<string>) {
@@ -258,15 +494,36 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
   // Vertical segments of every line, for hop detection.
   const verticals: { x: number; y0: number; y1: number; ri: number }[] = [];
   routes.forEach((r, ri) => {
-    for (let i = 1; i < r.pts.length; i++) {
-      const a = r.pts[i - 1];
-      const b = r.pts[i];
-      if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) > 1e-6) verticals.push({ x: a.x, y0: Math.min(a.y, b.y), y1: Math.max(a.y, b.y), ri });
-    }
+    for (const pts of drawnPolylines(r))
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) > 1e-6) verticals.push({ x: a.x, y0: Math.min(a.y, b.y), y1: Math.max(a.y, b.y), ri });
+      }
   });
 
   routes.forEach((r, ri) => {
     if (onlyIds && !onlyIds.has(r.conn.id)) return;
+    const style = toDLStroke(r.conn.style);
+    const lbs = labelBoxes(r);
+    if (r.legs) {
+      // Snake member: only its two legs are drawn, each with the full label.
+      r.legs.forEach((leg, k) => {
+        const lb = lbs[k];
+        const L = Math.abs(leg[1].x - leg[0].x);
+        const gap = lb ? ([L / 2 - lb.gap / 2, L / 2 + lb.gap / 2] as [number, number]) : null;
+        out.push({ t: 'path', d: strokePath(leg, gap, new Map()), fill: null, stroke: style });
+        if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
+      });
+      return;
+    }
+    const lb = lbs[0];
+    const gap = lb ? ([lb.d - lb.gap / 2, lb.d + lb.gap / 2] as [number, number]) : null;
+    if (r.curve) {
+      out.push({ t: 'path', d: curvePath(r.curve, r.pts, gap), fill: null, stroke: style });
+      if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
+      return;
+    }
     const hops = new Map<number, number[]>();
     for (let i = 1; i < r.pts.length; i++) {
       const a = r.pts[i - 1];
@@ -282,19 +539,35 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
       }
       if (xs.length) hops.set(i - 1, mergeHops(xs));
     }
-    const lb = labelBox(r);
-    const gap = lb ? ([lb.d - lb.gap / 2, lb.d + lb.gap / 2] as [number, number]) : null;
-    const d = strokePath(r.pts, gap, hops);
-    out.push({ t: 'path', d, fill: null, stroke: toDLStroke(r.conn.style) });
-    if (lb) {
-      const capH = LABEL_SIZE * capHeightEm('narrow');
-      out.push(
-        lb.horiz
-          ? { t: 'text', x: lb.p.x - lb.tw / 2, y: lb.p.y + capH / 2, text: r.conn.label, font: 'narrow', size: LABEL_SIZE, color: r.conn.style.color }
-          : { t: 'text', x: lb.p.x + capH / 2, y: lb.p.y + lb.tw / 2, text: r.conn.label, font: 'narrow', size: LABEL_SIZE, color: r.conn.style.color, rot: -90 },
-      );
-    }
+    out.push({ t: 'path', d: strokePath(r.pts, gap, hops), fill: null, stroke: style });
+    if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, null, new Map()), fill: null, stroke: style });
+    if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
   });
+}
+
+/** A Bézier drawn as true curves, with an optional gap given as distances along its flattened samples. */
+function curvePath(c: Bezier, samples: Pt[], gap: [number, number] | null): PathCmd[] {
+  const piece = (b: Bezier): PathCmd[] => [
+    { c: 'M', x: b[0].x, y: b[0].y },
+    { c: 'C', x1: b[1].x, y1: b[1].y, x2: b[2].x, y2: b[2].y, x: b[3].x, y: b[3].y },
+  ];
+  if (!gap) return piece(c);
+  // Distance → curve parameter through the cumulative lengths of the samples (uniform in t).
+  const cum = [0];
+  for (let i = 1; i < samples.length; i++) cum.push(cum[i - 1] + Math.hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y));
+  const tAt = (d: number) => {
+    if (d <= 0) return 0;
+    for (let i = 1; i < cum.length; i++) {
+      if (cum[i] >= d) return (i - 1 + (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1)) / CURVE_SAMPLES;
+    }
+    return 1;
+  };
+  const t0 = tAt(gap[0]);
+  const t1 = tAt(gap[1]);
+  const out: PathCmd[] = [];
+  if (t0 > 0.001) out.push(...piece(subCurve(c, 0, t0)));
+  if (t1 < 0.999) out.push(...piece(subCurve(c, t1, 1)));
+  return out;
 }
 
 function sameSource(a: ResolvedRoute, b: ResolvedRoute) {
@@ -311,6 +584,7 @@ function mergeHops(xs: number[]): number[] {
 }
 
 const K = 0.5523;
+void labelGapWidth;
 
 /** Build path commands for an orthogonal polyline with an optional gap (distance interval) and hops. */
 export function strokePath(pts: Pt[], gap: [number, number] | null, hops: Map<number, number[]>): PathCmd[] {
@@ -379,11 +653,7 @@ function drawFrame(out: DLItem[], project: Project, page: Page, opts: BuildOptio
     const first = project.pages[0];
     const r1 = titleBlockRect(first.size);
     const k = r.w / r1.w;
-    for (const o of titleBlockObjects(project)) {
-      if (o.kind === 'block') continue;
-      const moved = { ...o, x: r.x + (o.x - r1.x) * k, y: r.y + (o.y - r1.y) * k, w: o.w * k, h: o.h * k, fontSize: o.fontSize * k };
-      drawObject(out, project, moved);
-    }
+    for (const o of titleBlockObjects(project)) drawObject(out, project, scaleBoxObj(o, r1, r, k));
   }
 }
 
@@ -395,12 +665,24 @@ export function titleBlockRect(size: Page['size']) {
   return { x: P.w - m - w, y: m, w, h: P.h - 2 * m };
 }
 
-/** Text boxes and rectangles on page 1 that sit entirely inside the title block column. */
-export function titleBlockObjects(project: Project): PageObject[] {
+/** Shapes, text and images on page 1 that sit entirely inside the title block column. */
+export function titleBlockObjects(project: Project): BoxObj[] {
   const first = project.pages[0];
   if (!first) return [];
   const r = titleBlockRect(first.size);
-  return first.objects.filter((o) => o.kind !== 'block' && o.x >= r.x - 0.5 && o.y >= r.y - 0.5 && o.x + o.w <= r.x + r.w + 0.5 && o.y + o.h <= r.y + r.h + 0.5);
+  return first.objects.filter((o): o is BoxObj => {
+    if (o.kind === 'block' || o.kind === 'tag') return false;
+    const b = objBounds(project, o);
+    return b.x >= r.x - 0.5 && b.y >= r.y - 0.5 && b.x + b.w <= r.x + r.w + 0.5 && b.y + b.h <= r.y + r.h + 0.5;
+  });
+}
+
+/** Copy of a box object moved from one title block column to another (scaled by k). */
+function scaleBoxObj(o: BoxObj, from: { x: number; y: number }, to: { x: number; y: number }, k: number): BoxObj {
+  const moved = { ...o, x: to.x + (o.x - from.x) * k, y: to.y + (o.y - from.y) * k, w: o.w * k, h: o.h * k } as BoxObj;
+  if ('fontSize' in moved) moved.fontSize *= k;
+  if (moved.kind === 'callout') moved.tail = { x: moved.tail.x * k, y: moved.tail.y * k };
+  return moved;
 }
 
 /**

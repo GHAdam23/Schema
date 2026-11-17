@@ -676,3 +676,57 @@ table.backups th {
   font-size: 12px;
   color: #92400e;
 }
+
+/* Phase 2 */
+.panel-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-tabs button {
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 4px 2px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.panel-tabs button.active {
+  color: var(--accent, #2563eb);
+  border-bottom-color: var(--accent, #2563eb);
+}
+.libitem.here .model::after {
+  content: ' · on this page';
+  font-weight: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pagelink {
+  padding: 0 4px;
+  margin-left: 2px;
+  font-size: 11px;
+  min-width: 0;
+  line-height: 14px;
+}
+.pagelink.cur {
+  background: var(--accent-soft);
+}
+.pad {
+  padding: 2px 4px;
+}
+.tagpreview {
+  font-family: SchemaNarrow, sans-serif;
+  border: 1px solid #000;
+  padding: 2px 6px;
+  display: inline-block;
+  background: #fff;
+  margin-bottom: 4px;
+}
+.devpick {
+  max-height: 260px;
+}

@@ -59,7 +59,7 @@ export function bytesToB64(bytes: Uint8Array): string {
 /** Read an image file as an Asset (PNG/JPG only — what pdf-lib can embed). */
 export async function fileToImageAsset(file: File) {
   const mime = file.type === 'image/png' ? 'image/png' : file.type === 'image/jpeg' ? 'image/jpeg' : null;
-  if (!mime) throw new Error('Logo must be a PNG or JPG image.');
+  if (!mime) throw new Error('Images must be PNG or JPG.');
   const bytes = new Uint8Array(await file.arrayBuffer());
   const url = URL.createObjectURL(file);
   const img = new Image();

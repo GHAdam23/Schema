@@ -1,10 +1,16 @@
 import type { Draft } from 'immer';
 import type {
+  Asset,
   BlockDef,
   BlockObj,
+  Bundle,
+  CalloutObj,
   Connection,
+  ContainerObj,
+  EllipseObj,
   Endpoint,
   Id,
+  ImageObj,
   Page,
   PageObject,
   PageSizeId,
@@ -12,16 +18,19 @@ import type {
   ProjectDevice,
   RectObj,
   StrokeStyle,
+  TagObj,
   TextObj,
 } from '../model/types';
 import { isPortEndpoint } from '../model/types';
 import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
-import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER } from '../model/defaults';
+import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } from '../model/defaults';
 import { findPort } from '../model/blockGeometry';
-import { objBounds, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
+import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
+import { normDeg, rotOf } from '../model/geom';
+import { devicePages, tagSize, tagTargetPage, tagText } from '../model/tags';
 import { labelBox, labelTAt } from '../render/buildPage';
-import { currentPage, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
+import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
 
 type D = Draft<Project>;
@@ -53,8 +62,8 @@ export function duplicatePage(id: Id) {
   const s = getState();
   const src = s.project.pages.find((p) => p.id === id);
   if (!src) return;
-  const copy = copyObjectsInto(s.project, src.objects, src.connections, 0, 0);
-  const pg: Page = { ...newPage(src.name + ' (copy)', src.size), objects: copy.objects, connections: copy.connections };
+  const copy = copyObjectsInto(s.project, src.objects, src.connections, 0, 0, src.bundles ?? []);
+  const pg: Page = { ...newPage(src.name + ' (copy)', src.size), objects: copy.objects, connections: copy.connections, bundles: copy.bundles };
   updateProject((d) => {
     Object.assign(d.devices, copy.devices);
     const i = d.pages.findIndex((p) => p.id === id);
@@ -192,11 +201,191 @@ export function addRect(x: number, y: number, w = 108, h = 72): Id {
   return o.id;
 }
 
+const textDefaults = { text: '', fontSize: 9, bold: false, align: 'center' as const, valign: 'middle' as const, color: '#000000' };
+
+export function addEllipse(x: number, y: number, w = 90, h = 54): Id {
+  nextLabel('Add ellipse');
+  const o: EllipseObj = { id: newId('ob'), kind: 'ellipse', x, y, w, h, border: { ...DEFAULT_RECT_BORDER }, fill: null, ...textDefaults };
+  updateProject((d) => void pageDraft(d).objects.push(o));
+  setState({ selection: [o.id], selectedPorts: [] });
+  return o.id;
+}
+
+/** A labelled grouping frame. Goes behind everything so what's inside stays clickable. */
+export function addContainer(x: number, y: number, w = 216, h = 144): Id {
+  nextLabel('Add container');
+  const o: ContainerObj = {
+    id: newId('ob'),
+    kind: 'container',
+    x,
+    y,
+    w,
+    h,
+    border: { color: '#000000', width: 1, dash: 'dashed' },
+    fill: null,
+    headerFill: '#e2e8f0',
+    ...textDefaults,
+    text: 'Container',
+    align: 'left',
+    bold: true,
+  };
+  updateProject((d) => void pageDraft(d).objects.unshift(o));
+  setState({ selection: [o.id], selectedPorts: [] });
+  return o.id;
+}
+
+export function addCallout(x: number, y: number): Id {
+  nextLabel('Add callout');
+  const o: CalloutObj = {
+    id: newId('ob'),
+    kind: 'callout',
+    x,
+    y,
+    w: 108,
+    h: 36,
+    border: { color: '#000000', width: 0.75, dash: 'solid' },
+    fill: '#ffffff',
+    tail: { x: -36, y: 60 },
+    ...textDefaults,
+    text: 'Note',
+    wrap: true,
+  };
+  updateProject((d) => void pageDraft(d).objects.push(o));
+  setState({ selection: [o.id], selectedPorts: [] });
+  return o.id;
+}
+
+/** Add an imported image / PDF page / SVG. The asset is stored in the project. */
+export function addImage(asset: Asset, x: number, y: number, name = 'image'): Id {
+  const assetId = newId('as');
+  const area = drawingArea(currentPage().size);
+  // Natural size (PDF/SVG in points, images at 96 dpi), scaled down to fit the drawing area.
+  const nat = asset.mime.startsWith('image/') && asset.mime !== 'image/svg+xml' ? { w: asset.w * 0.75, h: asset.h * 0.75 } : { w: asset.w, h: asset.h };
+  const k = Math.min(1, (area.w * 0.8) / nat.w, (area.h * 0.8) / nat.h);
+  const o: ImageObj = { id: newId('ob'), kind: 'image', x, y, w: Math.round(nat.w * k), h: Math.round(nat.h * k), assetId, border: null };
+  nextLabel(`Import ${name}`);
+  updateProject((d) => {
+    d.assets[assetId] = asset;
+    pageDraft(d).objects.push(o);
+  });
+  setState({ selection: [o.id], selectedPorts: [] });
+  return o.id;
+}
+
+export function addTag(x: number, y: number, target: TagObj['target'] = null, record = true): Id {
+  nextLabel('Add reference tag');
+  const o: TagObj = {
+    id: newId('ob'),
+    kind: 'tag',
+    x,
+    y,
+    target,
+    dir: 'auto',
+    showPort: true,
+    note: '',
+    fontSize: 7,
+    border: { color: '#000000', width: 0.75, dash: 'solid' },
+    fill: null,
+  };
+  updateProject((d) => void pageDraft(d).objects.push(o), record);
+  setState({ selection: [o.id], selectedPorts: [] });
+  return o.id;
+}
+
+/**
+ * Change a tag. Its width follows its text, so when a line is attached to its right side the
+ * right edge stays put (the tag grows away from the line).
+ */
+export function patchTag(id: Id, fn: (t: Draft<TagObj>) => void, label = 'Change tag') {
+  const s = getState();
+  const page = currentPage(s);
+  const before = page.objects.find((o) => o.id === id);
+  if (!before || before.kind !== 'tag') return;
+  const w0 = tagSize(s.project, before).w;
+  const rightAttached = page.connections.some((c) => [c.from, c.to].some((e) => e.objId === id && !isPortEndpoint(e) && e.fx === 1));
+  nextLabel(label);
+  updateProject((d) => {
+    const t = pageDraft(d).objects.find((o) => o.id === id);
+    if (t?.kind === 'tag') fn(t);
+  });
+  if (!rightAttached) return;
+  const after = currentPage().objects.find((o) => o.id === id) as TagObj;
+  const dw = tagSize(getState().project, after).w - w0;
+  if (dw) updateProject((d) => void (pageDraft(d).objects.find((o) => o.id === id)!.x -= dw), false);
+}
+
+export function setTagTarget(id: Id, target: TagObj['target']) {
+  const p = getState().project;
+  const dev = target && p.devices[target.deviceId];
+  patchTag(id, (o) => void (o.target = target), dev ? `Point tag to ${dev.name}` : 'Clear tag target');
+}
+
+/** Go to the page of a tag's device and select the instance there (and its port). */
+export function jumpToTag(tag: TagObj) {
+  const p = getState().project;
+  const pi = tagTargetPage(p, tag);
+  if (!tag.target || pi < 0) {
+    toast('This tag doesn’t point to a device yet.', 'warn');
+    return;
+  }
+  const pg = p.pages[pi];
+  const inst = pg.objects.find((o) => o.kind === 'block' && o.deviceId === tag.target!.deviceId);
+  setState({
+    pageId: pg.id,
+    selection: inst ? [inst.id] : [],
+    selectedPorts: inst && tag.target.portId ? [{ objId: inst.id, portId: tag.target.portId }] : [],
+  });
+}
+
+/** Place another instance of a project device on the current page (same device, so renaming etc. is shared). */
+export function placeInstance(deviceId: Id, x: number, y: number): Id | null {
+  const s = getState();
+  const dev = s.project.devices[deviceId];
+  if (!dev) return null;
+  const pg = currentPage(s);
+  const existing = pg.objects.find((o) => o.kind === 'block' && o.deviceId === deviceId);
+  if (existing) {
+    toast(`${dev.name} is already on this page.`, 'warn');
+    setState({ selection: [existing.id], selectedPorts: [] });
+    return null;
+  }
+  const other = s.project.pages.flatMap((p) => p.objects).find((o): o is BlockObj => o.kind === 'block' && o.deviceId === deviceId);
+  const obj: BlockObj = { id: newId('ob'), kind: 'block', deviceId, x, y, scale: other?.scale ?? 1, border: { ...(other?.border ?? DEFAULT_BLOCK_BORDER) } };
+  nextLabel(`Place ${dev.name} on this page too`);
+  updateProject((d) => void pageDraft(d).objects.push(obj));
+  setState({ selection: [obj.id], selectedPorts: [] });
+  return obj.id;
+}
+
+export function setRotation(ids: Id[], deg: number | ((cur: number) => number), record = true) {
+  defaultLabel('Rotate');
+  patchObjects(
+    ids,
+    (o) => {
+      if (o.kind === 'block' || o.kind === 'tag') return;
+      const r = normDeg(typeof deg === 'function' ? deg(o.rot ?? 0) : deg);
+      o.rot = Math.round(r * 100) / 100;
+    },
+    record,
+  );
+}
+
+export function setCurved(ids: Id[], curved: boolean) {
+  nextLabel(curved ? 'Curved line' : 'Right-angle line');
+  patchConnections(ids, (c) => {
+    c.curved = curved || undefined;
+    if (curved) c.labelT = null;
+  });
+}
+
 export function deleteSelection() {
   const s = getState();
-  const sel = new Set(s.selection);
+  const page0 = currentPage(s);
+  // A selected snake trunk stands for its lines.
+  const trunkLines = (page0.bundles ?? []).filter((b) => s.selection.includes(b.id)).flatMap((b) => b.connIds);
+  const sel = new Set([...s.selection, ...trunkLines]);
   if (!sel.size) return;
-  const page = currentPage(s);
+  const page = page0;
   const objs = page.objects.filter((o) => sel.has(o.id));
   const alive = new Set(page.objects.filter((o) => !sel.has(o.id)).map((o) => o.id));
   const lines = page.connections.filter((c) => sel.has(c.id) || !alive.has(c.from.objId) || !alive.has(c.to.objId));
@@ -209,6 +398,7 @@ export function deleteSelection() {
     pg.objects = pg.objects.filter((o) => !sel.has(o.id));
     const alive = new Set(pg.objects.map((o) => o.id));
     pg.connections = pg.connections.filter((c) => !sel.has(c.id) && alive.has(c.from.objId) && alive.has(c.to.objId));
+    pg.bundles = (pg.bundles ?? []).filter((b) => !sel.has(b.id));
     gc(d);
   });
   setState({ selection: [], selectedPorts: [] });
@@ -224,7 +414,20 @@ export function gc(d: D) {
   for (const pg of d.pages) {
     const objs = new Map(pg.objects.map((o) => [o.id, o]));
     pg.connections = pg.connections.filter((c) => endpointAlive(d, objs, c.from) && endpointAlive(d, objs, c.to));
+    pruneBundles(pg);
   }
+  // Imported images no longer used (the logo is kept).
+  const usedAssets = new Set<string>(d.info.logoAssetId ? [d.info.logoAssetId] : []);
+  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'image') usedAssets.add(o.assetId);
+  for (const id of Object.keys(d.assets)) if (!usedAssets.has(id)) delete d.assets[id];
+}
+
+/** Bundles lose deleted lines; a bundle with fewer than two lines left is dissolved. */
+function pruneBundles(pg: Draft<Page>) {
+  pg.bundles ??= [];
+  const ids = new Set(pg.connections.map((c) => c.id));
+  for (const b of pg.bundles) b.connIds = b.connIds.filter((id) => ids.has(id));
+  pg.bundles = pg.bundles.filter((b) => b.connIds.length >= 2);
 }
 
 function endpointAlive(d: D, objs: Map<string, Draft<PageObject>>, e: Endpoint) {
@@ -239,19 +442,81 @@ function endpointAlive(d: D, objs: Map<string, Draft<PageObject>>, e: Endpoint) 
 
 export function moveObjects(ids: Id[], dx: number, dy: number, record = true) {
   nextLabel('Nudge');
-  const set = new Set(ids);
+  const s = getState();
+  const page = currentPage(s);
+  const all = withContents(s.project, page, ids);
+  const set = new Set(all);
+  const carry = routesToCarry(s.project, page, all);
   updateProject((d) => {
-    for (const o of pageDraft(d).objects) {
+    const pg = pageDraft(d);
+    for (const o of pg.objects) {
       if (set.has(o.id)) {
         o.x += dx;
         o.y += dy;
       }
     }
+    applyCarry(pg, carry, dx, dy);
   }, record);
 }
 
+/** The given objects plus everything inside the selected containers (fully inside its frame). */
+export function withContents(project: Project, page: Page, ids: Id[]): Id[] {
+  const out = new Set(ids);
+  const queue = page.objects.filter((o) => out.has(o.id) && o.kind === 'container');
+  while (queue.length) {
+    const c = queue.pop()!;
+    const b = objBounds(project, c);
+    for (const o of page.objects) {
+      if (out.has(o.id)) continue;
+      const ob = objBounds(project, o);
+      if (ob.x >= b.x && ob.y >= b.y && ob.x + ob.w <= b.x + b.w && ob.y + ob.h <= b.y + b.h) {
+        out.add(o.id);
+        if (o.kind === 'container') queue.push(o);
+      }
+    }
+  }
+  return [...out];
+}
+
+export interface Carry {
+  conns: Map<Id, { bends: number[]; startH: boolean }>;
+  bundles: Map<Id, number[]>;
+}
+
+/** Manual routes whose ends all move together: they move along instead of stretching. */
+export function routesToCarry(project: Project, page: Page, ids: Id[]): Carry {
+  const set = new Set(ids);
+  const conns: Carry['conns'] = new Map();
+  for (const c of page.connections) {
+    if (!c.bends || !set.has(c.from.objId) || !set.has(c.to.objId)) continue;
+    const a = resolveEndpoint(project, page, c.from);
+    if (a) conns.set(c.id, { bends: [...c.bends], startH: axisOf(a) === 'h' });
+  }
+  const bundles: Carry['bundles'] = new Map();
+  for (const b of page.bundles ?? []) {
+    if (!b.bends) continue;
+    const members = page.connections.filter((c) => b.connIds.includes(c.id));
+    if (members.length && members.every((c) => set.has(c.from.objId) && set.has(c.to.objId))) bundles.set(b.id, [...b.bends]);
+  }
+  return { conns, bundles };
+}
+
+const shiftBends = (bends: number[], startH: boolean, dx: number, dy: number) => bends.map((v, i) => v + ((i % 2 === 0) === startH ? dx : dy));
+
+export function applyCarry(pg: Draft<Page>, carry: Carry, dx: number, dy: number) {
+  if (!carry.conns.size && !carry.bundles.size) return;
+  for (const c of pg.connections) {
+    const k = carry.conns.get(c.id);
+    if (k) c.bends = shiftBends(k.bends, k.startH, dx, dy);
+  }
+  for (const b of pg.bundles ?? []) {
+    const k = carry.bundles.get(b.id);
+    if (k) b.bends = shiftBends(k, true, dx, dy);
+  }
+}
+
 export function patchObjects(ids: Id[], patch: (o: Draft<PageObject>) => void, record = true) {
-  nextLabel('Change object');
+  defaultLabel('Change object');
   const set = new Set(ids);
   updateProject((d) => {
     for (const o of pageDraft(d).objects) if (set.has(o.id)) patch(o);
@@ -259,7 +524,7 @@ export function patchObjects(ids: Id[], patch: (o: Draft<PageObject>) => void, r
 }
 
 export function patchConnections(ids: Id[], patch: (c: Draft<Connection>) => void, record = true) {
-  nextLabel('Change line');
+  defaultLabel('Change line');
   const set = new Set(ids);
   updateProject((d) => {
     for (const c of pageDraft(d).connections) if (set.has(c.id)) patch(c);
@@ -267,16 +532,17 @@ export function patchConnections(ids: Id[], patch: (c: Draft<Connection>) => voi
 }
 
 export function setStroke(ids: Id[], style: Partial<StrokeStyle>) {
-  nextLabel('Change line/border style');
+  defaultLabel('Change line/border style');
   const set = new Set(ids);
   updateProject((d) => {
     const pg = pageDraft(d);
     for (const o of pg.objects) {
       if (!set.has(o.id)) continue;
-      if (o.kind === 'text') o.border = { ...(o.border ?? { color: '#000000', width: 1, dash: 'solid' }), ...style };
-      else o.border = { ...o.border, ...style };
+      if (o.kind === 'text' || o.kind === 'image') o.border = { ...(o.border ?? { color: '#000000', width: 1, dash: 'solid' }), ...style } as StrokeStyle;
+      else o.border = { ...o.border, ...style } as StrokeStyle;
     }
-    for (const c of pg.connections) if (set.has(c.id)) c.style = { ...c.style, ...style };
+    for (const c of pg.connections) if (set.has(c.id)) c.style = { ...c.style, ...style } as StrokeStyle;
+    for (const b of pg.bundles ?? []) if (set.has(b.id)) b.style = { ...b.style, ...style } as StrokeStyle;
   });
 }
 
@@ -307,12 +573,13 @@ export function alignSelection(mode: AlignMode) {
     const pg = pageDraft(d);
     for (const { o, b } of bs) {
       const t = pg.objects.find((x) => x.id === o.id)!;
-      if (mode === 'left') t.x = minX;
-      if (mode === 'right') t.x = maxX - b.w;
-      if (mode === 'hcenter') t.x = (minX + maxX) / 2 - b.w / 2;
-      if (mode === 'top') t.y = minY;
-      if (mode === 'bottom') t.y = maxY - b.h;
-      if (mode === 'vcenter') t.y = (minY + maxY) / 2 - b.h / 2;
+      // Bounds may differ from x/y (rotated shapes): move by the difference.
+      if (mode === 'left') t.x += minX - b.x;
+      if (mode === 'right') t.x += maxX - b.w - b.x;
+      if (mode === 'hcenter') t.x += (minX + maxX) / 2 - b.w / 2 - b.x;
+      if (mode === 'top') t.y += minY - b.y;
+      if (mode === 'bottom') t.y += maxY - b.h - b.y;
+      if (mode === 'vcenter') t.y += (minY + maxY) / 2 - b.h / 2 - b.y;
     }
   });
 }
@@ -372,8 +639,8 @@ export function distributeSelection(axis: 'h' | 'v') {
     let pos = axis === 'h' ? first.x : first.y;
     for (const { o, b } of bs) {
       const t = pg.objects.find((x) => x.id === o.id)!;
-      if (axis === 'h') t.x = pos;
-      else t.y = pos;
+      if (axis === 'h') t.x += pos - b.x;
+      else t.y += pos - b.y;
       pos += (axis === 'h' ? b.w : b.h) + gapSize;
     }
   });
@@ -397,7 +664,7 @@ export function zOrder(mode: 'front' | 'back' | 'forward' | 'backward') {
 
 export function selectAll() {
   const pg = currentPage();
-  setState({ selection: [...pg.objects.map((o) => o.id), ...pg.connections.map((c) => c.id)], selectedPorts: [] });
+  setState({ selection: [...pg.objects.map((o) => o.id), ...pg.connections.map((c) => c.id), ...(pg.bundles ?? []).map((b) => b.id)], selectedPorts: [] });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -406,6 +673,7 @@ export function selectAll() {
 interface ClipData {
   objects: PageObject[];
   connections: Connection[];
+  bundles: Bundle[];
   project: Project;
 }
 let clip: ClipData | null = null;
@@ -419,7 +687,9 @@ export function copySelection() {
   if (!objects.length) return;
   const ids = new Set(objects.map((o) => o.id));
   const connections = pg.connections.filter((c) => ids.has(c.from.objId) && ids.has(c.to.objId));
-  clip = { objects, connections, project: s.project };
+  const cids = new Set(connections.map((c) => c.id));
+  const bundles = (pg.bundles ?? []).filter((b) => b.connIds.every((id) => cids.has(id)));
+  clip = { objects, connections, bundles, project: s.project };
   pasteCount = 0;
 }
 
@@ -429,7 +699,7 @@ export function cutSelection() {
 }
 
 /** Copy objects (+ connections among them) with new ids. Blocks get new devices. */
-function copyObjectsInto(project: Project, objects: readonly PageObject[], connections: readonly Connection[], dx: number, dy: number) {
+function copyObjectsInto(project: Project, objects: readonly PageObject[], connections: readonly Connection[], dx: number, dy: number, bundles: readonly Bundle[] = []) {
   const idMap = new Map<string, string>();
   const devices: Record<string, ProjectDevice> = {};
   const scratch = { ...project, devices: { ...project.devices } };
@@ -445,15 +715,25 @@ function copyObjectsInto(project: Project, objects: readonly PageObject[], conne
     }
     return { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
   });
-  const outConns: Connection[] = connections.map((c) => ({
-    ...JSON.parse(JSON.stringify(c)),
-    id: newId('cn'),
-    from: { ...c.from, objId: idMap.get(c.from.objId)! },
-    to: { ...c.to, objId: idMap.get(c.to.objId)! },
-    // Port endpoints always start horizontally, so bends alternate x, y, x...
-    bends: c.bends && isPortEndpoint(c.from) ? c.bends.map((v, i) => v + (i % 2 === 0 ? dx : dy)) : null,
+  const outConns: Connection[] = connections.map((c) => {
+    const id = newId('cn');
+    idMap.set(c.id, id);
+    return {
+      ...JSON.parse(JSON.stringify(c)),
+      id,
+      from: { ...c.from, objId: idMap.get(c.from.objId)! },
+      to: { ...c.to, objId: idMap.get(c.to.objId)! },
+      // Port endpoints always start horizontally, so bends alternate x, y, x...
+      bends: c.bends && isPortEndpoint(c.from) ? c.bends.map((v, i) => v + (i % 2 === 0 ? dx : dy)) : null,
+    };
+  });
+  const outBundles: Bundle[] = bundles.map((b) => ({
+    ...JSON.parse(JSON.stringify(b)),
+    id: newId('bn'),
+    connIds: b.connIds.map((id) => idMap.get(id)!),
+    bends: b.bends ? b.bends.map((v, i) => v + (i % 2 === 0 ? dx : dy)) : null,
   }));
-  return { objects: outObjs, connections: outConns, devices };
+  return { objects: outObjs, connections: outConns, bundles: outBundles, devices };
 }
 
 export function paste() {
@@ -469,16 +749,47 @@ export function paste() {
     const dev = clip.project.devices[o.deviceId];
     if (dev && !s.project.blockDefs[dev.defId]) defs[dev.defId] = clip.project.blockDefs[dev.defId];
   }
+  // Images bring their assets along (e.g. pasting from another project).
+  const assets: Record<string, Asset> = {};
+  for (const o of clip.objects) if (o.kind === 'image' && !s.project.assets[o.assetId] && clip.project.assets[o.assetId]) assets[o.assetId] = clip.project.assets[o.assetId];
   const merged = { ...s.project, devices: { ...s.project.devices, ...clip.project.devices } };
-  const copy = copyObjectsInto(merged, clip.objects, clip.connections, off, off);
+  const copy = copyObjectsInto(merged, clip.objects, clip.connections, off, off, clip.bundles);
   updateProject((d) => {
     Object.assign(d.blockDefs, defs);
     Object.assign(d.devices, copy.devices);
+    Object.assign(d.assets, assets);
     const pg = pageDraft(d);
     pg.objects.push(...(copy.objects as Draft<PageObject>[]));
     pg.connections.push(...(copy.connections as Draft<Connection>[]));
+    (pg.bundles ??= []).push(...(copy.bundles as Draft<Bundle>[]));
   });
-  setState({ selection: [...copy.objects.map((o) => o.id), ...copy.connections.map((c) => c.id)], selectedPorts: [] });
+  setState({ selection: [...copy.objects.map((o) => o.id), ...copy.connections.map((c) => c.id), ...copy.bundles.map((b) => b.id)], selectedPorts: [] });
+}
+
+/**
+ * Paste the copied blocks as further instances of the same devices (e.g. the network switch on
+ * the audio page). Only within the same project; blocks already on this page are skipped.
+ */
+export function pasteAsInstance() {
+  if (!clip) return;
+  const s = getState();
+  const blocks = clip.objects.filter((o): o is BlockObj => o.kind === 'block' && !!s.project.devices[o.deviceId]);
+  if (!blocks.length) {
+    toast('Copy blocks from this project first (Ctrl+C), then Ctrl+Shift+V places the same devices here.', 'warn', 6000);
+    return;
+  }
+  const pg = currentPage(s);
+  const here = new Set(pg.objects.filter((o) => o.kind === 'block').map((o) => (o as BlockObj).deviceId));
+  const add = blocks.filter((b) => !here.has(b.deviceId));
+  if (!add.length) {
+    toast('Those devices are already on this page.', 'warn');
+    return;
+  }
+  const objs: BlockObj[] = add.map((b) => ({ ...b, id: newId('ob'), border: { ...b.border } }));
+  nextLabel(`Place ${plural(objs.length, 'device')} on this page too`, objs.map((o) => s.project.devices[o.deviceId].name));
+  updateProject((d) => void pageDraft(d).objects.push(...(objs as Draft<BlockObj>[])));
+  setState({ selection: objs.map((o) => o.id), selectedPorts: [] });
+  if (add.length < blocks.length) toast(`${plural(blocks.length - add.length, 'device')} already on this page — skipped.`, 'info');
 }
 
 export function duplicateSelection() {
@@ -622,10 +933,27 @@ export function describeConnection(p: Project, page: Page, c: Connection) {
   return `${endpointText(p, page, c.from)} → ${endpointText(p, page, c.to)}${c.label ? ` [${c.label}]` : ''}`;
 }
 
+const KIND_NAMES: Record<PageObject['kind'], string> = {
+  block: 'Block',
+  text: 'Text box',
+  rect: 'Rectangle',
+  ellipse: 'Ellipse',
+  container: 'Container',
+  callout: 'Callout',
+  image: 'Image',
+  tag: 'Tag',
+};
+
+export function kindName(o: PageObject) {
+  return KIND_NAMES[o.kind];
+}
+
 export function describeObject(p: Project, o: PageObject) {
   if (o.kind === 'block') return p.devices[o.deviceId]?.name ?? 'block';
+  if (o.kind === 'tag') return `Tag "${tagText(p, o)}"`;
+  if (o.kind === 'image') return 'Image';
   const t = o.text?.trim().split('\n')[0].slice(0, 24);
-  return (o.kind === 'text' ? 'Text box' : 'Rectangle') + (t ? ` "${t}"` : '');
+  return KIND_NAMES[o.kind] + (t ? ` "${t}"` : '');
 }
 
 /** Replace a project definition with the current library version (by libraryId). */
@@ -762,3 +1090,86 @@ export function autoStraighten(connId: string, maxJog = 24) {
     if (o) o.y += dy;
   }, false);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Snakes (bundles)
+
+/** Why the selected lines can't be bundled, or null if they can. */
+export function bundleProblem(project: Project, page: Page, connIds: Id[]): string | null {
+  const conns = page.connections.filter((c) => connIds.includes(c.id));
+  if (conns.length < 4) return 'A snake needs at least 4 lines.';
+  if ((page.bundles ?? []).some((b) => b.connIds.some((id) => connIds.includes(id)))) return 'Some of those lines are already in a snake.';
+  const objs = new Set(conns.flatMap((c) => [c.from.objId, c.to.objId]));
+  if (objs.size !== 2) return 'All lines must run between the same two devices.';
+  const sides = new Map<string, Set<string>>();
+  const signals = new Set<string>();
+  for (const c of conns) {
+    for (const e of [c.from, c.to]) {
+      const info = portInfo(project, page, e);
+      if (!info) return 'Snakes connect block ports only.';
+      if (!sides.has(e.objId)) sides.set(e.objId, new Set());
+      sides.get(e.objId)!.add(info.side);
+      signals.add((info.port.signal || '').toUpperCase());
+    }
+  }
+  if (signals.size !== 1) return `All lines must carry the same signal type (found ${[...signals].map((x) => x || 'none').join(', ')}).`;
+  if ([...sides.values()].some((x) => x.size > 1)) return 'On each device the ports must be in the same column.';
+  return null;
+}
+
+export function bundleSelection() {
+  const s = getState();
+  const page = currentPage(s);
+  const ids = page.connections.filter((c) => s.selection.includes(c.id)).map((c) => c.id);
+  const problem = bundleProblem(s.project, page, ids);
+  if (problem) {
+    toast('Bundle: ' + problem, 'warn', 6000);
+    return;
+  }
+  // Order the members as their ports appear on the first device.
+  const first = page.connections.find((c) => c.id === ids[0])!;
+  const objA = first.from.objId;
+  const at = (c: Connection) => portInfo(s.project, page, c.from.objId === objA ? c.from : c.to)?.index ?? 0;
+  const conns = page.connections.filter((c) => ids.includes(c.id)).sort((a, b) => at(a) - at(b));
+  const b: Bundle = { id: newId('bn'), connIds: conns.map((c) => c.id), label: '', bends: null, style: { ...conns[0].style, width: Math.max(2, conns[0].style.width * 3) } };
+  nextLabel(`Bundle ${plural(conns.length, 'line')} into a snake`, conns.map((c) => describeConnection(s.project, page, c)));
+  updateProject((d) => void (pageDraft(d).bundles ??= []).push(b as Draft<Bundle>));
+  setState({ selection: [b.id], selectedPorts: [] });
+}
+
+export function unbundle(bundleIds: Id[]) {
+  const s = getState();
+  const page = currentPage(s);
+  const bs = (page.bundles ?? []).filter((b) => bundleIds.includes(b.id) || b.connIds.some((id) => bundleIds.includes(id)));
+  if (!bs.length) return;
+  nextLabel(bs.length === 1 ? 'Unbundle snake' : `Unbundle ${bs.length} snakes`);
+  const gone = new Set(bs.map((b) => b.id));
+  updateProject((d) => {
+    const pg = pageDraft(d);
+    pg.bundles = (pg.bundles ?? []).filter((b) => !gone.has(b.id));
+  });
+  setState({ selection: bs.flatMap((b) => b.connIds), selectedPorts: [] });
+}
+
+export function patchBundles(ids: Id[], patch: (b: Draft<Bundle>) => void, record = true) {
+  defaultLabel('Change snake');
+  const set = new Set(ids);
+  updateProject((d) => {
+    for (const b of pageDraft(d).bundles ?? []) if (set.has(b.id)) patch(b);
+  }, record);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Equipment list
+
+export function equipmentListCsv(project: Project): string {
+  const rows = Object.values(project.devices).map((dev) => {
+    const def = project.blockDefs[dev.defId];
+    return [def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', ')];
+  });
+  rows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]) || a[2].localeCompare(b[2], undefined, { numeric: true }));
+  const esc = (v: string) => (/[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
+  return [['Manufacturer', 'Model', 'Friendly name', 'Page(s)'], ...rows].map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
+}
+
+void rotOf;

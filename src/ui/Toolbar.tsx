@@ -1,6 +1,8 @@
 import { redo, setState, undo, useStore } from '../state/store';
-import { alignSelection, distributeSelection, rangeConnect, straighten, zOrder, type AlignMode } from '../state/actions';
-import { newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
+import { alignSelection, bundleSelection, distributeSelection, rangeConnect, straighten, zOrder, type AlignMode } from '../state/actions';
+import { exportEquipmentListCmd, importMedia, newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
+import { pickFile } from '../io/files';
+import { MEDIA_ACCEPT } from '../io/importMedia';
 import { savePrefs } from '../state/prefs';
 import { getState } from '../state/store';
 
@@ -41,6 +43,7 @@ export function Toolbar() {
         <Btn label="Save" title="Save (Ctrl+S)" onClick={() => void saveCmd()} />
         <Btn label="Save As" title="Save As (Ctrl+Shift+S)" onClick={() => void saveCmd(true)} />
         <Btn label="PDF" title="Export vector PDF" onClick={() => setState({ modal: { kind: 'exportPdf' } })} />
+        <Btn label="Equipment" title="Export the equipment list (CSV): manufacturer, model, friendly name, pages" onClick={() => void exportEquipmentListCmd()} />
       </div>
       <div className="group">
         <Btn label="↶" title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo} />
@@ -51,11 +54,24 @@ export function Toolbar() {
         <Btn label="Select" title="Select (V)" active={tool === 'select'} onClick={() => setState({ tool: 'select' })} />
         <Btn label="Text" title="Text box (T)" active={tool === 'text'} onClick={() => setState({ tool: 'text' })} />
         <Btn label="Rect" title="Rectangle (R)" active={tool === 'rect'} onClick={() => setState({ tool: 'rect' })} />
+        <Btn label="Ellipse" title="Ellipse / circle (E)" active={tool === 'ellipse'} onClick={() => setState({ tool: 'ellipse' })} />
+        <Btn label="Container" title="Container: a labelled frame that moves what's inside it (F)" active={tool === 'container'} onClick={() => setState({ tool: 'container' })} />
+        <Btn label="Callout" title="Callout: text with a pointer (L)" active={tool === 'callout'} onClick={() => setState({ tool: 'callout' })} />
+        <Btn label="Tag" title="Reference tag pointing to a device on another page (G). Tip: drag a line from a port into empty space." active={tool === 'tag'} onClick={() => setState({ tool: 'tag' })} />
+        <Btn
+          label="Image…"
+          title="Import PNG / JPG / PDF / SVG (or drop files on the page, or paste an image)"
+          onClick={async () => {
+            const f = await pickFile(MEDIA_ACCEPT);
+            if (f) void importMedia([f]);
+          }}
+        />
         <Btn label="Hand" title="Pan by dragging (H). You can also right-drag, middle-drag, Space-drag, or drag the grey area." active={tool === 'pan'} onClick={() => setState({ tool: 'pan' })} />
         <Btn label="Insert…" title="Quick insert block (Ctrl+K or Q)" onClick={() => setState({ modal: { kind: 'quickInsert' } })} />
       </div>
       <div className="group">
         <Btn label="Range connect" title="Connect selected port runs pairwise (Shift+C). Shift-click port rows on two blocks first." disabled={portObjs !== 2 || portCount < 2} onClick={rangeConnect} />
+        <Btn label="Bundle" title="Bundle the selected lines into a snake (B): ≥4 lines, same signal, same two devices" disabled={selCount < 4} onClick={bundleSelection} />
       </div>
       <div className="group">
         <Btn label="⇤" title="Align left" disabled={selCount < 2} onClick={align('left')} />

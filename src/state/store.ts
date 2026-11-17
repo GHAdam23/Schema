@@ -49,7 +49,7 @@ export interface HistoryEntry {
   at: number;
 }
 
-export type Tool = 'select' | 'text' | 'rect' | 'pan';
+export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'tag' | 'pan';
 
 export type Modal =
   | { kind: 'blockEditor'; target: 'library' | 'project'; defId: Id | null }
@@ -59,7 +59,9 @@ export type Modal =
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
   | { kind: 'signalTypes' }
-  | { kind: 'history' };
+  | { kind: 'history' }
+  /** Choose the device (and port) a reference tag points to. `isNew`: cancelling removes the tag again. */
+  | { kind: 'tagTarget'; objId: Id; isNew: boolean };
 
 const MAX_HISTORY = 200;
 
@@ -115,6 +117,10 @@ let pendingLabel: { label: string; details?: string[] } | null = null;
 export function nextLabel(label: string, details?: string[]) {
   pendingLabel = { label, details };
   queueMicrotask(() => (pendingLabel = null));
+}
+/** Like nextLabel, but only if no more specific description is already pending. */
+export function defaultLabel(label: string) {
+  if (!pendingLabel) nextLabel(label);
 }
 function takeLabel(fallback = 'Edit') {
   const p = pendingLabel;
@@ -204,7 +210,7 @@ function fixPageAndSelection() {
   const s = state;
   let page = s.project.pages.find((p) => p.id === s.pageId);
   if (!page) page = s.project.pages[0];
-  const ids = new Set([...page.objects.map((o) => o.id), ...page.connections.map((c) => c.id)]);
+  const ids = new Set([...page.objects.map((o) => o.id), ...page.connections.map((c) => c.id), ...(page.bundles ?? []).map((b) => b.id)]);
   setState({ pageId: page.id, selection: s.selection.filter((id) => ids.has(id)), selectedPorts: s.selectedPorts.filter((p) => ids.has(p.objId)) });
 }
 

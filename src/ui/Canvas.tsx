@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, Page, PageObject, Project, RectObj, TextObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, Page, PageObject, Project, TagObj, TextualObj } from '../model/types';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
 import {
@@ -17,11 +17,38 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { buildPage, fitTextBox, labelBox, labelTAt, naturalTextSize, TEXT_PAD } from '../render/buildPage';
+import { buildPage, fitTextBox, labelBox, labelBoxes, labelTAt, naturalTextSize, TEXT_PAD, textBoxOf } from '../render/buildPage';
 import { SvgItems } from '../render/SvgRender';
 import { checkpoint, currentPage, nextLabel, dropCheckpointIfUnchanged, getState, setState, toast, updateProject, useStore } from '../state/store';
-import { addRect, addText, autoStraighten, connect, describeObject, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
-import { hitObject, hitPort, hitShape, hitShapeDot, outlinePoint, portZones, SIDE_CENTRES, type PortHit, type ShapeDot } from './hitTest';
+import {
+  addCallout,
+  addContainer,
+  addEllipse,
+  addRect,
+  addTag,
+  addText,
+  applyCarry,
+  autoStraighten,
+  connect,
+  describeObject,
+  connectionWarnings,
+  jumpToTag,
+  patchBundles,
+  patchConnections,
+  patchObjects,
+  placeBlock,
+  placeInstance,
+  renameDevice,
+  routesToCarry,
+  withContents,
+  type Carry,
+} from '../state/actions';
+import { importMedia } from '../state/fileOps';
+import { centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
+import { tagSize } from '../model/tags';
+import { isMediaFile } from '../io/importMedia';
+import { isPortEndpoint } from '../model/types';
+import { dotPos, hitObject, hitPort, hitShape, hitShapeDot, outlinePointOf, portZones, SIDE_CENTRES, type PortHit, type ShapeDot } from './hitTest';
 
 interface View {
   z: number;
@@ -33,8 +60,10 @@ type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
   | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean; enclose?: boolean }
-  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean }
+  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
+  | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
+  | { t: 'tail'; id: Id }
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl' }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
   | { t: 'label'; connId: Id; moved: boolean }
@@ -88,6 +117,7 @@ export function Canvas() {
 
   const items = useMemo(() => buildPage(project, page, { pageIndex: pageIndex + 1, pageCount: project.pages.length }), [project, page, pageIndex]);
   const routes = useMemo(() => resolvePageRoutes(project, page), [project, page]);
+  const elsewhere = useMemo(() => portsUsedElsewhere(project, pageIndex), [project, pageIndex]);
 
   // ------------------------------------------------------------------------------------------
   // View
@@ -193,25 +223,47 @@ export function Canvas() {
     const hit = (target.closest('[data-hit]') as HTMLElement | null)?.dataset ?? {};
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
 
-    if (s.tool === 'text' || s.tool === 'rect') {
-      const id = s.tool === 'text' ? addText(snapV(p.x), snapV(p.y)) : addRect(snapV(p.x), snapV(p.y));
+    if (s.tool !== 'select' && s.tool !== 'pan') {
+      const x = snapV(p.x);
+      const y = snapV(p.y);
+      const tool = s.tool;
       setState({ tool: 'select' });
-      if (s.tool === 'text') setEditing({ kind: 'text', id });
+      if (tool === 'text') setEditing({ kind: 'text', id: addText(x, y) });
+      else if (tool === 'rect') addRect(x, y);
+      else if (tool === 'ellipse') addEllipse(x, y);
+      else if (tool === 'container') addContainer(x, y);
+      else if (tool === 'callout') setEditing({ kind: 'text', id: addCallout(x, y) });
+      else if (tool === 'tag') setState({ modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
       return;
     }
 
+    if (hit.hit === 'rotate') {
+      const o = pg.objects.find((x) => x.id === hit.id);
+      if (!o) return;
+      checkpoint('Rotate ' + describeObject(s.project, o));
+      const c = centre(localBox(s.project, o));
+      setDrag({ t: 'rotate', id: o.id, c, start: angleDeg(c, p), orig: rotOf(o) });
+      return;
+    }
+    if (hit.hit === 'tail') {
+      checkpoint('Move callout pointer');
+      setDrag({ t: 'tail', id: hit.id! });
+      return;
+    }
     if (hit.hit === 'handle') {
       const id = s.selection[0];
       const o = pg.objects.find((x) => x.id === id);
       if (!o) return;
       checkpoint('Resize ' + describeObject(s.project, o));
-      const b = objBounds(s.project, o);
+      const b = localBox(s.project, o);
       setDrag({ t: 'resize', id, handle: hit.handle as Handle, start: p, orig: o, origSize: { w: b.w, h: b.h } });
       return;
     }
     if (hit.hit === 'label') {
-      checkpoint('Move line label');
       setState({ selection: [hit.id!], selectedPorts: [] });
+      // Labels in a snake sit in the middle of their legs.
+      if (routes.get(hit.id!)?.legs) return;
+      checkpoint('Move line label');
       setDrag({ t: 'label', connId: hit.id!, moved: false });
       return;
     }
@@ -223,7 +275,9 @@ export function Canvas() {
         return;
       }
       if (!s.selection.includes(hit.id!)) setState({ selection: [hit.id!], selectedPorts: [] });
-      checkpoint('Reroute line');
+      // Curves, snake legs and bars aren't rerouted by dragging.
+      if (hit.fixed) return;
+      checkpoint(r.trunk ? 'Reroute snake' : 'Reroute line');
       setDrag({ t: 'segment', connId: hit.id!, seg: Number(hit.seg), start: p, bends: [...r.bends], moved: false });
       return;
     }
@@ -261,10 +315,11 @@ export function Canvas() {
         if (!sel.includes(obj.id)) sel = [...sel, obj.id];
       } else if (!sel.includes(obj.id)) sel = [obj.id];
       setState({ selection: sel, selectedPorts: [] });
-      const ids = sel.filter((id) => pg.objects.some((o) => o.id === id));
+      // Containers carry what's inside them; manual routes between moving objects move along.
+      const ids = withContents(s.project, pg, sel.filter((id) => pg.objects.some((o) => o.id === id)));
       const orig = new Map<Id, Pt>();
       for (const o of pg.objects) if (ids.includes(o.id)) orig.set(o.id, { x: o.x, y: o.y });
-      setDrag({ t: 'move', start: p, ids, orig, moved: false, clickId: obj.id, additive, wasSelected });
+      setDrag({ t: 'move', start: p, ids, orig, moved: false, clickId: obj.id, additive, wasSelected, carry: routesToCarry(s.project, pg, ids) });
       return;
     }
     // Empty space: marquee
@@ -349,7 +404,27 @@ export function Canvas() {
               o.y = op.y + snapped.dy;
             }
           }
+          applyCarry(pgd, d.carry, snapped.dx, snapped.dy);
         }, false);
+        return;
+      }
+      case 'rotate': {
+        let r = d.orig + angleDeg(d.c, p) - d.start;
+        if (e.shiftKey) r = Math.round(r / 15) * 15;
+        else {
+          // Gentle pull to square angles.
+          const sq = Math.round(r / 90) * 90;
+          if (Math.abs(r - sq) < 4) r = sq;
+        }
+        r = Math.round(normDeg(r) * 10) / 10;
+        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && (o.rot = r)), false);
+        return;
+      }
+      case 'tail': {
+        const o = pg.objects.find((x) => x.id === d.id);
+        if (!o || o.kind !== 'callout') return;
+        const q = toLocal(s.project, o, p);
+        patchObjects([d.id], (t) => void (t.kind === 'callout' && (t.tail = { x: Math.round(q.x - t.x), y: Math.round(q.y - t.y) })), false);
         return;
       }
       case 'resize': {
@@ -365,7 +440,7 @@ export function Canvas() {
         setHoverPort(okPort);
         // Over a rectangle / text box: show its dots and the side the line will attach to.
         const sh = okPort ? null : hitShape(s.project, pg, p.x, p.y, 6 / z);
-        if (sh && sh.id !== d.from.objId) setHoverShape({ id: sh.id, dot: { objId: sh.id, ...outlinePoint(objBounds(s.project, sh), p.x, p.y) } });
+        if (sh && sh.id !== d.from.objId) setHoverShape({ id: sh.id, dot: { objId: sh.id, ...outlinePointOf(s.project, sh, p.x, p.y) } });
         else setHoverShape(null);
         return;
       }
@@ -428,6 +503,8 @@ export function Canvas() {
       case 'resize':
       case 'segment':
       case 'label':
+      case 'rotate':
+      case 'tail':
         dropCheckpointIfUnchanged();
         break;
       case 'connect': {
@@ -441,7 +518,7 @@ export function Canvas() {
         if (hp && !(hp.objId === d.from.objId && hp.portId === fromPort)) to = { objId: hp.objId, portId: hp.portId };
         else {
           const o = hitShape(s.project, pg, p.x, p.y, 6 / viewRef.current.z);
-          if (o && o.id !== d.from.objId) to = { objId: o.id, ...outlinePoint(objBounds(s.project, o), p.x, p.y) };
+          if (o && o.id !== d.from.objId) to = { objId: o.id, ...outlinePointOf(s.project, o, p.x, p.y) };
         }
         if (to) {
           const id = connect(d.from, to);
@@ -449,6 +526,9 @@ export function Canvas() {
             autoStraighten(id);
             setState({ selection: [id], selectedPorts: [] });
           }
+        } else if (isPortEndpoint(d.from) && !hitObject(s.project, pg, p.x, p.y) && Math.hypot(p.x - d.start.x, p.y - d.start.y) * viewRef.current.z > 30) {
+          // Released on empty space: end the line in a reference tag and ask where it goes.
+          tagAtLineEnd(d.from, p);
         }
         break;
       }
@@ -481,18 +561,46 @@ export function Canvas() {
     setState({ selectedPorts: ports, selection: objIds });
   };
 
+  const tagAtLineEnd = (from: Endpoint, p: Pt) => {
+    const s = getState();
+    const pg = currentPage(s);
+    const a = resolveEndpoint(s.project, pg, from);
+    if (!a) return;
+    // Level with the port when close, so the line runs straight.
+    const y = Math.abs(p.y - a.y) < 24 ? a.y : p.y;
+    const leftOfPort = p.x < a.x;
+    const id = addTag(snapV(p.x), y, null);
+    const tag = getState().project.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id) as TagObj;
+    const sz = tagSize(getState().project, tag);
+    updateProject((dr) => {
+      const t = dr.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id)!;
+      t.y = y - sz.h / 2;
+      if (leftOfPort) t.x = snapV(p.x) - sz.w;
+    }, false);
+    const cid = connect(from, { objId: id, fx: leftOfPort ? 1 : 0, fy: 0.5 }, { record: false, quiet: true });
+    if (cid) setState({ selection: [id] });
+    setState({ modal: { kind: 'tagTarget', objId: id, isNew: true } });
+  };
+
   const resizeTo = (d: Extract<Drag, { t: 'resize' }>, p: Pt, keepAspect: boolean) => {
     const o = d.orig;
     const b = { x: o.x, y: o.y, w: d.origSize.w, h: d.origSize.h };
+    const rot = rotOf(o);
+    const c0 = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    // Rotated shapes resize in their own frame; snapping only applies when upright.
+    const q = rotatePt(p, c0, -rot);
+    const sv = (v: number) => (rot ? v : snapV(v));
     let x1 = b.x;
     let y1 = b.y;
     let x2 = b.x + b.w;
     let y2 = b.y + b.h;
     const h = d.handle;
-    if (h.includes('w')) x1 = snapV(p.x);
-    if (h.includes('e')) x2 = snapV(p.x);
-    if (h.includes('n')) y1 = snapV(p.y);
-    if (h.includes('s')) y2 = snapV(p.y);
+    if (h.includes('w')) x1 = sv(q.x);
+    if (h.includes('e')) x2 = sv(q.x);
+    if (h.includes('n')) y1 = sv(q.y);
+    if (h.includes('s')) y2 = sv(q.y);
+    // Images keep their proportions on the corner handles (Shift frees them).
+    if (o.kind === 'image' && h.length === 2) keepAspect = !keepAspect;
     if (o.kind === 'block') {
       // Uniform scale, anchored at the opposite corner.
       const sx = (x2 - x1) / b.w;
@@ -528,14 +636,26 @@ export function Canvas() {
       }
     }
     const r = normRect({ x: x1, y: y1 }, { x: x2, y: y2 });
+    r.w = Math.max(6, r.w);
+    r.h = Math.max(6, r.h);
+    // Keep the opposite side fixed on the page: place the new centre through the rotation.
+    const cp = rotatePt({ x: r.x + r.w / 2, y: r.y + r.h / 2 }, c0, rot);
+    const nx = cp.x - r.w / 2;
+    const ny = cp.y - r.h / 2;
     patchObjects(
       [d.id],
       (t) => {
-        if (t.kind === 'block') return;
-        t.x = r.x;
-        t.y = r.y;
-        t.w = Math.max(6, r.w);
-        t.h = Math.max(6, r.h);
+        if (t.kind === 'block' || t.kind === 'tag') return;
+        if (t.kind === 'callout' && o.kind === 'callout') {
+          // The pointer's tip stays where it is.
+          const tip = rotatePt({ x: o.x + o.tail.x, y: o.y + o.tail.y }, c0, rot);
+          const lt = rotatePt(tip, cp, -rot);
+          t.tail = { x: Math.round(lt.x - nx), y: Math.round(lt.y - ny) };
+        }
+        t.x = nx;
+        t.y = ny;
+        t.w = r.w;
+        t.h = r.h;
       },
       false,
     );
@@ -544,11 +664,11 @@ export function Canvas() {
   const dragSegment = (d: Extract<Drag, { t: 'segment' }>, p: Pt) => {
     const s = getState();
     const pg = currentPage(s);
-    const c = pg.connections.find((x) => x.id === d.connId);
-    if (!c) return;
-    const sA = resolveEndpoint(s.project, pg, c.from);
-    const eA = resolveEndpoint(s.project, pg, c.to);
-    if (!sA || !eA) return;
+    // Lines and snake trunks share the route model; the anchors come from the resolved route.
+    const rr = resolvePageRoutes(s.project, pg).get(d.connId);
+    if (!rr) return;
+    const sA = rr.s;
+    const eA = rr.e;
     let bends = [...d.bends];
     let seg = d.seg;
     const n = bends.length;
@@ -573,25 +693,39 @@ export function Canvas() {
     } else {
       bends[seg - 1] = coord;
     }
-    patchConnections([d.connId], (cc) => void (cc.bends = bends), false);
+    if (rr.trunk) patchBundles([d.connId], (b) => void (b.bends = bends), false);
+    else patchConnections([d.connId], (cc) => void (cc.bends = bends), false);
   };
 
   // ------------------------------------------------------------------------------------------
   // Drop from library panel
 
   const onDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/x-schema-block')) {
+    const t = e.dataTransfer.types;
+    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('Files')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   };
   const onDrop = (e: React.DragEvent) => {
+    const p = toPage(e.clientX, e.clientY);
+    const files = [...e.dataTransfer.files].filter(isMediaFile);
+    if (files.length) {
+      e.preventDefault();
+      void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
+      return;
+    }
+    const dev = e.dataTransfer.getData('application/x-schema-device');
+    if (dev) {
+      e.preventDefault();
+      placeInstance(dev, snapV(p.x), snapV(p.y));
+      return;
+    }
     const id = e.dataTransfer.getData('application/x-schema-block');
     if (!id) return;
     e.preventDefault();
     const def = getState().library.find((l) => l.id === id);
     if (!def) return;
-    const p = toPage(e.clientX, e.clientY);
     placeBlock(def, snapV(p.x), snapV(p.y));
   };
 
@@ -609,8 +743,9 @@ export function Canvas() {
     }
     const o = hitObject(s.project, pg, p.x, p.y);
     if (!o) return;
-    if (o.kind === 'text' || o.kind === 'rect') setEditing({ kind: 'text', id: o.id });
-    else if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
+    if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
+    else if (o.kind === 'tag') jumpToTag(o);
+    else if (o.kind !== 'image') setEditing({ kind: 'text', id: o.id });
   };
 
   // ------------------------------------------------------------------------------------------
@@ -683,6 +818,7 @@ export function Canvas() {
             hoverPort={hoverPort}
             hoverShape={hoverShape}
             connecting={drag?.t === 'connect'}
+            elsewhere={elsewhere}
           />
           {preview && <path d={preview} fill="none" stroke={previewWarn.length ? '#d97706' : '#2563eb'} strokeWidth={1 / z} strokeDasharray={`${4 / z} ${3 / z}`} pointerEvents="none" />}
           {drag?.t === 'marquee' && (
@@ -734,7 +870,8 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
   const bounds = moving.map((o) => {
     const op = orig.get(o.id)!;
     const b = objBounds(project, o);
-    return { ...b, x: op.x, y: op.y, o };
+    // Bounds can be offset from x/y (rotated shapes).
+    return { ...b, x: b.x - o.x + op.x, y: b.y - o.y + op.y, o };
   });
   const bx = Math.min(...bounds.map((b) => b.x));
   const by = Math.min(...bounds.map((b) => b.y));
@@ -788,7 +925,7 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
     const myX = [bx, (bx + bx2) / 2, bx2];
     const myY = [by, (by + by2) / 2, by2];
     const myPortY: number[] = [];
-    for (const b of bounds) if (b.o.kind === 'block') myPortY.push(...blockPortYs(project, { ...b.o, x: b.x, y: b.y } as BlockObj));
+    for (const b of bounds) if (b.o.kind === 'block') myPortY.push(...blockPortYs(project, { ...b.o, ...orig.get(b.o.id)! } as BlockObj));
 
     let best = { d: tol, v: 0, at: 0 };
     for (const mx of myX) for (const ox of xs) {
@@ -835,7 +972,39 @@ function blockPortYs(project: Project, o: BlockObj): number[] {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Ports connected on other pages (shown with a small marker; screen only)
+
+type Elsewhere = Map<Id, Map<Id, number[]>>; // deviceId → portId → page numbers (1-based)
+
+function portsUsedElsewhere(project: Project, pageIndex: number): Elsewhere {
+  const out: Elsewhere = new Map();
+  project.pages.forEach((pg, i) => {
+    if (i === pageIndex) return;
+    const dev = new Map<Id, Id>();
+    for (const o of pg.objects) if (o.kind === 'block') dev.set(o.id, o.deviceId);
+    for (const c of pg.connections)
+      for (const e of [c.from, c.to]) {
+        if (!isPortEndpoint(e)) continue;
+        const d = dev.get(e.objId);
+        if (!d) continue;
+        if (!out.has(d)) out.set(d, new Map());
+        const m = out.get(d)!;
+        const list = m.get(e.portId) ?? [];
+        if (!list.includes(i + 1)) list.push(i + 1);
+        m.set(e.portId, list);
+      }
+  });
+  return out;
+}
+
+function angleDeg(c: Pt, p: Pt) {
+  return (Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Overlay: hit targets + selection visuals
+
+const polyD = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join('');
 
 function Overlay(props: {
   project: Project;
@@ -848,54 +1017,89 @@ function Overlay(props: {
   hoverPort: PortHit | null;
   hoverShape: { id: Id; dot: ShapeDot | null } | null;
   connecting: boolean;
+  elsewhere: Elsewhere;
 }) {
-  const { project, page, z, selection, selectedObjs, routes, selectedPorts, hoverPort, hoverShape, connecting } = props;
+  const { project, page, z, selection, selectedObjs, routes, selectedPorts, hoverPort, hoverShape, connecting, elsewhere } = props;
   const hs = 6 / z;
   const sw = 1 / z;
+  const segHit = (id: Id, a: Pt, b: Pt, i: number, fixed: boolean, cursor?: string) =>
+    Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 1e-6 ? null : (
+      <line
+        key={id + ':' + i}
+        data-hit="seg"
+        data-id={id}
+        data-seg={i}
+        data-fixed={fixed ? '1' : undefined}
+        x1={a.x}
+        y1={a.y}
+        x2={b.x}
+        y2={b.y}
+        stroke="transparent"
+        strokeWidth={8 / z}
+        style={{ cursor: cursor ?? 'pointer' }}
+      />
+    );
   return (
     <g>
+      {/* "Used elsewhere": a port of this device is connected on another page */}
+      {page.objects.map((o) => {
+        if (o.kind !== 'block') return null;
+        const m = elsewhere.get(o.deviceId);
+        if (!m) return null;
+        return [...m.entries()].map(([portId, pages]) => {
+          const a = portAnchor(project, o, portId);
+          if (!a) return null;
+          const r = 1.8 * o.scale;
+          const x = a.x + a.dir[0] * (r + 0.8 * o.scale);
+          return (
+            <circle key={o.id + portId} cx={x} cy={a.y} r={r} fill="#0ea5e9" stroke="#fff" strokeWidth={0.4 * o.scale}>
+              <title>{`${a.port.name}: also connected on page ${pages.join(', ')}`}</title>
+            </circle>
+          );
+        });
+      })}
       {/* Connection hit targets */}
-      {page.connections.map((c) => {
-        const r = routes.get(c.id);
-        if (!r) return null;
+      {[...routes.values()].map((r) => {
+        const id = r.conn.id;
+        if (r.legs) return <g key={id}>{r.legs.map((leg, i) => segHit(id, leg[0], leg[1], i, true))}</g>;
+        if (r.curve) return <g key={id}>{r.pts.slice(1).map((b, i) => segHit(id, r.pts[i], b, i, true))}</g>;
         return (
-          <g key={c.id}>
-            {r.raw.slice(1).map((b, i) => {
-              const a = r.raw[i];
-              if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 1e-6) return null;
-              return <line key={i} data-hit="seg" data-id={c.id} data-seg={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={8 / z} style={{ cursor: segCursor(r, i) }} />;
-            })}
+          <g key={id}>
+            {r.raw.slice(1).map((b, i) => segHit(id, r.raw[i], b, i, false, segCursor(r, i)))}
+            {r.trunk?.bars.map((bar, i) => segHit(id, bar[0], bar[1], 1000 + i, true))}
           </g>
         );
       })}
-      {/* Selected connections */}
-      {page.connections
-        .filter((c) => selection.has(c.id))
-        .map((c) => {
-          const r = routes.get(c.id);
-          if (!r) return null;
-          const lb = labelBox(r);
+      {/* Selected connections / snakes */}
+      {[...routes.values()]
+        .filter((r) => selection.has(r.conn.id))
+        .map((r) => {
+          const lbs = labelBoxes(r);
+          const editable = !r.curve && !r.legs;
           return (
-            <g key={c.id} pointerEvents="none">
-              <path d={r.pts.map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join('')} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={3 / z} />
-              {r.raw.slice(1).map((b, i) => {
-                const a = r.raw[i];
-                if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 4 / z) return null;
-                return <rect key={i} x={(a.x + b.x) / 2 - hs / 2} y={(a.y + b.y) / 2 - hs / 2} width={hs} height={hs} fill="#fff" stroke="#2563eb" strokeWidth={sw} />;
-              })}
-              <circle cx={r.s.x} cy={r.s.y} r={2.5 / z} fill="#2563eb" />
-              <circle cx={r.e.x} cy={r.e.y} r={2.5 / z} fill="#2563eb" />
-              {lb && <rect x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="none" stroke="#2563eb" strokeWidth={sw} strokeDasharray={`${2 / z} ${2 / z}`} />}
+            <g key={r.conn.id} pointerEvents="none">
+              <path d={polyD(r.pts)} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={(r.trunk ? 5 : 3) / z} />
+              {r.trunk?.bars.map((bar, i) => <path key={i} d={polyD(bar)} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={5 / z} />)}
+              {editable &&
+                r.raw.slice(1).map((b, i) => {
+                  const a = r.raw[i];
+                  if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 4 / z) return null;
+                  return <rect key={i} x={(a.x + b.x) / 2 - hs / 2} y={(a.y + b.y) / 2 - hs / 2} width={hs} height={hs} fill="#fff" stroke="#2563eb" strokeWidth={sw} />;
+                })}
+              {!r.trunk && <circle cx={r.s.x} cy={r.s.y} r={2.5 / z} fill="#2563eb" />}
+              {!r.trunk && <circle cx={r.e.x} cy={r.e.y} r={2.5 / z} fill="#2563eb" />}
+              {lbs.map((lb, i) => (
+                <rect key={'l' + i} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="none" stroke="#2563eb" strokeWidth={sw} strokeDasharray={`${2 / z} ${2 / z}`} />
+              ))}
             </g>
           );
         })}
       {/* Label hit targets (above segments) */}
-      {page.connections.map((c) => {
-        const r = routes.get(c.id);
-        const lb = r && labelBox(r);
-        if (!lb) return null;
-        return <rect key={c.id} data-hit="label" data-id={c.id} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: 'move' }} />;
-      })}
+      {[...routes.values()].map((r) =>
+        labelBoxes(r).map((lb, i) => (
+          <rect key={r.conn.id + ':' + i} data-hit="label" data-id={r.conn.id} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: r.legs ? 'pointer' : 'move' }} />
+        )),
+      )}
       {/* Port hover / selection */}
       {selectedPorts.map((sp) => {
         const o = page.objects.find((x) => x.id === sp.objId);
@@ -909,16 +1113,16 @@ function Overlay(props: {
         (() => {
           const o = page.objects.find((x) => x.id === hoverShape.id);
           if (!o) return null;
-          const b = objBounds(project, o);
           return (
             <g pointerEvents="none">
               {SIDE_CENTRES.map((c, i) => {
                 const on = hoverShape.dot && hoverShape.dot.fx === c.fx && hoverShape.dot.fy === c.fy;
+                const q = dotPos(project, o, c);
                 return (
                   <circle
                     key={i}
-                    cx={b.x + c.fx * b.w}
-                    cy={b.y + c.fy * b.h}
+                    cx={q.x}
+                    cy={q.y}
                     r={(on ? 3.5 : 2.5) / z}
                     fill={on ? (connecting ? '#16a34a' : '#2563eb') : '#fff'}
                     stroke={connecting ? '#16a34a' : '#2563eb'}
@@ -942,11 +1146,10 @@ function Overlay(props: {
             </g>
           );
         })()}
-      {/* Selected objects */}
-      {selectedObjs.map((o) => {
-        const b = objBounds(project, o);
-        return <rect key={o.id} x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />;
-      })}
+      {/* Selected objects (outline follows rotation) */}
+      {selectedObjs.map((o) => (
+        <path key={o.id} d={polyD(objCorners(project, o)) + 'Z'} fill="none" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />
+      ))}
       {selectedObjs.length === 1 && <Handles project={project} o={selectedObjs[0]} z={z} />}
     </g>
   );
@@ -958,31 +1161,82 @@ function segCursor(r: ResolvedRoute, i: number) {
   return Math.abs(a.y - b.y) < 1e-6 ? 'ns-resize' : 'ew-resize';
 }
 
+const HANDLE_CURSORS = ['ns-resize', 'nesw-resize', 'ew-resize', 'nwse-resize'];
+
 function Handles({ project, o, z }: { project: Project; o: PageObject; z: number }) {
-  const b = objBounds(project, o);
+  if (o.kind === 'tag') return null;
+  const b = localBox(project, o);
+  const rot = rotOf(o);
   const hs = 7 / z;
-  const all: [Handle, number, number, string][] = [
-    ['nw', b.x, b.y, 'nwse-resize'],
-    ['n', b.x + b.w / 2, b.y, 'ns-resize'],
-    ['ne', b.x + b.w, b.y, 'nesw-resize'],
-    ['e', b.x + b.w, b.y + b.h / 2, 'ew-resize'],
-    ['se', b.x + b.w, b.y + b.h, 'nwse-resize'],
-    ['s', b.x + b.w / 2, b.y + b.h, 'ns-resize'],
-    ['sw', b.x, b.y + b.h, 'nesw-resize'],
-    ['w', b.x, b.y + b.h / 2, 'ew-resize'],
+  const all: [Handle, number, number, number][] = [
+    // handle, local x, local y, compass direction (0 = n, 45° steps)
+    ['nw', b.x, b.y, 7],
+    ['n', b.x + b.w / 2, b.y, 0],
+    ['ne', b.x + b.w, b.y, 1],
+    ['e', b.x + b.w, b.y + b.h / 2, 2],
+    ['se', b.x + b.w, b.y + b.h, 3],
+    ['s', b.x + b.w / 2, b.y + b.h, 4],
+    ['sw', b.x, b.y + b.h, 5],
+    ['w', b.x, b.y + b.h / 2, 6],
   ];
   const hs2 = o.kind === 'block' ? all.filter((h) => h[0].length === 2) : all;
+  const at = (x: number, y: number) => fromLocal(project, o, { x, y });
+  const rotH = at(b.x + b.w / 2, b.y - 20 / z);
+  const topC = at(b.x + b.w / 2, b.y);
   return (
     <g>
-      {hs2.map(([h, x, y, cur]) => (
-        <rect key={h} data-hit="handle" data-handle={h} x={x - hs / 2} y={y - hs / 2} width={hs} height={hs} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: cur }} />
-      ))}
+      {o.kind !== 'block' && (
+        <>
+          <line x1={topC.x} y1={topC.y} x2={rotH.x} y2={rotH.y} stroke="#2563eb" strokeWidth={1 / z} pointerEvents="none" />
+          <circle data-hit="rotate" data-id={o.id} cx={rotH.x} cy={rotH.y} r={4 / z} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: 'grab' }}>
+            <title>Rotate (Shift: 15° steps)</title>
+          </circle>
+        </>
+      )}
+      {hs2.map(([h, x, y, dir]) => {
+        const q = at(x, y);
+        const cur = HANDLE_CURSORS[(dir + Math.round(rot / 45)) % 4];
+        return (
+          <rect
+            key={h}
+            data-hit="handle"
+            data-handle={h}
+            x={q.x - hs / 2}
+            y={q.y - hs / 2}
+            width={hs}
+            height={hs}
+            fill="#fff"
+            stroke="#2563eb"
+            strokeWidth={1 / z}
+            transform={rot ? `rotate(${rot} ${q.x} ${q.y})` : undefined}
+            style={{ cursor: cur }}
+          />
+        );
+      })}
+      {o.kind === 'callout' &&
+        (() => {
+          const q = at(o.x + o.tail.x, o.y + o.tail.y);
+          const r = 4.5 / z;
+          return (
+            <path
+              data-hit="tail"
+              data-id={o.id}
+              d={`M${q.x} ${q.y - r}L${q.x + r} ${q.y}L${q.x} ${q.y + r}L${q.x - r} ${q.y}Z`}
+              fill="#facc15"
+              stroke="#a16207"
+              strokeWidth={1 / z}
+              style={{ cursor: 'move' }}
+            >
+              <title>Drag to point the callout</title>
+            </path>
+          );
+        })()}
     </g>
   );
 }
 
 // ---------------------------------------------------------------------------------------------
-// Inline editor (text boxes, device names, line labels)
+// Inline editor (text in shapes, device names, line labels)
 
 function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View; onDone: () => void }) {
   const s = getState();
@@ -998,22 +1252,29 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
   let rect = { x: 0, y: 0, w: 120, h: 20 };
   let initial = '';
   let fontSize = 9;
+  let rotate: { deg: number; origin: string } | null = null;
   let commit: (v: string) => void = () => {};
   const tr = (r: { x: number; y: number; w: number; h: number }) => ({ x: r.x * view.z + view.px, y: r.y * view.z + view.py, w: r.w * view.z, h: r.h * view.z });
 
   if (editing.kind === 'text') {
-    const o = pg.objects.find((x) => x.id === editing.id) as TextObj | RectObj | undefined;
-    if (!o) return null;
-    rect = tr({ x: o.x, y: o.y, w: o.w, h: Math.max(o.h, 20) });
+    const o = pg.objects.find((x) => x.id === editing.id) as TextualObj | undefined;
+    if (!o || !('text' in o)) return null;
+    const tb = o.kind === 'container' ? { ...textBoxOf(o), h: Math.max(textBoxOf(o).h, o.fontSize * 1.2 + TEXT_PAD * 2) } : o;
+    rect = tr({ x: tb.x, y: tb.y, w: tb.w, h: Math.max(tb.h, 20) });
+    const rot = rotOf(o);
+    if (rot) {
+      const c = centre(localBox(s.project, o));
+      rotate = { deg: rot, origin: `${(c.x - tb.x) * view.z}px ${(c.y - tb.y) * view.z}px` };
+    }
     initial = o.text;
-    fontSize = fitTextBox(o).size * view.z;
+    fontSize = fitTextBox(textBoxOf(o)).size * view.z;
     commit = (v) => {
       nextLabel('Edit text');
       patchObjects([o.id], (t) => {
-        if (t.kind !== 'text' && t.kind !== 'rect') return;
+        if (!('text' in t)) return;
         t.text = v;
         // Text boxes grow to fit what was typed (like PowerPoint); shrinking the box later scales the text.
-        if (t.kind === 'text') {
+        if (t.kind === 'text' && o.kind === 'text') {
           const n = naturalTextSize({ ...o, text: v });
           if (t.wrap === false && n.w > t.w) t.w = Math.ceil(n.w);
           if (n.h > t.h) t.h = Math.ceil(n.h);
@@ -1063,6 +1324,8 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
     height: editing.kind === 'text' ? Math.max(rect.h, 24) : undefined,
     fontSize,
     padding: editing.kind === 'text' ? TEXT_PAD * view.z : 2,
+    transform: rotate ? `rotate(${rotate.deg}deg)` : undefined,
+    transformOrigin: rotate?.origin,
   };
   if (editing.kind === 'text')
     return (

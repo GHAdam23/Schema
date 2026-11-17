@@ -114,12 +114,12 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - [x] Style properties, grid/snap/guides, undo/redo
 - [x] Save/open project, autosave/backups, vector PDF export
 
-**Phase 2**
-- Curved lines, snakes
-- Circles, containers, callouts, rotation for shapes/text/images
-- Image/PDF/SVG import
-- Multi-page device instances + reference tags
-- Equipment list export
+**Phase 2** — ✅ implemented (first cut, awaiting test feedback)
+- [x] Curved lines, snakes
+- [x] Circles/ellipses, containers, callouts, rotation for shapes/text/images
+- [x] Image/PDF/SVG import
+- [x] Multi-page device instances + reference tags
+- [x] Equipment list export
 
 **Phase 3**
 - Cable list, optional signal-type colors, auto-label numbering, quality-of-life polish
@@ -169,8 +169,20 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Quick insert: `Q` or `Ctrl+K`, Enter drops the block at the cursor.
 - Shortcuts: V/T/R tools, Ctrl+Z/Y, Ctrl+C/X/V/D/A, Delete, Ctrl+S / Ctrl+Shift+S / Ctrl+O, Ctrl+0 fit, Ctrl+± zoom, Space/middle-drag pan, Ctrl+wheel zoom.
 
-### Not in Phase 1 (by design / later phases)
-- No obstacle-avoiding autorouter (spec). "Used elsewhere" port markers and reference tags are Phase 2.
+### Phase 2 (decisions made while building)
+- **Display list** gained `group` items (an affine matrix + child items) for rotation and imported SVG art, and even-odd fills. SVG backend: `<g transform="matrix(…)">`; PDF backend: the same matrix conjugated by the y-flip and applied with `cm`.
+- **Rotation** (`rot`, degrees clockwise about the box centre) on text boxes, rectangles, ellipses, containers, callouts and images; blocks and tags never rotate. Round handle above the selection (Shift = 15° steps, gentle snap to 0/90/180/270), number field + ⟲/⟳ in Properties. Resizing a rotated shape works in its own frame and keeps the opposite side fixed; grid snap only applies when upright. Routing obstacles, marquee, align/distribute use the rotated bounding box. Lines to a rotated shape attach to its rotated side centres and leave along the nearest axis.
+- **Ellipse** (`E`): text is laid out in the inscribed rectangle. **Container** (`F`): labelled frame (label band along the top, optional band fill, dashed by default); created behind everything; only its frame/label band is clickable, so clicks and drag-selection inside reach its contents; moving it (drag or arrow keys) moves everything fully inside it, nested containers included. **Callout** (`L`): text box with a wedge to a tail point, dragged by the yellow diamond; the tail tip stays put when the callout is resized.
+- Moving several objects now also moves manual line routes (and snake trunks) whose ends all move together, instead of stretching them.
+- **Curved lines**: per-line Routing = Right-angle / Curved (Properties, or buttons for several lines). One cubic Bézier leaving each end along its port/side direction; no segment editing, no hops; the label stays horizontal in a gap cut out of the curve (exact sub-curves in the export).
+- **Snakes**: `B` / Bundle with ≥4 lines selected — same signal type (case-insensitive), same two blocks, ports in one column on each block, not already bundled; otherwise a toast says why. Model: `page.bundles[]` = member line ids + trunk label/style/bends. Each member keeps a leg out of its port long enough for its full label (shown on both legs); legs join a vertical bar; bars join one trunk (default 3× the line width, auto-routed around objects, segments draggable like a line). Clicking a leg selects that line (its whole run is highlighted); clicking the trunk selects the snake (label, style, Reset route, Select lines, Unbundle `U`). Delete on a selected snake deletes its lines; deleting lines shrinks the snake and dissolves it below 2 lines. Copy/paste and duplicate page keep snakes.
+- **Imports** (toolbar Image…, drop files on the page, or paste an image): PNG/JPG embedded as-is (placed at 96 dpi). PDF: the original file is stored; the export embeds the chosen page as vector (pdf-lib `embedPage`); the screen shows a pdf.js raster preview made at import (`pdfjs-dist`, loaded on demand). Multi-page PDFs ask which page. Files pdf-lib can't embed (e.g. encrypted) are refused at import. SVG: converted at import into plain vector paths (computed styles and transforms read through the browser, arcs/quads → cubics) and drawn identically on screen and in the PDF; text, `<use>`, embedded images, clips/masks are skipped (with a warning — convert text to outlines); gradients use their first stop colour; partial transparency is ignored. Images keep their proportions on corner handles (Shift stretches); "Original proportions" button. Unused imported assets are dropped from the project. Known limit: a PDF page with a `/Rotate` entry may export unrotated.
+- `.schema` zips store PDF previews as `assets/<id>.preview`; SVG vector data sits in `project.json`.
+- **Device instances**: Devices tab in the left panel lists project devices with the pages they're on (click a page number to go there); drag or double-click places another instance of the same device on the current page (not twice on one page). `Ctrl+Shift+V` pastes copied blocks as instances. Block properties show "Also on page …". Ports connected on another page get a small blue dot just outside the port (tooltip lists the pages) — **screen only**, not printed (tags are the printed cross-reference).
+- **Reference tags** (`G`, or drag a line from a port and let go on empty space): a picker asks for the device (and optional port); Cancel removes the new tag again. Text = `TO|FROM (page) NAME [PORT] [extra text]`; TO/FROM is automatic from the attached line (tag at the line's end = TO) or forced; the page is where the device (preferably the linked port's connection) is, preferring a page other than the tag's own. Size is automatic; when a line is attached to the tag's right side the right edge stays put as the text changes. **Double-click** a tag (or "Go to page N") to jump to the device — a single click selects/moves it like any object (deviation from "clicking it jumps").
+- **Equipment list** (toolbar Equipment): CSV with Manufacturer, Model, Friendly name, Page(s), sorted; UTF-8 with BOM so Excel reads it.
+- History: specific labels (e.g. "Edit text") are no longer overwritten by the generic "Change object".
+- New shortcuts: `E` ellipse, `F` container, `L` callout, `G` tag, `B` bundle, `U` unbundle, `Ctrl+Shift+V` paste as instance.
 
 ## 11. Feedback log
 

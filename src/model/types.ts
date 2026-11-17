@@ -69,23 +69,78 @@ export interface TextProps {
   wrap?: boolean;
 }
 
-export interface TextObj extends ObjBase, TextProps {
-  kind: 'text';
+/** Objects with a box that can be rotated about their centre (everything except blocks and tags). */
+interface BoxBase extends ObjBase {
   w: number;
   h: number;
+  /** Rotation in degrees, clockwise, about the box centre. */
+  rot?: number;
+}
+
+export interface TextObj extends BoxBase, TextProps {
+  kind: 'text';
   border: StrokeStyle | null;
   fill: string | null;
 }
 
-export interface RectObj extends ObjBase, TextProps {
+export interface RectObj extends BoxBase, TextProps {
   kind: 'rect';
-  w: number;
-  h: number;
   border: StrokeStyle;
   fill: string | null;
 }
 
-export type PageObject = BlockObj | TextObj | RectObj;
+export interface EllipseObj extends BoxBase, TextProps {
+  kind: 'ellipse';
+  border: StrokeStyle;
+  fill: string | null;
+}
+
+/** Labelled grouping frame: moving it moves what's inside. Label in a band along the top (`text`). */
+export interface ContainerObj extends BoxBase, TextProps {
+  kind: 'container';
+  border: StrokeStyle;
+  fill: string | null;
+  /** Fill of the label band (null = none). */
+  headerFill: string | null;
+}
+
+/** Text box with a pointer. `tail` is relative to the box's top-left, in unrotated box coordinates. */
+export interface CalloutObj extends BoxBase, TextProps {
+  kind: 'callout';
+  border: StrokeStyle;
+  fill: string | null;
+  tail: { x: number; y: number };
+}
+
+/** Imported image (PNG/JPG), single PDF page (stays vector) or SVG (converted to vector paths). */
+export interface ImageObj extends BoxBase {
+  kind: 'image';
+  assetId: Id;
+  border: StrokeStyle | null;
+}
+
+export type TagDir = 'auto' | 'TO' | 'FROM';
+
+/**
+ * Reference tag: a box at the end of a line pointing to a device (optionally one of its ports)
+ * anywhere in the project. Its text is generated: `TO|FROM (page#) NAME [PORT] [note]`. Size is automatic.
+ */
+export interface TagObj extends ObjBase {
+  kind: 'tag';
+  target: { deviceId: Id; portId?: Id } | null;
+  dir: TagDir;
+  showPort: boolean;
+  note: string;
+  fontSize: number;
+  border: StrokeStyle;
+  fill: string | null;
+}
+
+export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj;
+/** Objects that have a free box (x, y, w, h, rot). */
+export type BoxObj = Exclude<PageObject, BlockObj | TagObj>;
+/** Objects that hold editable text in their box. */
+export type TextualObj = TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj;
 
 /** Where a connection ends. For blocks a port; for shapes a point on the outline (fractions of w/h). */
 export type Endpoint =
@@ -104,6 +159,21 @@ export interface Connection {
   /** Label position along the line, 0..1 of total length. null = automatic (middle of the longest horizontal run). */
   labelT: number | null;
   style: StrokeStyle;
+  /** Curved (one smooth Bézier between the anchors) instead of right-angle. */
+  curved?: boolean;
+}
+
+/**
+ * Snake: ≥4 lines of one signal type between the same two blocks drawn as one heavier trunk.
+ * Each line keeps a short leg (with its full label) at each end; legs join a bar, bars join the trunk.
+ */
+export interface Bundle {
+  id: Id;
+  connIds: Id[];
+  label: string;
+  /** Trunk route (same encoding as Connection.bends). null = automatic. */
+  bends: number[] | null;
+  style: StrokeStyle;
 }
 
 export type PageSizeId = 'letter' | 'tabloid';
@@ -114,6 +184,7 @@ export interface Page {
   size: PageSizeId;
   objects: PageObject[];
   connections: Connection[];
+  bundles: Bundle[];
 }
 
 export interface ProjectInfo {
@@ -134,9 +205,24 @@ export interface Asset {
   mime: string;
   /** base64 data (no data: prefix) */
   data: string;
-  /** Natural pixel size, used to keep the aspect ratio. */
+  /** Natural size (pixels for images, points for PDF/SVG), used to keep the aspect ratio. */
   w: number;
   h: number;
+  /** PDF: page index used (0-based). */
+  page?: number;
+  /** PDF: raster preview for the screen (the export embeds the original page as vector). */
+  preview?: { mime: string; data: string };
+  /** SVG: the drawing converted to vector paths in a w×h box (drawn on screen and in the PDF). */
+  vector?: VectorPath[];
+}
+
+export interface VectorPath {
+  /** SVG path data, absolute M/L/C/Z only. */
+  d: string;
+  fill: string | null;
+  stroke: string | null;
+  width: number;
+  evenOdd?: boolean;
 }
 
 export interface Project {

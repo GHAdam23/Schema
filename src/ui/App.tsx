@@ -6,7 +6,8 @@ import { LibraryPanel } from './LibraryPanel';
 import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
 import { QuickInsert } from './QuickInsert';
-import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog } from './Dialogs';
+import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog, TagTargetDialog } from './Dialogs';
+import { isMediaFile } from '../io/importMedia';
 import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
   copySelection,
@@ -15,13 +16,18 @@ import {
   duplicateSelection,
   moveObjects,
   paste,
+  pasteAsInstance,
   rangeConnect,
   selectAll,
   straighten,
+  bundleSelection,
+  unbundle,
 } from '../state/actions';
-import { openProjectCmd, saveCmd } from '../state/fileOps';
+import { importMedia, openProjectCmd, saveCmd } from '../state/fileOps';
 
 let pendingTyped: { id: string; text: string; at: number } | null = null;
+/** Ctrl+V waits a moment for the paste event: an image on the clipboard is imported instead. */
+let pendingPaste: number | undefined;
 
 export function App() {
   const modal = useStore((s) => s.modal);
@@ -78,7 +84,7 @@ export function App() {
         if (e.key === 'Enter' || e.key === 'F2') {
           if (conn) return edit({ kind: 'label', id });
           if (obj?.kind === 'block') return edit({ kind: 'device', id });
-          if (obj) return edit({ kind: 'text', id });
+          if (obj && 'text' in obj) return edit({ kind: 'text', id });
         }
       }
       if (mod && k === 'z') {
@@ -90,7 +96,13 @@ export function App() {
         redo();
       } else if (mod && k === 'c') copySelection();
       else if (mod && k === 'x') cutSelection();
-      else if (mod && k === 'v') paste();
+      else if (mod && k === 'v') {
+        if (e.shiftKey) pasteAsInstance();
+        else {
+          clearTimeout(pendingPaste);
+          pendingPaste = window.setTimeout(paste, 80);
+        }
+      }
       else if (mod && k === 'd') {
         e.preventDefault();
         duplicateSelection();
@@ -113,6 +125,12 @@ export function App() {
       else if (!mod && k === 'v') setState({ tool: 'select' });
       else if (!mod && k === 't') setState({ tool: 'text' });
       else if (!mod && k === 'r') setState({ tool: 'rect' });
+      else if (!mod && k === 'e') setState({ tool: 'ellipse' });
+      else if (!mod && k === 'f') setState({ tool: 'container' });
+      else if (!mod && k === 'l') setState({ tool: 'callout' });
+      else if (!mod && k === 'g') setState({ tool: 'tag' });
+      else if (!mod && k === 'b') bundleSelection();
+      else if (!mod && k === 'u') unbundle(s.selection);
       else if (!mod && k === 's') straighten();
       else if (!mod && k === 'h') setState({ tool: 'pan' });
       else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
@@ -126,6 +144,16 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onKey);
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest?.('input, textarea, [contenteditable=true]') || getState().modal) return;
+      const files = [...(e.clipboardData?.files ?? [])].filter(isMediaFile);
+      if (!files.length) return;
+      e.preventDefault();
+      clearTimeout(pendingPaste);
+      void importMedia(files);
+    };
+    window.addEventListener('paste', onPaste);
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       // The autosave keeps work safe, but warn if the file on disk is out of date.
       if (getState().dirty && getState().fileHandle) e.preventDefault();
@@ -133,6 +161,7 @@ export function App() {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('paste', onPaste);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
   }, []);
@@ -156,6 +185,7 @@ export function App() {
       {modal?.kind === 'backups' && <BackupsDialog />}
       {modal?.kind === 'signalTypes' && <SignalTypesDialog />}
       {modal?.kind === 'history' && <HistoryDialog />}
+      {modal?.kind === 'tagTarget' && <TagTargetDialog key={modal.objId} objId={modal.objId} isNew={modal.isNew} />}
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={'toast ' + t.kind}>
