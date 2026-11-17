@@ -11,6 +11,7 @@ import type {
   Endpoint,
   Id,
   ImageObj,
+  LineGlue,
   LineObj,
   Page,
   PageObject,
@@ -27,6 +28,7 @@ import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
 import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } from '../model/defaults';
 import { blockFor, findPort, portAnchor } from '../model/blockGeometry';
+import { LINE_H, lineBox, lineEnds } from '../model/glue';
 import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
 import { normDeg, rotOf } from '../model/geom';
 import { devicePages, tagRowFit, tagSize, tagTargetPage, tagText } from '../model/tags';
@@ -153,21 +155,22 @@ export function uniqueDeviceName(p: Project, base: string): string {
   return stem + n;
 }
 
-export function addText(x: number, y: number, text = 'Text'): Id {
+/** A text box: clicked = grows with its text (no wrap); dragged out to a size (w, h given) = wraps. */
+export function addText(x: number, y: number, text = 'Text', w?: number, h?: number): Id {
   nextLabel('Add text box');
   const o: TextObj = {
     id: newId('ob'),
     kind: 'text',
     x,
     y,
-    w: 108,
-    h: 27,
+    w: w ?? 108,
+    h: h ?? 27,
     text,
     fontSize: 9,
     bold: false,
     align: 'left',
     valign: 'top',
-    wrap: false,
+    wrap: w !== undefined,
     color: '#000000',
     border: null,
     fill: null,
@@ -237,19 +240,21 @@ export function addContainer(x: number, y: number, w = 216, h = 144): Id {
   return o.id;
 }
 
-export function addCallout(x: number, y: number, shape: CalloutObj['shape'] = 'box'): Id {
+export function addCallout(x: number, y: number, shape: CalloutObj['shape'] = 'box', w?: number, h?: number): Id {
   const cloud = shape === 'cloud';
   nextLabel(cloud ? 'Add thought bubble' : 'Add callout');
+  w ??= cloud ? 162 : 108;
+  h ??= cloud ? 90 : 36;
   const o: CalloutObj = {
     id: newId('ob'),
     kind: 'callout',
     x,
     y,
-    w: cloud ? 162 : 108,
-    h: cloud ? 90 : 36,
+    w,
+    h,
     border: { color: '#000000', width: 0.75, dash: 'solid' },
     fill: '#ffffff',
-    tail: cloud ? { x: 200, y: 110 } : { x: -36, y: 60 },
+    tail: defaultTail(cloud, w, h),
     ...textDefaults,
     text: 'Note',
     wrap: true,
@@ -260,7 +265,12 @@ export function addCallout(x: number, y: number, shape: CalloutObj['shape'] = 'b
   return o.id;
 }
 
-export const LINE_H = 8;
+/** Where a new callout points: below-left of a box, below-right of a cloud. */
+export function defaultTail(cloud: boolean, w: number, h: number) {
+  return cloud ? { x: w + 38, y: h + 20 } : { x: -36, y: h + 24 };
+}
+
+export { LINE_H, lineBox, lineEnds };
 
 /** A drawn line / arrow from (x1, y1) to (x2, y2). */
 export function addLine(x1: number, y1: number, x2: number, y2: number, arrows: LineObj['arrows'], record = true): Id {
@@ -271,26 +281,24 @@ export function addLine(x1: number, y1: number, x2: number, y2: number, arrows: 
   return o.id;
 }
 
-/** Box + rotation of a line between two page points. */
-export function lineBox(x1: number, y1: number, x2: number, y2: number) {
-  const w = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
-  const cx = (x1 + x2) / 2;
-  const cy = (y1 + y2) / 2;
-  const rot = normDeg((Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI);
-  return { x: cx - w / 2, y: cy - LINE_H / 2, w, h: LINE_H, rot: Math.round(rot * 100) / 100 };
-}
-
-/** The two ends of a drawn line on the page. */
-export function lineEnds(o: LineObj) {
-  const a = (normDeg(o.rot ?? 0) * Math.PI) / 180;
-  const cx = o.x + o.w / 2;
-  const cy = o.y + o.h / 2;
-  const hx = (Math.cos(a) * o.w) / 2;
-  const hy = (Math.sin(a) * o.w) / 2;
-  return [
-    { x: cx - hx, y: cy - hy },
-    { x: cx + hx, y: cy + hy },
-  ];
+/**
+ * Moving a drawn line by itself lets go of what its ends are glued to (unless that moves too).
+ * Call inside the move's update.
+ */
+export function unglueMoved(pg: Draft<Page>, ids: Set<Id>) {
+  for (const o of pg.objects) {
+    if (o.kind !== 'line' || !o.ends || !ids.has(o.id)) continue;
+    const keeps = (g: LineGlue | null) => {
+      if (!g) return null;
+      if ('connId' in g) {
+        const c = pg.connections.find((x) => x.id === g.connId);
+        return c && ids.has(c.from.objId) && ids.has(c.to.objId) ? g : null;
+      }
+      return ids.has(g.objId) ? g : null;
+    };
+    const ends: [LineGlue | null, LineGlue | null] = [keeps(o.ends[0] as LineGlue | null), keeps(o.ends[1] as LineGlue | null)];
+    if (JSON.stringify(ends) !== JSON.stringify(o.ends)) o.ends = ends[0] || ends[1] ? ends : undefined;
+  }
 }
 
 /**
@@ -604,6 +612,12 @@ export function deleteSelection() {
   const trunkLines = (page0.bundles ?? []).filter((b) => s.selection.includes(b.id)).flatMap((b) => b.connIds);
   const sel = new Set([...s.selection, ...trunkLines]);
   if (!sel.size) return;
+  // Reference tags wired only to what's being deleted go with it.
+  for (const t of page0.objects) {
+    if (t.kind !== 'tag' || sel.has(t.id)) continue;
+    const others = page0.connections.filter((c) => c.from.objId === t.id || c.to.objId === t.id).map((c) => (c.from.objId === t.id ? c.to.objId : c.from.objId));
+    if (others.length && others.every((id) => sel.has(id))) sel.add(t.id);
+  }
   // A tag's automatic partner at the far end goes too.
   const partners = new Set(page0.objects.filter((o): o is TagObj => o.kind === 'tag' && sel.has(o.id) && !!o.pairId).map((o) => o.pairId!));
   const page = page0;
@@ -626,6 +640,13 @@ export function deleteSelection() {
     }
     gc(d);
   });
+  // Tags elsewhere that went because their device is gone: say so in History.
+  const after = new Set(getState().project.pages.flatMap((p) => p.objects.map((o) => o.id)));
+  const gone = s.project.pages.flatMap((p, i) => p.objects.filter((o) => o.kind === 'tag' && !after.has(o.id) && !sel.has(o.id)).map((o) => `Tag "${tagText(s.project, o as TagObj)}" (page ${i + 1})`));
+  if (gone.length) {
+    const last = getState().pastLog[getState().pastLog.length - 1];
+    labelLast(last.label + `, ${plural(gone.length, 'reference tag')} elsewhere`, [...(last.details ?? []), ...gone.map((g) => 'Removed: ' + g)]);
+  }
   setState({ selection: [], selectedPorts: [] });
 }
 
@@ -640,6 +661,13 @@ export function gc(d: D) {
   for (const pg of d.pages) {
     const objs = new Map(pg.objects.map((o) => [o.id, o]));
     pg.connections = pg.connections.filter((c) => endpointAlive(d, objs, c.from) && endpointAlive(d, objs, c.to));
+    pruneBundles(pg);
+  }
+  // Reference tags pointing at a device that no longer exists anywhere.
+  for (const pg of d.pages) pg.objects = pg.objects.filter((o) => !(o.kind === 'tag' && o.target && !d.devices[o.target.deviceId]));
+  for (const pg of d.pages) {
+    const objs = new Set(pg.objects.map((o) => o.id));
+    pg.connections = pg.connections.filter((c) => objs.has(c.from.objId) && objs.has(c.to.objId));
     pruneBundles(pg);
   }
   // Imported images no longer used (the logo is kept).
@@ -682,6 +710,7 @@ export function moveObjects(ids: Id[], dx: number, dy: number, record = true) {
       }
     }
     applyCarry(pg, carry, dx, dy);
+    unglueMoved(pg, set);
   }, record);
 }
 
@@ -1174,6 +1203,15 @@ function copyObjectsInto(
       delete o.tailTo;
     }
   });
+  // Drawn lines glued to something: follow the copy of it, or let go.
+  for (const o of outObjs) {
+    if (o.kind !== 'line' || !o.ends) continue;
+    o.ends = o.ends.map((g) => {
+      if (!g) return null;
+      const to = idMap.get('connId' in g ? g.connId : g.objId);
+      return to ? ('connId' in g ? { ...g, connId: to } : { ...g, objId: to }) : null;
+    }) as [LineGlue | null, LineGlue | null];
+  }
   const outBundles: Bundle[] = bundles.map((b) => ({
     ...JSON.parse(JSON.stringify(b)),
     id: newId('bn'),
@@ -1620,6 +1658,33 @@ export function bundleProblem(project: Project, page: Page, connIds: Id[]): stri
   if (signals.size > 1) return `All lines must carry the same signal type (found ${[...signals].map((x) => x || 'none').join(', ')}).`;
   if ([...sides.values()].some((x) => x.size > 1)) return 'On each device the ports must be in the same column.';
   return null;
+}
+
+/**
+ * Select the next / previous line (Shift+↓ / Shift+↑), e.g. to label lines one after another:
+ * first the other lines leaving the same object, top to bottom, then all lines on the page.
+ */
+export function selectNextLine(dir: 1 | -1) {
+  const s = getState();
+  const page = currentPage(s);
+  const routes = resolvePageRoutes(s.project, page);
+  const cur = page.connections.find((c) => c.id === s.selection[0]);
+  const at = (c: Connection) => routes.get(c.id)?.s ?? { x: 0, y: 0 };
+  const order = (a: Connection, b: Connection) => at(a).y - at(b).y || at(a).x - at(b).x;
+  const all = [...page.connections].sort(order);
+  if (!all.length) return;
+  if (!cur) {
+    setState({ selection: [dir > 0 ? all[0].id : all[all.length - 1].id], selectedPorts: [] });
+    return;
+  }
+  const same = all.filter((c) => c.from.objId === cur.from.objId);
+  const i = same.indexOf(cur);
+  let next = same[i + dir];
+  if (!next) {
+    const j = all.indexOf(cur);
+    next = all[(j + dir + all.length) % all.length];
+  }
+  setState({ selection: [next.id], selectedPorts: [] });
 }
 
 export function bundleSelection() {

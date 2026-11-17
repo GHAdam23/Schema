@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { produce, freeze, type Draft } from 'immer';
 import type { BlockDef, Id, Project } from '../model/types';
 import { newProject } from '../model/project';
+import { syncGlue } from '../model/glue';
 import { loadPrefs, type Prefs } from './prefs';
 
 export interface PortRef {
@@ -135,7 +136,11 @@ function takeLabel(fallback = 'Edit') {
  */
 export function updateProject(recipe: (d: Draft<Project>) => void, record: boolean | string = true) {
   const prev = state.project;
-  const next = produce(prev, recipe);
+  // Glued drawn lines keep in step with what they're glued to.
+  const next = produce(prev, (d) => {
+    recipe(d);
+    syncGlue(d as Project);
+  });
   if (next === prev) return;
   const rec = record !== false;
   setState((s) => ({

@@ -20,6 +20,7 @@ import {
   selectAll,
   straighten,
   bundleSelection,
+  selectNextLine,
   unbundle,
 } from '../state/actions';
 import { importMedia, openProjectCmd, saveCmd } from '../state/fileOps';
@@ -140,7 +141,11 @@ export function App() {
       else if (!mod && k === 's') straighten();
       else if (!mod && k === 'h') setState({ tool: 'pan' });
       else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
-      else if (k.startsWith('arrow')) {
+      else if (e.shiftKey && (k === 'arrowdown' || k === 'arrowup') && s.selection.length === 1 && currentPage(s).connections.some((c) => c.id === s.selection[0])) {
+        // A line is selected: step to the next / previous line (then just type to label it).
+        e.preventDefault();
+        selectNextLine(k === 'arrowdown' ? 1 : -1);
+      } else if (k.startsWith('arrow')) {
         e.preventDefault();
         const step = e.shiftKey ? s.prefs.gridSize : 1;
         const dx = k === 'arrowleft' ? -step : k === 'arrowright' ? step : 0;
@@ -160,6 +165,13 @@ export function App() {
       void importMedia(files);
     };
     window.addEventListener('paste', onPaste);
+    // From the label editor: Shift+↓ / Shift+↑ saves the label and moves on to the next line.
+    const onNext = (e: Event) => {
+      selectNextLine((e as CustomEvent).detail as 1 | -1);
+      const id = getState().selection[0];
+      window.dispatchEvent(new CustomEvent('schema:edit', { detail: { kind: 'label', id } }));
+    };
+    window.addEventListener('schema:nextline', onNext);
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       // The autosave keeps work safe, but warn if the file on disk is out of date.
       if (getState().dirty && getState().fileHandle) e.preventDefault();
@@ -168,6 +180,7 @@ export function App() {
     return () => {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('paste', onPaste);
+      window.removeEventListener('schema:nextline', onNext);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
   }, []);

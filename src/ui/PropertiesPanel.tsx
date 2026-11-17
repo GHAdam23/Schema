@@ -25,6 +25,7 @@ import {
 import { DEFAULT_LINE } from '../model/defaults';
 import { fitTextBox, textBoxOf, titleBlockObjects } from '../render/buildPage';
 import { devicePages, tagRowFit, tagTargetPage, tagText } from '../model/tags';
+import { nextLabel } from '../state/store';
 import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
 import { useEffect, useRef, useState } from 'react';
@@ -109,8 +110,49 @@ export function PropertiesPanel() {
           <div className="section-title">
             {objs.length} object(s), {conns.length} line(s){bundles.length ? `, ${bundles.length} snake(s)` : ''}
           </div>
-          {conns.length > 0 && objs.length === 0 && (
+          {conns.length + bundles.length > 0 && (
             <>
+              <div className="sub">
+                {conns.length ? `Lines (${conns.length})` : ''}
+                {conns.length && bundles.length ? ' · ' : ''}
+                {bundles.length ? `Snakes (${bundles.length})` : ''}
+              </div>
+              <div className="fieldgroup">
+                <label>
+                  Routing{' '}
+                  {(() => {
+                    const all = [...conns.map((c) => !!c.curved), ...bundles.map((b) => !!b.curved)];
+                    const v = all.every((x) => x) ? 'curved' : all.every((x) => !x) ? 'orth' : 'mixed';
+                    return (
+                      <select value={v} onChange={(e) => e.target.value !== 'mixed' && setCurved([...conns.map((c) => c.id), ...bundles.map((b) => b.id)], e.target.value === 'curved')}>
+                        {v === 'mixed' && <option value="mixed">Mixed</option>}
+                        <option value="orth">Right-angle</option>
+                        <option value="curved">Curved</option>
+                      </select>
+                    );
+                  })()}
+                </label>
+              </div>
+              {conns.length > 0 && (
+                <label
+                  className="check"
+                  title="Repeat each label near both ends instead of once along the line"
+                  ref={(el) => {
+                    const box = el?.querySelector('input');
+                    if (box) box.indeterminate = conns.some((c) => c.labelEnds) && !conns.every((c) => c.labelEnds);
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={conns.every((c) => c.labelEnds)}
+                    onChange={(e) => {
+                      nextLabel(e.target.checked ? 'Labels at both ends' : 'Labels once along the line');
+                      patchConnections(conns.map((c) => c.id), (x) => void (x.labelEnds = e.target.checked || undefined));
+                    }}
+                  />{' '}
+                  Label at both ends
+                </label>
+              )}
               <div className="btnrow">
                 <button
                   disabled={!!bundleProblem(s.project, page, conns.map((c) => c.id))}
@@ -119,15 +161,13 @@ export function PropertiesPanel() {
                 >
                   Bundle into snake
                 </button>
-                <button onClick={() => setCurved(conns.map((c) => c.id), true)}>Curved</button>
-                <button onClick={() => setCurved(conns.map((c) => c.id), false)}>Right-angle</button>
               </div>
               {conns.length >= 4 && bundleProblem(s.project, page, conns.map((c) => c.id)) && (
                 <div className="muted small">Snake: {bundleProblem(s.project, page, conns.map((c) => c.id))}</div>
               )}
             </>
           )}
-          {objs.length === 0 && (
+          {conns.length > 1 && (
             <div className="btnrow">
               <button title="Put the label centres on one vertical line" onClick={() => alignLabels('hcenter')}>
                 Line up labels ↕
@@ -160,7 +200,7 @@ function PageSection({ s }: { s: AppState }) {
           <b>Move a block:</b> drag its header, footer or centre. <b>Connect:</b> drag from a port row to another port. Drag from the dots on a text box or rectangle to connect to it.
         </p>
         <p>
-          <b>Labels:</b> click a line and just start typing (Enter/F2 to edit an existing label). Drag a label to slide it — it snaps in line
+          <b>Labels:</b> click a line and just start typing (Enter/F2 to edit an existing label); <kbd>Shift+↓</kbd> / <kbd>Shift+↑</kbd> moves on to the next line. Drag a label to slide it — it snaps in line
           with other labels. Select several lines and use the align buttons to line their labels up.
         </p>
         <p>
@@ -190,7 +230,7 @@ function PageSection({ s }: { s: AppState }) {
         <p>
           <b>Shapes:</b> ellipse (<kbd>E</kbd>), container (<kbd>F</kbd>) — a labelled frame that moves what's inside it — and callout (<kbd>L</kbd>,
           drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble, and drawn lines / arrows (drag
-          to draw; their ends snap to shapes, Alt = no snap). Drawing tools stay selected until you pick another tool or press Esc. Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
+          to draw; their ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
           <b>Images:</b> drop PNG, JPG, PDF or SVG files on the page, paste an image, or use <b>Image…</b>. PDFs stay vector in the export; SVGs are
@@ -305,6 +345,22 @@ function ShapeSection({ o }: { o: TextualObj }) {
       <SharedNote o={o} />
       <TextFields o={o} />
       <Geometry o={o} />
+      {(o.kind === 'ellipse' || o.kind === 'rect') && o.w !== o.h && (
+        <button
+          title="Make the width and height equal (keeps the centre). Tip: hold Shift while dragging out a new shape."
+          onClick={() =>
+            patchObjects([o.id], (t) => {
+              if (t.kind !== 'ellipse' && t.kind !== 'rect') return;
+              const m = Math.max(t.w, t.h);
+              t.x -= (m - t.w) / 2;
+              t.y -= (m - t.h) / 2;
+              t.w = t.h = m;
+            })
+          }
+        >
+          {o.kind === 'ellipse' ? 'Make a circle' : 'Make a square'}
+        </button>
+      )}
       <div className="sub">Border</div>
       {o.kind === 'text' ? (
         o.border ? (

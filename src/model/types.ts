@@ -133,7 +133,11 @@ export interface LineObj extends BoxBase {
   kind: 'line';
   border: StrokeStyle;
   arrows: ArrowEnds;
+  /** Start / end glued to an object (fractions of its box; a drawn line uses fy = 0.5) or a connector (fraction of its length). */
+  ends?: [LineGlue | null, LineGlue | null];
 }
+
+export type LineGlue = { objId: Id; fx: number; fy: number } | { connId: Id; t: number };
 
 /** Imported image (PNG/JPG), single PDF page (stays vector) or SVG (converted to vector paths). */
 export interface ImageObj extends BoxBase {

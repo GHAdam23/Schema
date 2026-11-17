@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, Page, PageObject, Project, TagObj, TextualObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, TagObj, TextualObj } from '../model/types';
+import type { Tool } from '../state/store';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
 import {
@@ -26,12 +27,14 @@ import {
   addEllipse,
   addRect,
   addLine,
+  defaultTail,
   addTag,
   addText,
   lineBox,
   lineEnds,
   tagsFromElsewhere,
   applyCarry,
+  unglueMoved,
   autoStraighten,
   connect,
   connectPairs,
@@ -70,7 +73,9 @@ type Drag =
   | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
   | { t: 'tail'; id: Id }
   /** Dragging one end of a drawn line/arrow; `fixed` is the other end. `fresh`: being drawn now. */
-  | { t: 'lineEnd'; id: Id; fixed: Pt; fresh: boolean }
+  | { t: 'lineEnd'; id: Id; fixed: Pt; fresh: boolean; end: 0 | 1 }
+  /** Dragging out a new shape with a drawing tool (created once the drag starts). */
+  | { t: 'draw'; tool: Tool; start: Pt; id: Id | null }
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl'; multi?: PortHit[] }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
   | { t: 'label'; connId: Id; idx: number; moved: boolean }
@@ -237,22 +242,24 @@ export function Canvas() {
     if (s.tool !== 'select' && s.tool !== 'pan') {
       const x = snapV(p.x);
       const y = snapV(p.y);
-      // Drawing tools stay selected until another tool is picked (Esc / V = Select).
+      // A drawing tool is used once, then it's back to Select.
       const tool = s.tool;
       if (tool === 'line' || tool === 'arrow' || tool === 'arrow2') {
-        // Drag to draw; a plain click makes a 1-inch horizontal one. Ends snap to shapes (Alt = off).
-        const at = (!e.altKey && snapToShapes(s.project, pg, p, 8 / viewRef.current.z, null)) || { x, y };
+        // Drag to draw; a plain click makes a 1-inch horizontal one. Ends snap (and stay glued) to shapes and lines (Alt = off).
+        const sn = e.altKey ? null : snapTarget(s.project, pg, routes, p, 8 / viewRef.current.z, null);
+        const at = sn?.q ?? { x, y };
         const id = addLine(at.x, at.y, at.x, at.y, tool === 'line' ? 'none' : tool === 'arrow' ? 'end' : 'both');
-        setDrag({ t: 'lineEnd', id, fixed: at, fresh: true });
+        if (sn) patchObjects([id], (t) => void (t.kind === 'line' && (t.ends = [sn.glue, null])), false);
+        setState({ tool: 'select' });
+        setDrag({ t: 'lineEnd', id, fixed: at, fresh: true, end: 1 });
         return;
       }
-      if (tool === 'text') setEditing({ kind: 'text', id: addText(x, y) });
-      else if (tool === 'rect') addRect(x, y);
-      else if (tool === 'ellipse') addEllipse(x, y);
-      else if (tool === 'container') addContainer(x, y);
-      else if (tool === 'callout') setEditing({ kind: 'text', id: addCallout(x, y) });
-      else if (tool === 'cloud') setEditing({ kind: 'text', id: addCallout(x, y, 'cloud') });
-      else if (tool === 'tag') setState({ modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
+      if (tool === 'tag') {
+        setState({ tool: 'select', modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
+        return;
+      }
+      // Shapes: drag out to size (Shift = square / circle); a plain click gives the default size.
+      setDrag({ t: 'draw', tool, start: { x, y }, id: null });
       return;
     }
 
@@ -272,7 +279,8 @@ export function Canvas() {
       const o = pg.objects.find((x) => x.id === hit.id);
       if (!o || o.kind !== 'line') return;
       checkpoint('Move end of ' + describeObject(s.project, o).toLowerCase());
-      setDrag({ t: 'lineEnd', id: o.id, fixed: lineEnds(o)[hit.end === '0' ? 1 : 0], fresh: false });
+      const end = hit.end === '0' ? 0 : 1;
+      setDrag({ t: 'lineEnd', id: o.id, fixed: lineEnds(o)[1 - end], fresh: false, end });
       return;
     }
     if (hit.hit === 'tail') {
@@ -443,6 +451,7 @@ export function Canvas() {
             }
           }
           applyCarry(pgd, d.carry, snapped.dx, snapped.dy);
+          unglueMoved(pgd, new Set(d.ids));
         }, false);
         return;
       }
@@ -466,17 +475,49 @@ export function Canvas() {
           const a = (Math.round((Math.atan2(p.y - d.fixed.y, p.x - d.fixed.x) * 180) / Math.PI / 15) * 15 * Math.PI) / 180;
           q = { x: d.fixed.x + Math.cos(a) * len, y: d.fixed.y + Math.sin(a) * len };
         }
-        // Snap the end onto a shape's corner, side centre or outline (Alt = no snapping).
-        const sn = e.altKey ? null : snapToShapes(s.project, pg, p, 8 / z, d.id);
-        setLineSnap(sn);
-        if (sn) q = sn;
-        // Keep the line's direction: the dragged end is the start or the end depending on which was fixed.
-        const o = pg.objects.find((x) => x.id === d.id);
-        if (!o || o.kind !== 'line') return;
-        const ends = lineEnds(o);
-        const draggingStart = !d.fresh && Math.hypot(ends[1].x - d.fixed.x, ends[1].y - d.fixed.y) < 0.01;
-        const box = draggingStart ? lineBox(q.x, q.y, d.fixed.x, d.fixed.y) : lineBox(d.fixed.x, d.fixed.y, q.x, q.y);
-        patchObjects([d.id], (t) => void (t.kind === 'line' && Object.assign(t, box)), false);
+        // Snap the end onto a shape (corner, side centre, outline) or a line, and glue it there (Alt = free).
+        const sn = e.altKey ? null : snapTarget(s.project, pg, routes, p, 8 / z, d.id);
+        setLineSnap(sn?.q ?? null);
+        if (sn) q = sn.q;
+        const box = d.end === 0 ? lineBox(q.x, q.y, d.fixed.x, d.fixed.y) : lineBox(d.fixed.x, d.fixed.y, q.x, q.y);
+        patchObjects(
+          [d.id],
+          (t) => {
+            if (t.kind !== 'line') return;
+            Object.assign(t, box);
+            const ends: [LineGlue | null, LineGlue | null] = [...(t.ends ?? [null, null])] as [LineGlue | null, LineGlue | null];
+            ends[d.end] = sn?.glue ?? null;
+            t.ends = ends[0] || ends[1] ? ends : undefined;
+          },
+          false,
+        );
+        return;
+      }
+      case 'draw': {
+        const z0 = viewRef.current.z;
+        if (!d.id && Math.hypot(p.x - d.start.x, p.y - d.start.y) * z0 < DRAG_THRESHOLD * 2) return;
+        // Shift: equal sides (circle / square).
+        let w = snapV(p.x) - d.start.x;
+        let h = snapV(p.y) - d.start.y;
+        if (e.shiftKey) {
+          const m = Math.max(Math.abs(w), Math.abs(h));
+          w = Math.sign(w || 1) * m;
+          h = Math.sign(h || 1) * m;
+        }
+        const r = normRect(d.start, { x: d.start.x + w, y: d.start.y + h });
+        r.w = Math.max(6, r.w);
+        r.h = Math.max(6, r.h);
+        if (!d.id) {
+          const t = d.tool;
+          d.id =
+            t === 'text' ? addText(r.x, r.y, 'Text', r.w, r.h)
+            : t === 'rect' ? addRect(r.x, r.y, r.w, r.h)
+            : t === 'ellipse' ? addEllipse(r.x, r.y, r.w, r.h)
+            : t === 'container' ? addContainer(r.x, r.y, r.w, r.h)
+            : addCallout(r.x, r.y, t === 'cloud' ? 'cloud' : 'box', r.w, r.h);
+          return;
+        }
+        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && Object.assign(o, r)), false);
         return;
       }
       case 'tail': {
@@ -586,6 +627,26 @@ export function Canvas() {
           labelLast('Point callout at a line');
         }
         dropCheckpointIfUnchanged();
+        break;
+      }
+      case 'draw': {
+        setState({ tool: 'select' });
+        let id = d.id;
+        const t = d.tool;
+        if (!id) {
+          // A click: the default size at that point.
+          const { x, y } = d.start;
+          id =
+            t === 'text' ? addText(x, y)
+            : t === 'rect' ? addRect(x, y)
+            : t === 'ellipse' ? addEllipse(x, y)
+            : t === 'container' ? addContainer(x, y)
+            : addCallout(x, y, t === 'cloud' ? 'cloud' : 'box');
+        } else if (t === 'callout' || t === 'cloud') {
+          // Point the new callout from its final size.
+          patchObjects([id], (o) => void (o.kind === 'callout' && (o.tail = defaultTail(t === 'cloud', o.w, o.h))), false);
+        }
+        if (t === 'text' || t === 'callout' || t === 'cloud') setEditing({ kind: 'text', id });
         break;
       }
       case 'lineEnd': {
@@ -1185,25 +1246,33 @@ function multiPairs(project: Project, page: Page, multi: PortHit[], dragged: Por
 }
 
 /**
- * Snap point for a drawn line's end: a corner or side centre of a shape / container / block / image
- * within `tol`, else the nearest point of its outline within `tol` (ellipses: along the ray from the centre).
+ * Snap target for a drawn line's end, and how it stays glued there: a corner or side centre of a
+ * shape / container / block / image, or a drawn line's end (within `tol`); else the nearest point
+ * of a shape's outline (ellipses: along the ray from the centre), a drawn line or a connector.
  */
-function snapToShapes(project: Project, page: Page, p: Pt, tol: number, except: Id | null): Pt | null {
-  let best: { q: Pt; d: number; prio: number } | null = null;
-  const consider = (q: Pt, prio: number) => {
+function snapTarget(project: Project, page: Page, routes: Map<Id, ResolvedRoute>, p: Pt, tol: number, except: Id | null): { q: Pt; glue: LineGlue } | null {
+  let best: { q: Pt; glue: LineGlue; d: number; prio: number } | null = null;
+  const consider = (q: Pt, glue: LineGlue, prio: number) => {
     const d = Math.hypot(q.x - p.x, q.y - p.y);
-    if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { q, d, prio };
+    if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { q, glue, d, prio };
   };
   for (const o of page.objects) {
-    if (o.id === except || o.kind === 'line') continue;
+    if (o.id === except) continue;
     const b = localBox(project, o);
-    const pts = [
-      [0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5],
-    ];
+    const at = (fx: number, fy: number) => fromLocal(project, o, { x: b.x + fx * b.w, y: b.y + fy * b.h });
+    if (o.kind === 'line') {
+      // Its two ends, else anywhere along it.
+      consider(at(0, 0.5), { objId: o.id, fx: 0, fy: 0.5 }, 0);
+      consider(at(1, 0.5), { objId: o.id, fx: 1, fy: 0.5 }, 0);
+      const l = toLocal(project, o, p);
+      const fx = Math.min(1, Math.max(0, (l.x - b.x) / b.w));
+      consider(at(fx, 0.5), { objId: o.id, fx, fy: 0.5 }, 1);
+      continue;
+    }
     const round = o.kind === 'ellipse';
-    for (const [fx, fy] of pts) {
+    for (const [fx, fy] of [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]) {
       if (round && fx !== 0.5 && fy !== 0.5) continue; // an ellipse has no corners
-      consider(fromLocal(project, o, { x: b.x + fx * b.w, y: b.y + fy * b.h }), 0);
+      consider(at(fx, fy), { objId: o.id, fx, fy }, 0);
     }
     // Outline.
     const l = toLocal(project, o, p);
@@ -1214,8 +1283,6 @@ function snapToShapes(project: Project, page: Page, p: Pt, tol: number, except: 
       const f = 1 / Math.hypot((l.x - cx) / (b.w / 2), (l.y - cy) / (b.h / 2) || 1e-9);
       on = { x: cx + (l.x - cx) * f, y: cy + (l.y - cy) * f };
     } else {
-      const cx = Math.min(b.x + b.w, Math.max(b.x, l.x));
-      const cy = Math.min(b.y + b.h, Math.max(b.y, l.y));
       const inside = l.x > b.x && l.x < b.x + b.w && l.y > b.y && l.y < b.y + b.h;
       if (inside) {
         const dl = l.x - b.x;
@@ -1224,11 +1291,17 @@ function snapToShapes(project: Project, page: Page, p: Pt, tol: number, except: 
         const db = b.y + b.h - l.y;
         const m = Math.min(dl, dr, dt, db);
         on = m === dl ? { x: b.x, y: l.y } : m === dr ? { x: b.x + b.w, y: l.y } : m === dt ? { x: l.x, y: b.y } : { x: l.x, y: b.y + b.h };
-      } else on = { x: cx, y: cy };
+      } else on = { x: Math.min(b.x + b.w, Math.max(b.x, l.x)), y: Math.min(b.y + b.h, Math.max(b.y, l.y)) };
     }
-    consider(fromLocal(project, o, on), 1);
+    consider(fromLocal(project, o, on), { objId: o.id, fx: (on.x - b.x) / b.w, fy: (on.y - b.y) / b.h }, 1);
   }
-  return best ? (best as { q: Pt }).q : null;
+  // Connectors (and snake trunks).
+  const nl = nearestLine(routes, p, tol);
+  if (nl) {
+    const r = routes.get(nl.id)!;
+    consider(pointAtDist(r.pts, nl.t * pathLength(r.pts)), { connId: nl.id, t: nl.t }, 1);
+  }
+  return best ? { q: (best as { q: Pt }).q, glue: (best as { glue: LineGlue }).glue } : null;
 }
 
 function angleDeg(c: Pt, p: Pt) {
@@ -1619,6 +1692,12 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
         e.stopPropagation();
         if (e.key === 'Escape') finish(false);
         if (e.key === 'Enter') finish(true);
+        if (editing.kind === 'label' && e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          e.preventDefault();
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          finish(true);
+          window.dispatchEvent(new CustomEvent('schema:nextline', { detail: dir }));
+        }
       }}
     />
   );
