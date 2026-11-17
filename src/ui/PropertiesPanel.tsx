@@ -24,7 +24,7 @@ import {
 } from '../state/actions';
 import { DEFAULT_LINE } from '../model/defaults';
 import { fitTextBox, textBoxOf, titleBlockObjects } from '../render/buildPage';
-import { devicePages, tagTargetPage, tagText } from '../model/tags';
+import { devicePages, tagRowFit, tagTargetPage, tagText } from '../model/tags';
 import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
 import { useEffect, useRef, useState } from 'react';
@@ -176,7 +176,8 @@ function PageSection({ s }: { s: AppState }) {
           <b>Straight lines:</b> dragging a block snaps its ports level with the blocks it's wired to. <b>Straighten</b> (toolbar, or <kbd>S</kbd>) fixes jogs on the selected blocks or lines.
         </p>
         <p>
-          <b>Range connect:</b> click a port, Shift-click to extend the run, Ctrl-click ports on a second block, then <kbd>Shift+C</kbd>.
+          <b>Several lines at once:</b> click a port, Shift-click to extend the run (Ctrl-click to add single ports), then drag one of them onto
+          a port of the other block — the others follow onto the next rows. Or Ctrl-click ports on a second block and press <kbd>Shift+C</kbd> (Range connect).
         </p>
         <p>
           <b>Select:</b> drag on empty space to select what's fully inside (any direction); hold Alt to select anything touched.
@@ -189,7 +190,7 @@ function PageSection({ s }: { s: AppState }) {
         <p>
           <b>Shapes:</b> ellipse (<kbd>E</kbd>), container (<kbd>F</kbd>) — a labelled frame that moves what's inside it — and callout (<kbd>L</kbd>,
           drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble, and drawn lines / arrows (drag
-          to draw). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
+          to draw; their ends snap to shapes, Alt = no snap). Drawing tools stay selected until you pick another tool or press Esc. Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
           <b>Images:</b> drop PNG, JPG, PDF or SVG files on the page, paste an image, or use <b>Image…</b>. PDFs stay vector in the export; SVGs are
@@ -373,6 +374,14 @@ function TagSection({ s, o }: { s: AppState; o: TagObj }) {
   const def = dev && s.project.blockDefs[dev.defId];
   const pi = tagTargetPage(s.project, o);
   const patch = (fn: (t: TagObj) => void, label?: string) => patchTag(o.id, fn, label);
+  // The block whose port this tag is wired to (if any).
+  const pg = currentPage(s);
+  const portBlock = (() => {
+    const c = pg.connections.find((x) => x.from.objId === o.id || x.to.objId === o.id);
+    const other = c && (c.from.objId === o.id ? c.to : c.from);
+    const b = other && pg.objects.find((x) => x.id === other.objId);
+    return b?.kind === 'block' ? b : null;
+  })();
   return (
     <div className="section">
       <div className="section-title">Reference tag</div>
@@ -419,7 +428,24 @@ function TagSection({ s, o }: { s: AppState; o: TagObj }) {
         <label>
           Size <input type="number" min={4} max={24} step={0.5} value={o.fontSize} onChange={(e) => patch((t) => (t.fontSize = Math.max(4, Number(e.target.value) || 7)))} />
         </label>
+        <label title="Fixed height, e.g. a block's row height so tags at neighbouring ports line up. Empty = from the font size.">
+          Height{' '}
+          <input
+            type="number"
+            min={4}
+            max={72}
+            step={0.5}
+            placeholder="auto"
+            value={o.height ?? ''}
+            onChange={(e) => patch((t) => (t.height = e.target.value === '' ? undefined : Math.max(4, Number(e.target.value))))}
+          />
+        </label>
       </div>
+      {portBlock && (
+        <button title="As tall as the row of the port it's attached to, in that row's font size — tags at neighbouring ports then don't overlap" onClick={() => patch((t) => Object.assign(t, tagRowFit(portBlock.scale)), 'Fit tag to row')}>
+          Match row height
+        </button>
+      )}
       <button disabled={pi < 0} onClick={() => jumpToTag(o)} title="Double-clicking the tag does the same">
         {pi >= 0 ? `Go to page ${pi + 1}` : 'Go to device'}
       </button>
@@ -757,6 +783,9 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
         <Field label="Label position">
           <input type="range" min={0.02} max={0.98} step={0.01} value={c.labelT ?? 0.5} onChange={(e) => patchConnections([c.id], (x) => void (x.labelT = Number(e.target.value)))} />
         </Field>
+      )}
+      {!bundle && c.labelEnds && c.labelEndsT && (
+        <button onClick={() => patchConnections([c.id], (x) => void (x.labelEndsT = undefined))}>Auto label positions</button>
       )}
       {!bundle && !c.labelEnds && c.labelT !== null && (
         <button onClick={() => patchConnections([c.id], (x) => void (x.labelT = null))}>Auto label position</button>

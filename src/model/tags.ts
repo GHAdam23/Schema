@@ -1,7 +1,7 @@
 // Reference tags: text generation and automatic size.
 import type { Id, Page, Project, TagObj } from './types';
 import { isPortEndpoint } from './types';
-import { findPort } from './blockGeometry';
+import { BLK, findPort } from './blockGeometry';
 import { measureText } from '../text/fonts';
 
 export const TAG_PAD_X = 4;
@@ -81,10 +81,21 @@ export function tagText(project: Project, tag: TagObj): string {
   return parts.join(' ');
 }
 
+/** Font size actually used: shrunk if a fixed height is too small for it. */
+export function tagFontSize(tag: TagObj) {
+  return tag.height ? Math.min(tag.fontSize, Math.max(3, (tag.height - 1.5) / 1.15)) : tag.fontSize;
+}
+
 export function tagSize(project: Project, tag: TagObj) {
   const t = tagText(project, tag);
+  const fs = tagFontSize(tag);
   return {
-    w: Math.ceil(measureText(t, 'narrow', tag.fontSize) + TAG_PAD_X * 2),
-    h: Math.ceil((tag.fontSize * 1.2 + TAG_PAD_Y * 2) * 2) / 2,
+    w: Math.ceil(measureText(t, 'narrow', fs) + TAG_PAD_X * 2),
+    h: tag.height ?? Math.ceil((tag.fontSize * 1.2 + TAG_PAD_Y * 2) * 2) / 2,
   };
+}
+
+/** Tag look for a tag sitting at a block's port: as tall as the port's row, in the row's font size. */
+export function tagRowFit(scale: number) {
+  return { height: BLK.rowH * scale, fontSize: BLK.portSize * scale };
 }

@@ -157,6 +157,8 @@ export interface TagObj extends ObjBase {
   fontSize: number;
   border: StrokeStyle;
   fill: string | null;
+  /** Fixed height (e.g. the row height of the port it sits at, so stacked tags line up); none = from the font. */
+  height?: number;
   /** The matching tag at the far end (on the other page), kept in step automatically. */
   pairId?: Id;
   /** Created automatically as the far end of another tag. */
@@ -190,6 +192,8 @@ export interface Connection {
   curved?: boolean;
   /** Show the label near both ends instead of once along the line. */
   labelEnds?: boolean;
+  /** With labelEnds: positions of the start / end label (0..1 of length); null = automatic, near that end. */
+  labelEndsT?: [number | null, number | null];
 }
 
 /**

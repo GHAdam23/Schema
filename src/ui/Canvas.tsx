@@ -17,7 +17,7 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { buildPage, calloutTip, fitTextBox, labelBox, labelBoxes, labelTAt, naturalTextSize, TEXT_PAD, textBoxOf } from '../render/buildPage';
+import { buildPage, calloutTip, withLabelT, fitTextBox, labelBox, labelBoxes, labelTAt, naturalTextSize, TEXT_PAD, textBoxOf } from '../render/buildPage';
 import { SvgItems } from '../render/SvgRender';
 import { checkpoint, currentPage, labelLast, nextLabel, dropCheckpointIfUnchanged, getState, setState, updateProject, useStore } from '../state/store';
 import {
@@ -34,6 +34,7 @@ import {
   applyCarry,
   autoStraighten,
   connect,
+  connectPairs,
   describeObject,
   connectionWarnings,
   jumpToTag,
@@ -49,7 +50,7 @@ import {
 } from '../state/actions';
 import { importMedia } from '../state/fileOps';
 import { centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
-import { tagSize } from '../model/tags';
+import { tagRowFit, tagSize } from '../model/tags';
 import { isMediaFile } from '../io/importMedia';
 import { isPortEndpoint } from '../model/types';
 import { dotPos, hitObject, hitPort, hitShape, hitShapeDot, outlinePointOf, portZones, SIDE_CENTRES, type PortHit, type ShapeDot } from './hitTest';
@@ -70,9 +71,9 @@ type Drag =
   | { t: 'tail'; id: Id }
   /** Dragging one end of a drawn line/arrow; `fixed` is the other end. `fresh`: being drawn now. */
   | { t: 'lineEnd'; id: Id; fixed: Pt; fresh: boolean }
-  | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl' }
+  | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl'; multi?: PortHit[] }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
-  | { t: 'label'; connId: Id; moved: boolean }
+  | { t: 'label'; connId: Id; idx: number; moved: boolean }
   | { t: 'pan'; sx: number; sy: number; orig: View };
 
 interface Editing {
@@ -120,6 +121,8 @@ export function Canvas() {
   const [hoverShape, setHoverShape] = useState<{ id: Id; dot: ShapeDot | null } | null>(null);
   // Object a callout's pointer would glue to while it's being dragged.
   const [tailHover, setTailHover] = useState<Id | null>(null);
+  // Where a line/arrow end being dragged has snapped onto a shape.
+  const [lineSnap, setLineSnap] = useState<Pt | null>(null);
   const spaceDown = useRef(false);
   const lastPortClick = useRef<PortHit | null>(null);
 
@@ -234,12 +237,13 @@ export function Canvas() {
     if (s.tool !== 'select' && s.tool !== 'pan') {
       const x = snapV(p.x);
       const y = snapV(p.y);
+      // Drawing tools stay selected until another tool is picked (Esc / V = Select).
       const tool = s.tool;
-      setState({ tool: 'select' });
       if (tool === 'line' || tool === 'arrow' || tool === 'arrow2') {
-        // Drag to draw; a plain click makes a 1-inch horizontal one.
-        const id = addLine(x, y, x, y, tool === 'line' ? 'none' : tool === 'arrow' ? 'end' : 'both');
-        setDrag({ t: 'lineEnd', id, fixed: { x, y }, fresh: true });
+        // Drag to draw; a plain click makes a 1-inch horizontal one. Ends snap to shapes (Alt = off).
+        const at = (!e.altKey && snapToShapes(s.project, pg, p, 8 / viewRef.current.z, null)) || { x, y };
+        const id = addLine(at.x, at.y, at.x, at.y, tool === 'line' ? 'none' : tool === 'arrow' ? 'end' : 'both');
+        setDrag({ t: 'lineEnd', id, fixed: at, fresh: true });
         return;
       }
       if (tool === 'text') setEditing({ kind: 'text', id: addText(x, y) });
@@ -288,9 +292,9 @@ export function Canvas() {
     if (hit.hit === 'label') {
       setState({ selection: [hit.id!], selectedPorts: [] });
       // Labels in a snake sit in the middle of their legs.
-      if (routes.get(hit.id!)?.legs || routes.get(hit.id!)?.conn.labelEnds) return;
+      if (routes.get(hit.id!)?.legs) return;
       checkpoint('Move line label');
-      setDrag({ t: 'label', connId: hit.id!, moved: false });
+      setDrag({ t: 'label', connId: hit.id!, idx: Number(hit.idx ?? 0), moved: false });
       return;
     }
     if (hit.hit === 'seg') {
@@ -315,6 +319,13 @@ export function Canvas() {
     }
     const port = hitPort(s.project, pg, p.x, p.y);
     if (port) {
+      // Dragging one of several selected ports on a block takes them all along (Q-SYS style).
+      const sel = s.selectedPorts;
+      const blockObj = pg.objects.find((o) => o.id === port.objId);
+      const multi =
+        !e.shiftKey && !e.ctrlKey && !e.metaKey && sel.length > 1 && sel.every((x) => x.objId === port.objId) && sel.some((x) => x.portId === port.portId) && blockObj?.kind === 'block'
+          ? portZones(s.project, blockObj).map((zz) => zz.hit).filter((h) => sel.some((x) => x.portId === h.portId))
+          : undefined;
       setDrag({
         t: 'connect',
         from: { objId: port.objId, portId: port.portId },
@@ -323,6 +334,7 @@ export function Canvas() {
         moved: false,
         port,
         additive: e.shiftKey ? 'shift' : e.ctrlKey || e.metaKey ? 'ctrl' : 'none',
+        multi,
       });
       return;
     }
@@ -454,6 +466,10 @@ export function Canvas() {
           const a = (Math.round((Math.atan2(p.y - d.fixed.y, p.x - d.fixed.x) * 180) / Math.PI / 15) * 15 * Math.PI) / 180;
           q = { x: d.fixed.x + Math.cos(a) * len, y: d.fixed.y + Math.sin(a) * len };
         }
+        // Snap the end onto a shape's corner, side centre or outline (Alt = no snapping).
+        const sn = e.altKey ? null : snapToShapes(s.project, pg, p, 8 / z, d.id);
+        setLineSnap(sn);
+        if (sn) q = sn;
         // Keep the line's direction: the dragged end is the start or the end depending on which was fixed.
         const o = pg.objects.find((x) => x.id === d.id);
         if (!o || o.kind !== 'line') return;
@@ -511,18 +527,19 @@ export function Canvas() {
         const L = pathLength(r.pts);
         let t = L > 0 ? projectOnPath(r.pts, p) / L : 0.5;
         // Snap the label centre in line with other labels (same x on horizontal runs, same y on vertical runs).
-        const me = labelBox({ ...r, conn: { ...r.conn, labelT: t } });
+        const me = labelBoxes({ ...r, conn: withLabelT(r.conn, d.idx, t) })[d.idx];
         const gs: Guide[] = [];
         if (me && s.prefs.smartGuides) {
           const tol = 6 / z;
           let best: { d: number; v: number } | null = null;
           for (const [id, other] of routes) {
             if (id === d.connId) continue;
-            const ob = labelBox(other);
-            if (!ob || ob.horiz !== me.horiz) continue;
-            const v = me.horiz ? ob.p.x : ob.p.y;
-            const dd = Math.abs((me.horiz ? me.p.x : me.p.y) - v);
-            if (dd < tol && (!best || dd < best.d)) best = { d: dd, v };
+            for (const ob of labelBoxes(other)) {
+              if (ob.horiz !== me.horiz) continue;
+              const v = me.horiz ? ob.p.x : ob.p.y;
+              const dd = Math.abs((me.horiz ? me.p.x : me.p.y) - v);
+              if (dd < tol && (!best || dd < best.d)) best = { d: dd, v };
+            }
           }
           if (best) {
             const st = labelTAt(r, me.horiz ? 'x' : 'y', best.v, me.p);
@@ -533,7 +550,8 @@ export function Canvas() {
           }
         }
         setGuides(gs);
-        patchConnections([d.connId], (c) => void (c.labelT = Math.min(0.99, Math.max(0.01, t))), false);
+        const tt = Math.min(0.99, Math.max(0.01, t));
+        patchConnections([d.connId], (c) => void Object.assign(c, withLabelT(c, d.idx, tt)), false);
         return;
       }
     }
@@ -571,6 +589,7 @@ export function Canvas() {
         break;
       }
       case 'lineEnd': {
+        setLineSnap(null);
         const o = pg.objects.find((x) => x.id === d.id);
         if (d.fresh && o?.kind === 'line' && o.w < 4) {
           const box = lineBox(d.fixed.x, d.fixed.y, d.fixed.x + 72, d.fixed.y);
@@ -597,6 +616,11 @@ export function Canvas() {
         else {
           const o = hitShape(s.project, pg, p.x, p.y, 6 / viewRef.current.z);
           if (o && o.id !== d.from.objId) to = { objId: o.id, ...outlinePointOf(s.project, o, p.x, p.y) };
+        }
+        if (d.multi && hp && d.port) {
+          const pairs = multiPairs(s.project, pg, d.multi, d.port, hp);
+          connectPairs(pairs.pairs, pairs.skipped);
+          break;
         }
         if (to) {
           const id = connect(d.from, to);
@@ -648,6 +672,9 @@ export function Canvas() {
     const y = Math.abs(p.y - a.y) < 24 ? a.y : p.y;
     const leftOfPort = p.x < a.x;
     const id = addTag(snapV(p.x), y, null);
+    // From a port: as tall as its row (in the row's font size), so tags on neighbouring rows don't overlap.
+    const blk = pg.objects.find((o) => o.id === from.objId);
+    if (blk?.kind === 'block' && Math.abs(p.y - a.y) < 24) updateProject((dr) => void Object.assign(dr.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id)!, tagRowFit(blk.scale)), false);
     const tag = getState().project.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id) as TagObj;
     const sz = tagSize(getState().project, tag);
     updateProject((dr) => {
@@ -838,7 +865,16 @@ export function Canvas() {
   const area = drawingArea(page.size);
 
   let preview: string | null = null;
-  if (drag?.t === 'connect' && drag.moved) {
+  if (drag?.t === 'connect' && drag.moved && drag.multi && drag.port && hoverPort) {
+    // Every selected port's line, to consecutive rows from the one under the pointer.
+    preview = multiPairs(project, page, drag.multi, drag.port, hoverPort)
+      .pairs.map(([a, b]) => {
+        const sA = resolveEndpoint(project, page, a);
+        const eA = resolveEndpoint(project, page, b);
+        return sA && eA ? polyD(simplify(rawPoints(sA, eA, autoBends(sA, eA)))) : '';
+      })
+      .join('');
+  } else if (drag?.t === 'connect' && drag.moved) {
     const sA = resolveEndpoint(project, page, drag.from);
     if (sA) {
       const hp = hoverPort;
@@ -916,6 +952,7 @@ export function Canvas() {
               pointerEvents="none"
             />
           )}
+          {lineSnap && <circle cx={lineSnap.x} cy={lineSnap.y} r={4 / z} fill="none" stroke="#16a34a" strokeWidth={1.5 / z} pointerEvents="none" />}
           {guides.map((g, i) => (
             <line key={i} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke="#e11d48" strokeWidth={0.75 / z} strokeDasharray={`${3 / z} ${2 / z}`} pointerEvents="none" />
           ))}
@@ -1127,6 +1164,73 @@ function hitObjectExcept(project: Project, page: Page, p: Pt, except: Id): PageO
   return hitObject(project, others, p.x, p.y, 2);
 }
 
+/**
+ * Lines for a multi-port drag: the selected ports in row order go to consecutive rows of the
+ * target column, lined up so the dragged port lands on the port under the pointer.
+ */
+function multiPairs(project: Project, page: Page, multi: PortHit[], dragged: PortHit, target: PortHit) {
+  const src = [...multi].sort((a, b) => (a.side === b.side ? a.index - b.index : a.side === 'L' ? -1 : 1));
+  const k = src.findIndex((x) => x.portId === dragged.portId);
+  const tObj = page.objects.find((o) => o.id === target.objId);
+  const def = tObj?.kind === 'block' ? blockFor(project, tObj).def : undefined;
+  const col = def ? (target.side === 'L' ? def.left : def.right) : [];
+  const pairs: [Endpoint, Endpoint][] = [];
+  let skipped = 0;
+  src.forEach((x, i) => {
+    const p = col[target.index + i - k];
+    if (!p) skipped++;
+    else pairs.push([{ objId: x.objId, portId: x.portId }, { objId: target.objId, portId: p.id }]);
+  });
+  return { pairs, skipped };
+}
+
+/**
+ * Snap point for a drawn line's end: a corner or side centre of a shape / container / block / image
+ * within `tol`, else the nearest point of its outline within `tol` (ellipses: along the ray from the centre).
+ */
+function snapToShapes(project: Project, page: Page, p: Pt, tol: number, except: Id | null): Pt | null {
+  let best: { q: Pt; d: number; prio: number } | null = null;
+  const consider = (q: Pt, prio: number) => {
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { q, d, prio };
+  };
+  for (const o of page.objects) {
+    if (o.id === except || o.kind === 'line') continue;
+    const b = localBox(project, o);
+    const pts = [
+      [0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5],
+    ];
+    const round = o.kind === 'ellipse';
+    for (const [fx, fy] of pts) {
+      if (round && fx !== 0.5 && fy !== 0.5) continue; // an ellipse has no corners
+      consider(fromLocal(project, o, { x: b.x + fx * b.w, y: b.y + fy * b.h }), 0);
+    }
+    // Outline.
+    const l = toLocal(project, o, p);
+    let on: Pt;
+    if (round) {
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      const f = 1 / Math.hypot((l.x - cx) / (b.w / 2), (l.y - cy) / (b.h / 2) || 1e-9);
+      on = { x: cx + (l.x - cx) * f, y: cy + (l.y - cy) * f };
+    } else {
+      const cx = Math.min(b.x + b.w, Math.max(b.x, l.x));
+      const cy = Math.min(b.y + b.h, Math.max(b.y, l.y));
+      const inside = l.x > b.x && l.x < b.x + b.w && l.y > b.y && l.y < b.y + b.h;
+      if (inside) {
+        const dl = l.x - b.x;
+        const dr = b.x + b.w - l.x;
+        const dt = l.y - b.y;
+        const db = b.y + b.h - l.y;
+        const m = Math.min(dl, dr, dt, db);
+        on = m === dl ? { x: b.x, y: l.y } : m === dr ? { x: b.x + b.w, y: l.y } : m === dt ? { x: l.x, y: b.y } : { x: l.x, y: b.y + b.h };
+      } else on = { x: cx, y: cy };
+    }
+    consider(fromLocal(project, o, on), 1);
+  }
+  return best ? (best as { q: Pt }).q : null;
+}
+
 function angleDeg(c: Pt, p: Pt) {
   return (Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI;
 }
@@ -1219,7 +1323,7 @@ function Overlay(props: {
       {/* Label hit targets (above segments) */}
       {[...routes.values()].map((r) =>
         labelBoxes(r).map((lb, i) => (
-          <rect key={r.conn.id + ':' + i} data-hit="label" data-id={r.conn.id} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: r.legs ? 'pointer' : 'move' }} />
+          <rect key={r.conn.id + ':' + i} data-hit="label" data-id={r.conn.id} data-idx={i} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: r.legs ? 'pointer' : 'move' }} />
         )),
       )}
       {/* (above the line hit targets so they stay clickable) "Used elsewhere": a port of this device is connected on another page */}

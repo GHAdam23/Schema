@@ -29,8 +29,8 @@ import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } 
 import { blockFor, findPort, portAnchor } from '../model/blockGeometry';
 import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
 import { normDeg, rotOf } from '../model/geom';
-import { devicePages, tagSize, tagTargetPage, tagText } from '../model/tags';
-import { calloutTip, labelBox, labelTAt } from '../render/buildPage';
+import { devicePages, tagRowFit, tagSize, tagTargetPage, tagText } from '../model/tags';
+import { calloutTip, labelBox, labelBoxes, labelTAt, withLabelT, type LabelBox } from '../render/buildPage';
 import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
 
@@ -346,9 +346,9 @@ export function tagsFromElsewhere(objId: Id, portId: Id) {
       dir: 'auto',
       showPort: true,
       note: '',
-      fontSize: 7,
       border: { color: '#000000', width: 0.75, dash: 'solid' },
       fill: null,
+      ...tagRowFit(o.scale),
     };
     const line: Connection = {
       id: newId('cn'),
@@ -368,8 +368,8 @@ export function tagsFromElsewhere(objId: Id, portId: Id) {
     updateProject((d) => {
       const tt = pageDraft(d).objects.find((x) => x.id === tag.id)!;
       tt.x = left ? a.x - PAIR_GAP - sz.w : a.x + PAIR_GAP;
-      // Several: stacked below each other, the first level with the port.
-      tt.y = a.y - sz.h / 2 + i * (sz.h + 3);
+      // Several: stacked below each other (edges touching), the first level with the port.
+      tt.y = a.y - sz.h / 2 + i * sz.h;
     }, false);
     made.push(tag.id);
   });
@@ -507,6 +507,7 @@ function syncTagPair(id: Id) {
     note: '',
     pairId: id,
     auto: true,
+    ...tagRowFit(inst.scale),
   };
   // Inputs (left column) get the tag on the left with the line running tag → port; outputs the reverse.
   const left = a.dir[0] < 0;
@@ -965,30 +966,49 @@ export function alignLabels(mode: AlignMode) {
   const s = getState();
   const page = currentPage();
   const routes = resolvePageRoutes(s.project, page);
-  const items = s.selection
-    .map((id) => routes.get(id))
-    .filter((r): r is ResolvedRoute => !!r && !!r.conn.label)
-    .map((r) => ({ r, lb: labelBox(r)! }));
-  if (items.length < 2) {
+  const rs = s.selection.map((id) => routes.get(id)).filter((r): r is ResolvedRoute => !!r && !!r.conn.label && !r.legs);
+  const axis: 'x' | 'y' = mode === 'left' || mode === 'hcenter' || mode === 'right' ? 'x' : 'y';
+  type Item = { r: ResolvedRoute; idx: number; lb: LabelBox };
+  // Which labels line up: lines with one label use it. A line with a label at each end uses the one
+  // nearest the single labels; if every line has two, start labels line up with start labels and
+  // end labels with end labels.
+  const singles: Item[] = rs.filter((r) => !r.conn.labelEnds).map((r) => ({ r, idx: 0, lb: labelBox(r)! }));
+  const doubles = rs.filter((r) => r.conn.labelEnds);
+  const groups: Item[][] = [];
+  if (singles.length) {
+    const c = singles.reduce((a, it) => a + (axis === 'x' ? it.lb.p.x : it.lb.p.y), 0) / singles.length;
+    const near = doubles.map((r) => {
+      const bs = labelBoxes(r);
+      const k = bs.length > 1 && Math.abs((axis === 'x' ? bs[1].p.x : bs[1].p.y) - c) < Math.abs((axis === 'x' ? bs[0].p.x : bs[0].p.y) - c) ? 1 : 0;
+      return { r, idx: k, lb: bs[k] };
+    });
+    groups.push([...singles, ...near]);
+  } else {
+    groups.push(doubles.map((r) => ({ r, idx: 0, lb: labelBoxes(r)[0] })));
+    groups.push(doubles.map((r) => ({ r, idx: 1, lb: labelBoxes(r)[1] })).filter((x) => x.lb));
+  }
+  if (!groups.some((g) => g.length >= 2)) {
     toast('Select two or more labelled lines to align their labels.', 'warn');
     return;
   }
-  const axis: 'x' | 'y' = mode === 'left' || mode === 'hcenter' || mode === 'right' ? 'x' : 'y';
-  const lo = (i: (typeof items)[number]) => (axis === 'x' ? i.lb.box.x : i.lb.box.y);
-  const hi = (i: (typeof items)[number]) => (axis === 'x' ? i.lb.box.x + i.lb.box.w : i.lb.box.y + i.lb.box.h);
-  const minV = Math.min(...items.map(lo));
-  const maxV = Math.max(...items.map(hi));
   let missed = 0;
-  const ts = new Map<string, number>();
-  for (const it of items) {
-    const half = (hi(it) - lo(it)) / 2;
-    const target = mode === 'left' || mode === 'top' ? minV + half : mode === 'right' || mode === 'bottom' ? maxV - half : (minV + maxV) / 2;
-    const t = labelTAt(it.r, axis, target, it.lb.p);
-    if (t === null) missed++;
-    else ts.set(it.r.conn.id, t);
+  const sets: { id: Id; idx: number; t: number }[] = [];
+  for (const items of groups) {
+    if (items.length < 2) continue;
+    const lo = (i: Item) => (axis === 'x' ? i.lb.box.x : i.lb.box.y);
+    const hi = (i: Item) => (axis === 'x' ? i.lb.box.x + i.lb.box.w : i.lb.box.y + i.lb.box.h);
+    const minV = Math.min(...items.map(lo));
+    const maxV = Math.max(...items.map(hi));
+    for (const it of items) {
+      const half = (hi(it) - lo(it)) / 2;
+      const target = mode === 'left' || mode === 'top' ? minV + half : mode === 'right' || mode === 'bottom' ? maxV - half : (minV + maxV) / 2;
+      const t = labelTAt(it.r, axis, target, it.lb.p);
+      if (t === null) missed++;
+      else sets.push({ id: it.r.conn.id, idx: it.idx, t });
+    }
   }
   updateProject((d) => {
-    for (const c of pageDraft(d).connections) if (ts.has(c.id)) c.labelT = ts.get(c.id)!;
+    for (const c of pageDraft(d).connections) for (const x of sets) if (x.id === c.id) Object.assign(c, withLabelT(c, x.idx, x.t));
   });
   if (missed) toast(`${missed} label(s) could not be moved there — the line has no ${axis === 'x' ? 'horizontal' : 'vertical'} run at that position.`, 'warn', 5000);
 }
@@ -1279,6 +1299,27 @@ export function rangeConnectAvailable(): boolean {
   const s = getState();
   const objs = new Set(s.selectedPorts.map((p) => p.objId));
   return objs.size === 2 && s.selectedPorts.length >= 2;
+}
+
+/** Connect several port pairs as one history step (multi-port drag). */
+export function connectPairs(pairs: [Endpoint, Endpoint][], skipped = 0) {
+  const s = getState();
+  const pg = currentPage(s);
+  let made = 0;
+  const warns = new Set<string>();
+  const ids: Id[] = [];
+  for (const [a, b] of pairs) {
+    connectionWarnings(s.project, pg, a, b).forEach((w) => warns.add(w));
+    const id = connect(a, b, { record: made === 0, quiet: true });
+    if (id) {
+      made++;
+      ids.push(id);
+    }
+  }
+  if (made) labelLast(`Connect ${plural(made, 'line')}`);
+  if (skipped) warns.add(`${plural(skipped, 'port')} had no row to go to on the target block.`);
+  if (warns.size || made > 1) toast(`${plural(made, 'line')} connected.` + (warns.size ? ' ' + [...warns].join(' ') : ''), warns.size ? 'warn' : 'info', warns.size ? 6000 : 3000);
+  setState({ selection: ids, selectedPorts: [] });
 }
 
 export function rangeConnect() {

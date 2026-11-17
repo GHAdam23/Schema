@@ -33,7 +33,7 @@ import {
   type ResolvedRoute,
 } from '../model/routing';
 import { fromLocal, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
-import { pageOfObject, tagText, TAG_PAD_Y } from '../model/tags';
+import { pageOfObject, tagFontSize, tagText, TAG_PAD_Y } from '../model/tags';
 import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
 import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
 
@@ -332,9 +332,10 @@ function drawTag(out: DLItem[], project: Project, o: TagObj) {
   const b = localBox(project, o);
   out.push({ t: 'rect', x: b.x, y: b.y, w: b.w, h: b.h, fill: o.fill, stroke: strokeOf(o.border) });
   const t = tagText(project, o);
-  const tw = measureText(t, 'narrow', o.fontSize);
-  const base = b.y + b.h / 2 + (o.fontSize * capHeightEm('narrow')) / 2;
-  out.push({ t: 'text', x: b.x + (b.w - tw) / 2, y: base, text: t, font: 'narrow', size: o.fontSize, color: '#000000' });
+  const fs = tagFontSize(o);
+  const tw = measureText(t, 'narrow', fs);
+  const base = b.y + b.h / 2 + (fs * capHeightEm('narrow')) / 2;
+  out.push({ t: 'text', x: b.x + (b.w - tw) / 2, y: base, text: t, font: 'narrow', size: fs, color: '#000000' });
   void TAG_PAD_Y;
 }
 
@@ -583,9 +584,10 @@ export function labelBoxes(route: ResolvedRoute): LabelBox[] {
   }
   const L = pathLength(route.pts);
   if (route.conn.labelEnds) {
-    // One label near each end (for tracing long lines), a little way out from the anchor.
+    // One label near each end (for tracing long lines), a little way out from the anchor, unless moved.
     const off = Math.min(L / 4, 6 + (tw + 4) / 2);
-    return [labelAt(route, tw, off), labelAt(route, tw, L - off)];
+    const [t0, t1] = route.conn.labelEndsT ?? [null, null];
+    return [labelAt(route, tw, t0 === null ? off : t0 * L), labelAt(route, tw, t1 === null ? L - off : t1 * L)];
   }
   const d = route.conn.labelT === null ? autoLabelDistance(route.ortho ?? route.pts, route.ortho ? route.pts : undefined) : route.conn.labelT * L;
   return [labelAt(route, tw, d)];
@@ -607,6 +609,14 @@ function labelAt(route: ResolvedRoute, tw: number, d: number): LabelBox {
   const gap = tw + 4;
   const box = horiz ? { x: p.x - gap / 2, y: p.y - 5, w: gap, h: 10 } : { x: p.x - 5, y: p.y - gap / 2, w: 10, h: gap };
   return { p, d, gap, tw, horiz, box };
+}
+
+/** A connection with label `idx` (0, or 0/1 for labels at both ends) moved to position t. */
+export function withLabelT<C extends { labelT: number | null; labelEnds?: boolean; labelEndsT?: [number | null, number | null] }>(c: C, idx: number, t: number | null): C {
+  if (!c.labelEnds) return { ...c, labelT: t };
+  const ends: [number | null, number | null] = [...(c.labelEndsT ?? [null, null])] as [number | null, number | null];
+  ends[idx] = t;
+  return { ...c, labelEndsT: ends };
 }
 
 export function labelBox(route: ResolvedRoute): LabelBox | null {

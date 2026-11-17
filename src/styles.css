@@ -298,7 +298,15 @@ kbd {
   background: #d5dbe3;
 }
 .canvas-wrap.tool-text,
-.canvas-wrap.tool-rect {
+.canvas-wrap.tool-rect,
+.canvas-wrap.tool-ellipse,
+.canvas-wrap.tool-container,
+.canvas-wrap.tool-callout,
+.canvas-wrap.tool-cloud,
+.canvas-wrap.tool-line,
+.canvas-wrap.tool-arrow,
+.canvas-wrap.tool-arrow2,
+.canvas-wrap.tool-tag {
   cursor: crosshair;
 }
 .canvas {

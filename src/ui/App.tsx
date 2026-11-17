@@ -124,7 +124,11 @@ export function App() {
       } else if (k === 'delete' || k === 'backspace') {
         e.preventDefault();
         deleteSelection();
-      } else if (k === 'escape') setState({ selection: [], selectedPorts: [], tool: 'select' });
+      } else if (k === 'escape') {
+        // First Esc leaves a drawing tool (keeping what was just drawn selected); the next clears the selection.
+        if (s.tool !== 'select') setState({ tool: 'select' });
+        else setState({ selection: [], selectedPorts: [] });
+      }
       else if (!mod && k === 'v') setState({ tool: 'select' });
       else if (!mod && k === 't') setState({ tool: 'text' });
       else if (!mod && k === 'r') setState({ tool: 'rect' });
