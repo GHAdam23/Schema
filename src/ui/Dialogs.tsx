@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getState, setState, toast, updateProject, useStore } from '../state/store';
+import { getState, nextLabel, redo, setState, toast, undo, updateProject, useStore } from '../state/store';
 import { savePrefs, type Prefs } from '../state/prefs';
 import { fileToImageAsset, pickFile, download } from '../io/files';
 import { newId } from '../model/ids';
@@ -37,6 +37,7 @@ export function PrefsDialog() {
     setState({ prefs: p });
     if (applyToProject) {
       // Designer info lives in each project (so files keep it); copy it into the open one too.
+      nextLabel('Designer info from Preferences');
       updateProject((d) => {
         d.info.designerName = p.designerName;
         d.info.copyright = p.copyright;
@@ -192,6 +193,7 @@ export function ProjectInfoDialog() {
   const [logo, setLogo] = useState(info.logoAssetId ? project.assets[info.logoAssetId] ?? null : null);
   const set = <K extends keyof typeof info>(k: K, v: (typeof info)[K]) => setInfo({ ...info, [k]: v });
   const save = () => {
+    nextLabel('Edit project / title block info');
     updateProject((d) => {
       const oldLogo = d.info.logoAssetId;
       const cur = oldLogo ? d.assets[oldLogo] : null;
@@ -387,5 +389,62 @@ export function BackupsDialog() {
         </tbody>
       </table>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+
+export function HistoryDialog() {
+  const pastLog = useStore((s) => s.pastLog);
+  const futureLog = useStore((s) => s.futureLog);
+  const time = (t: number) => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  // Newest first: undone steps (greyed, can be redone) above the current state, then applied steps.
+  const undone = futureLog.map((e, i) => ({ e, i })).reverse();
+  const done = pastLog.map((e, i) => ({ e, i })).reverse();
+  const undoTo = (i: number) => {
+    // Undo step i and everything after it.
+    for (let n = pastLog.length - i; n > 0; n--) undo();
+  };
+  const redoTo = (i: number) => {
+    for (let n = i + 1; n > 0; n--) redo();
+  };
+  return (
+    <Modal title="History" wide buttons={<button onClick={close}>Close</button>}>
+      <div className="muted small">
+        Every change in this session, newest first. “Undo to here” undoes that step and everything after it; undone steps can be redone until you
+        make a new change. ({pastLog.length} step{pastLog.length === 1 ? '' : 's'} can be undone.)
+      </div>
+      <div className="history">
+        {undone.map(({ e, i }) => (
+          <div key={'f' + i} className="hist undone">
+            <span className="time">{time(e.at)}</span>
+            <span className="label">{e.label}</span>
+            <button onClick={() => redoTo(i)}>Redo to here</button>
+            {e.details && <Details details={e.details} />}
+          </div>
+        ))}
+        <div className="hist now">— current state —</div>
+        {done.map(({ e, i }) => (
+          <div key={'p' + i} className="hist">
+            <span className="time">{time(e.at)}</span>
+            <span className="label">{e.label}</span>
+            <button onClick={() => undoTo(i)}>Undo to here</button>
+            {e.details && <Details details={e.details} />}
+          </div>
+        ))}
+        {!done.length && !undone.length && <div className="muted">No changes yet.</div>}
+      </div>
+    </Modal>
+  );
+}
+
+function Details({ details }: { details: string[] }) {
+  return (
+    <ul className="details">
+      {details.slice(0, 40).map((d, k) => (
+        <li key={k}>{d}</li>
+      ))}
+      {details.length > 40 && <li>…and {details.length - 40} more</li>}
+    </ul>
   );
 }

@@ -45,11 +45,13 @@ export function Toolbar() {
       <div className="group">
         <Btn label="↶" title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo} />
         <Btn label="↷" title="Redo (Ctrl+Y)" onClick={redo} disabled={!canRedo} />
+        <Btn label="History" title="Recent changes — see what changed and undo to any point (Ctrl+H)" onClick={() => setState({ modal: { kind: 'history' } })} />
       </div>
       <div className="group">
         <Btn label="Select" title="Select (V)" active={tool === 'select'} onClick={() => setState({ tool: 'select' })} />
         <Btn label="Text" title="Text box (T)" active={tool === 'text'} onClick={() => setState({ tool: 'text' })} />
         <Btn label="Rect" title="Rectangle (R)" active={tool === 'rect'} onClick={() => setState({ tool: 'rect' })} />
+        <Btn label="Hand" title="Pan by dragging (H). You can also right-drag, middle-drag, Space-drag, or drag the grey area." active={tool === 'pan'} onClick={() => setState({ tool: 'pan' })} />
         <Btn label="Insert…" title="Quick insert block (Ctrl+K or Q)" onClick={() => setState({ modal: { kind: 'quickInsert' } })} />
       </div>
       <div className="group">

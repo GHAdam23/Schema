@@ -15,7 +15,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
   - Title block: Calibri look-alike (Carlito).
 - File access via the File System Access API (direct open/save). Chrome/Edge only — no Safari fallback.
 - Autosave + rolling backups (last N versions) of the open project.
-- Undo/redo for all edits.
+- Undo/redo for all edits, plus a **History** list (round 3): every change is named (e.g. "Connect VR-1 SDI OUT 1 → DISP-1 HDMI 1", "Update … from library — 1 connection removed" with the removed lines listed); undo/redo to any point.
 
 ## 2. Files
 
@@ -54,11 +54,16 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 
 - New project starts with one page. Page tabs: add, duplicate, rearrange (drag), rename, delete.
 - Page sizes: Letter 8.5×11 and Tabloid 11×17, **landscape only**.
-- Title block column on the right of every page:
-  - Logo, project name, project address, designer name / copyright / phone / email
-  - Created date (project), Modified date (auto, updates on save), Revision (project-level), shown on every page
-  - Page number and name, e.g. `(11) Sanctuary Video Schematic`, and `11/19` auto-computed
-  - No "Printed" date.
+- Title block column on the right of every page, laid out after the designer's reference sheet (round 3), top to bottom:
+  - Logo (≈12% of the column height)
+  - **PROJECT ADDRESS** + address lines (all bold)
+  - **Designed by** name, **Copyright ©** …, phone, email (all bold)
+  - Free area — **shared**: text boxes / rectangles placed inside the title block on page 1 are repeated on every page
+  - Created / Modified dates (Modified updates on save)
+  - Project name, then `Rev. x` right-aligned
+  - Page title `(11) Sanctuary Video Schematic` (bold)
+  - Page number `11/19` large: number in black, `/19` in light grey
+  - Inset grey separators between sections; text ≈ 7% of the column width with ~1.4 line spacing. No "Printed" date.
 - Designer info + logo stored as app preferences and pre-filled into new projects. Saving Preferences also updates the open project's title block (checkbox, on by default) — feedback round 1.
 
 ## 5. Layout canvas
@@ -66,7 +71,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - PowerPoint-like interaction: select, multi-select, marquee, move, resize, align/distribute, grid + snap, smart guides, copy/paste, z-order, zoom/pan.
 - Objects:
   - **Blocks** — scalable, **not rotatable**. Per-block border color/thickness/style.
-  - Text boxes, rectangles (rectangles can hold text — double-click to type), circles/ellipses, containers (labeled grouping frames), callouts — all rotatable.
+  - Text boxes, rectangles (rectangles can hold text — double-click to type; text always shrinks to stay inside its box, optional word-wrap), circles/ellipses, containers (labeled grouping frames), callouts — all rotatable.
   - Imported images (JPG/PNG) and single-page PDFs — rotatable. PDFs stay embedded as the original and export as true vector (pdf-lib embedPage). SVG import also accepted.
   - **Reference tags** (see §7).
 - **Quick insert**: hotkey opens search; Enter drops the block at the cursor. Drag from library panel also works.
@@ -78,7 +83,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Routing: right-angle (default) or curved, selectable per line. New lines get an automatic right-angle path that **goes around blocks, rectangles and text boxes** (feedback rounds 1–2; future shapes too); **the user can drag segments/bends to reroute**, after which the line keeps the manual route.
 - Jumpers: a line may run from a device back to another port on the same device.
 - **No avoidable jogs** (round 2): moving a block snaps its ports level with the far ends of its lines (generous catch zone, wins over grid snap); a new line with a small jog straightens itself by moving an end that has no other lines; **Straighten** (toolbar / `S`) moves selected blocks — or the input ends of selected lines — so lines run straight.
-- Lines to a text box / rectangle attach to the centre of the nearest side.
+- Lines to a text box / rectangle attach to the centre of the nearest side; those side centres show as connection dots on hover (drag from a dot to start a line).
 - **Line hops** drawn automatically where lines cross.
 - **Fan-out**: one output may feed multiple inputs.
 - **Labels**: manual by default; optional auto-numbering (prefix + counter). Label sits in a gap in the line (`—DD-301—`), can be slid along the line, and stays with the line when it moves. Click a line and type to label it. Labels can be lined up with each other (align buttons with several lines selected; dragging snaps to other labels).
@@ -141,7 +146,10 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Alt-drag from a text box or rectangle starts a line from it; lines attach to the centre of the nearest side.
 - Lines are drawn OUT → IN where possible (endpoints are swapped automatically). Mismatched signal types only warn.
 - Unfilled rectangles are only grabbed by their outline or text, so you can click and drag-select inside them.
-- Marquee: left-to-right selects objects fully inside; right-to-left (green, dashed) selects anything touched.
+- Marquee (round 3): selects what is fully inside, in any drag direction (PowerPoint); hold Alt for touch-select (green, dashed).
+- Pan: right-drag, middle-drag, Space-drag, Hand tool (`H`), or drag the grey area outside the page; wheel scrolls. Left-drag on blank page space stays marquee-select.
+- Text boxes grow to fit after typing; shrinking a box shrinks the text (never below 2 pt). New text boxes don't word-wrap (Wrap checkbox); rectangles do.
+- History labels: actions call `nextLabel()` before recording; drags name their checkpoint; `labelLast()` adds details afterwards.
 - Route model: a line stores alternating bend coordinates (null = automatic). The end segments always stretch to the anchors, so lines stay attached when blocks move while keeping manual edits. Dragging a middle segment moves it; dragging an end segment inserts a jog. "Reset route" returns to automatic.
 - Automatic routing: the simple Z/L route is used when it's clear of obstacles; otherwise a shortest orthogonal path around them (8 pt clearance, penalty per bend) is found on a grid built from obstacle edges (A*, cached). Obstacles = every object on the page (blocks, rectangles, text boxes). A shape that encloses a line's end (a rack/room frame) doesn't block that line. When something sits closer than the 12 pt stub, the stub and clearance shrink so the line still goes around.
 - Straightening: block drags snap to connected ports first (catch zone max(10 px, 8 pt)), then smart guides, then grid. Auto-straighten after drawing a line only moves an end with no other lines and only for jogs ≤ 24 pt (one undo step with the line).
@@ -158,6 +166,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - No obstacle-avoiding autorouter (spec). "Used elsewhere" port markers and reference tags are Phase 2.
 
 ## 11. Feedback log
+
+**Round 3** (all addressed): change History with details (e.g. which connections a block update removed) · text shrinks with its box · connection dots on rectangles/text boxes · drag-select works the same in every direction (Alt = touch) · pan by right-drag / Hand tool / grey area · title block rebuilt from the reference sheet, with a shared free area copied from page 1.
 
 **Round 2** (all addressed): rectangles/text boxes (and future shapes) are routing obstacles · easy alignment so lines stay straight (port snap while dragging, auto-straighten on connect, Straighten command).
 

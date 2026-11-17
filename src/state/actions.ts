@@ -21,7 +21,7 @@ import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER } from '../mode
 import { findPort } from '../model/blockGeometry';
 import { objBounds, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
 import { labelBox, labelTAt } from '../render/buildPage';
-import { currentPage, getState, setState, toast, updateProject, type PortRef } from './store';
+import { currentPage, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
 
 type D = Draft<Project>;
@@ -38,6 +38,7 @@ export function setPage(id: Id) {
 }
 
 export function addPage() {
+  nextLabel('Add page');
   const s = getState();
   const pg = newPage(`Page ${s.project.pages.length + 1}`, currentPage().size);
   updateProject((d) => {
@@ -48,6 +49,7 @@ export function addPage() {
 }
 
 export function duplicatePage(id: Id) {
+  nextLabel('Duplicate page');
   const s = getState();
   const src = s.project.pages.find((p) => p.id === id);
   if (!src) return;
@@ -62,6 +64,7 @@ export function duplicatePage(id: Id) {
 }
 
 export function renamePage(id: Id, name: string) {
+  nextLabel(`Rename page to "${name}"`);
   updateProject((d) => {
     const p = d.pages.find((p) => p.id === id);
     if (p) p.name = name;
@@ -69,6 +72,7 @@ export function renamePage(id: Id, name: string) {
 }
 
 export function setPageSize(id: Id, size: PageSizeId) {
+  nextLabel('Change page size');
   updateProject((d) => {
     const p = d.pages.find((p) => p.id === id);
     if (p) p.size = size;
@@ -91,6 +95,7 @@ export function deletePage(id: Id) {
 }
 
 export function movePage(from: number, to: number) {
+  nextLabel('Reorder pages');
   updateProject((d) => {
     const [p] = d.pages.splice(from, 1);
     d.pages.splice(to, 0, p);
@@ -116,6 +121,7 @@ export function placeBlock(def: BlockDef, x: number, y: number, fromLibrary = tr
   }
   const dev: ProjectDevice = { id: newId('dv'), defId, name: uniqueDeviceName(s.project, def.defaultName || def.model || 'DEVICE') };
   const obj: BlockObj = { id: newId('ob'), kind: 'block', deviceId: dev.id, x, y, scale: 1, border: { ...DEFAULT_BLOCK_BORDER } };
+  nextLabel(`Add ${dev.name} (${def.manufacturer} ${def.model})`);
   updateProject((d) => {
     if (newDef) d.blockDefs[newDef.id] = newDef;
     d.devices[dev.id] = dev;
@@ -136,6 +142,7 @@ export function uniqueDeviceName(p: Project, base: string): string {
 }
 
 export function addText(x: number, y: number, text = 'Text'): Id {
+  nextLabel('Add text box');
   const o: TextObj = {
     id: newId('ob'),
     kind: 'text',
@@ -148,6 +155,7 @@ export function addText(x: number, y: number, text = 'Text'): Id {
     bold: false,
     align: 'left',
     valign: 'top',
+    wrap: false,
     color: '#000000',
     border: null,
     fill: null,
@@ -160,6 +168,7 @@ export function addText(x: number, y: number, text = 'Text'): Id {
 }
 
 export function addRect(x: number, y: number, w = 108, h = 72): Id {
+  nextLabel('Add rectangle');
   const o: RectObj = {
     id: newId('ob'),
     kind: 'rect',
@@ -187,6 +196,14 @@ export function deleteSelection() {
   const s = getState();
   const sel = new Set(s.selection);
   if (!sel.size) return;
+  const page = currentPage(s);
+  const objs = page.objects.filter((o) => sel.has(o.id));
+  const alive = new Set(page.objects.filter((o) => !sel.has(o.id)).map((o) => o.id));
+  const lines = page.connections.filter((c) => sel.has(c.id) || !alive.has(c.from.objId) || !alive.has(c.to.objId));
+  nextLabel(`Delete ${plural(objs.length, 'object')}${lines.length ? `, ${plural(lines.length, 'line')}` : ''}`, [
+    ...objs.map((o) => describeObject(s.project, o)),
+    ...lines.map((c) => 'Line: ' + describeConnection(s.project, page, c)),
+  ]);
   updateProject((d) => {
     const pg = pageDraft(d);
     pg.objects = pg.objects.filter((o) => !sel.has(o.id));
@@ -221,6 +238,7 @@ function endpointAlive(d: D, objs: Map<string, Draft<PageObject>>, e: Endpoint) 
 }
 
 export function moveObjects(ids: Id[], dx: number, dy: number, record = true) {
+  nextLabel('Nudge');
   const set = new Set(ids);
   updateProject((d) => {
     for (const o of pageDraft(d).objects) {
@@ -233,6 +251,7 @@ export function moveObjects(ids: Id[], dx: number, dy: number, record = true) {
 }
 
 export function patchObjects(ids: Id[], patch: (o: Draft<PageObject>) => void, record = true) {
+  nextLabel('Change object');
   const set = new Set(ids);
   updateProject((d) => {
     for (const o of pageDraft(d).objects) if (set.has(o.id)) patch(o);
@@ -240,6 +259,7 @@ export function patchObjects(ids: Id[], patch: (o: Draft<PageObject>) => void, r
 }
 
 export function patchConnections(ids: Id[], patch: (c: Draft<Connection>) => void, record = true) {
+  nextLabel('Change line');
   const set = new Set(ids);
   updateProject((d) => {
     for (const c of pageDraft(d).connections) if (set.has(c.id)) patch(c);
@@ -247,6 +267,7 @@ export function patchConnections(ids: Id[], patch: (c: Draft<Connection>) => voi
 }
 
 export function setStroke(ids: Id[], style: Partial<StrokeStyle>) {
+  nextLabel('Change line/border style');
   const set = new Set(ids);
   updateProject((d) => {
     const pg = pageDraft(d);
@@ -260,6 +281,7 @@ export function setStroke(ids: Id[], style: Partial<StrokeStyle>) {
 }
 
 export function renameDevice(deviceId: Id, name: string) {
+  nextLabel(`Rename device "${getState().project.devices[deviceId]?.name}" → "${name}"`);
   updateProject((d) => {
     const dev = d.devices[deviceId];
     if (dev) dev.name = name;
@@ -269,6 +291,7 @@ export function renameDevice(deviceId: Id, name: string) {
 export type AlignMode = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom';
 
 export function alignSelection(mode: AlignMode) {
+  nextLabel('Align ' + mode);
   const s = getState();
   const page = currentPage();
   const objs = page.objects.filter((o) => s.selection.includes(o.id));
@@ -299,6 +322,7 @@ export function alignSelection(mode: AlignMode) {
  * common x along horizontal runs; top/middle/bottom on a common y along vertical runs.
  */
 export function alignLabels(mode: AlignMode) {
+  nextLabel('Line up labels');
   const s = getState();
   const page = currentPage();
   const routes = resolvePageRoutes(s.project, page);
@@ -331,6 +355,7 @@ export function alignLabels(mode: AlignMode) {
 }
 
 export function distributeSelection(axis: 'h' | 'v') {
+  nextLabel('Distribute');
   const s = getState();
   const page = currentPage();
   const objs = page.objects.filter((o) => s.selection.includes(o.id));
@@ -355,6 +380,7 @@ export function distributeSelection(axis: 'h' | 'v') {
 }
 
 export function zOrder(mode: 'front' | 'back' | 'forward' | 'backward') {
+  nextLabel('Stacking order: ' + mode);
   const sel = new Set(getState().selection);
   updateProject((d) => {
     const pg = pageDraft(d);
@@ -431,6 +457,7 @@ function copyObjectsInto(project: Project, objects: readonly PageObject[], conne
 }
 
 export function paste() {
+  nextLabel('Paste');
   if (!clip) return;
   const s = getState();
   pasteCount++;
@@ -495,6 +522,7 @@ export function connect(from: Endpoint, to: Endpoint, opts: { record?: boolean; 
   }
   const warnings = connectionWarnings(s.project, pg, a, b);
   const c: Connection = { id: newId('cn'), from: a, to: b, bends: null, label: '', labelT: null, style: { ...DEFAULT_LINE } };
+  nextLabel('Connect ' + describeConnection(s.project, pg, c));
   updateProject((d) => {
     pageDraft(d).connections.push(c);
   }, opts.record ?? true);
@@ -549,6 +577,7 @@ export function rangeConnect() {
     const id = connect(A[i].r, B[i].r, { record: made === 0, quiet: true });
     if (id) made++;
   }
+  if (made) labelLast(`Range connect: ${plural(made, 'line')}`);
   if (A.length !== B.length) warns.add(`Port counts differ (${A.length} vs ${B.length}); connected ${n} pairs.`);
   toast(`Range connect: ${made} connection${made === 1 ? '' : 's'} created.` + (warns.size ? ' ' + [...warns].join(' ') : ''), warns.size ? 'warn' : 'info', 6000);
   setState({ selectedPorts: [] });
@@ -557,12 +586,46 @@ export function rangeConnect() {
 // ---------------------------------------------------------------------------------------------
 // Block definitions
 
-/** Save an edited project-local definition (affects all devices using it). */
-export function saveProjectDef(def: BlockDef) {
+/**
+ * Save an edited project-local definition (affects all devices using it). Returns descriptions of
+ * connections that were removed because their ports no longer exist (also listed in History).
+ */
+export function saveProjectDef(def: BlockDef, label = `Edit block definition ${def.manufacturer} ${def.model}`): string[] {
+  const before = getState().project;
   updateProject((d) => {
     d.blockDefs[def.id] = def as Draft<BlockDef>;
     gc(d);
-  });
+  }, label);
+  const lost = lostConnections(before, getState().project);
+  if (lost.length) labelLast(`${label} — ${plural(lost.length, 'connection')} removed`, lost.map((l) => 'Removed: ' + l));
+  return lost;
+}
+
+/** Connections present in `a` but not in `b`, described. */
+export function lostConnections(a: Project, b: Project): string[] {
+  const alive = new Set(b.pages.flatMap((p) => p.connections.map((c) => c.id)));
+  return a.pages.flatMap((p, i) => p.connections.filter((c) => !alive.has(c.id)).map((c) => `${describeConnection(a, p, c)} (page ${i + 1})`));
+}
+
+export function plural(n: number, w: string) {
+  return `${n} ${w}${n === 1 ? '' : 's'}`;
+}
+
+function endpointText(p: Project, page: Page, e: Endpoint) {
+  const info = portInfo(p, page, e);
+  if (info) return `${info.device.name} ${info.port.name}`.trim();
+  const o = page.objects.find((x) => x.id === e.objId);
+  return o ? describeObject(p, o) : '?';
+}
+
+export function describeConnection(p: Project, page: Page, c: Connection) {
+  return `${endpointText(p, page, c.from)} → ${endpointText(p, page, c.to)}${c.label ? ` [${c.label}]` : ''}`;
+}
+
+export function describeObject(p: Project, o: PageObject) {
+  if (o.kind === 'block') return p.devices[o.deviceId]?.name ?? 'block';
+  const t = o.text?.trim().split('\n')[0].slice(0, 24);
+  return (o.kind === 'text' ? 'Text box' : 'Rectangle') + (t ? ` "${t}"` : '');
 }
 
 /** Replace a project definition with the current library version (by libraryId). */
@@ -589,14 +652,13 @@ export function updateFromLibrary(defId: Id) {
     left: mapPorts(lib.left, pd.left, pd.right),
     right: mapPorts(lib.right, pd.right, pd.left),
   };
-  const before = countConnections(s.project);
-  saveProjectDef(next);
-  const lost = before - countConnections(getState().project);
-  toast(`Updated "${lib.manufacturer} ${lib.model}" from library.` + (lost ? ` ${lost} connection(s) removed (ports no longer exist).` : ''), lost ? 'warn' : 'info');
-}
-
-function countConnections(p: Project) {
-  return p.pages.reduce((a, pg) => a + pg.connections.length, 0);
+  const lost = saveProjectDef(next, `Update ${lib.manufacturer} ${lib.model} from library`);
+  toast(
+    `Updated "${lib.manufacturer} ${lib.model}" from library.` +
+      (lost.length ? ` ${plural(lost.length, 'connection')} removed because the port no longer exists — see History for details.` : ''),
+    lost.length ? 'warn' : 'info',
+    lost.length ? 8000 : 3500,
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -641,6 +703,7 @@ export function projectDefToLibrary(defId: Id) {
  * - With only lines selected, each line's input end (the "to" object) moves.
  */
 export function straighten() {
+  nextLabel('Straighten');
   const s = getState();
   const page = currentPage(s);
   const sel = new Set(s.selection);

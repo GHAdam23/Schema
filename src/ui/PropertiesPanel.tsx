@@ -13,6 +13,7 @@ import {
   updateFromLibrary,
 } from '../state/actions';
 import { DEFAULT_LINE } from '../model/defaults';
+import { fitTextBox, titleBlockObjects } from '../render/buildPage';
 
 function StrokeEditor({ value, onChange, allowNone }: { value: StrokeStyle | null; onChange: (s: Partial<StrokeStyle> | null) => void; allowNone?: boolean }) {
   const v = value ?? { color: '#000000', width: 0, dash: 'solid' as const };
@@ -106,17 +107,23 @@ function PageSection({ s }: { s: AppState }) {
           <b>Reroute:</b> select a line and drag its segments. Lines route around blocks and shapes automatically until you move a segment.
         </p>
         <p>
+          <b>Title block:</b> text boxes / rectangles you place inside the title block on page 1 appear on every page.
+        </p>
+        <p>
+          <b>History</b> (toolbar / <kbd>Ctrl+H</kbd>) lists recent changes — including which lines were removed — and can undo to any point.
+        </p>
+        <p>
           <b>Straight lines:</b> dragging a block snaps its ports level with the blocks it's wired to. <b>Straighten</b> (toolbar, or <kbd>S</kbd>) fixes jogs on the selected blocks or lines.
         </p>
         <p>
           <b>Range connect:</b> click a port, Shift-click to extend the run, Ctrl-click ports on a second block, then <kbd>Shift+C</kbd>.
         </p>
         <p>
-          <b>Select:</b> drag on empty space — left-to-right selects what is fully inside, right-to-left selects anything touched.
-          Double-click a rectangle or text box to type in it.
+          <b>Select:</b> drag on empty space to select what's fully inside (any direction); hold Alt to select anything touched.
+          Double-click a rectangle or text box to type in it. Drag from the dots on a rectangle / text box to connect a line to it.
         </p>
         <p>
-          <b>Pan:</b> scroll, middle-drag or Space-drag. <b>Zoom:</b> Ctrl+scroll.
+          <b>Pan:</b> right-drag, the Hand tool (<kbd>H</kbd>), drag the grey area, scroll, middle-drag or Space-drag. <b>Zoom:</b> Ctrl+scroll.
         </p>
       </div>
     </div>
@@ -151,6 +158,7 @@ function ObjectSection({ s, o }: { s: AppState; o: PageObject }) {
   return (
     <div className="section">
       <div className="section-title">Rectangle</div>
+      <SharedNote o={o} />
       <TextFields o={o} />
       <Geometry o={o} />
       <div className="sub">Border</div>
@@ -249,8 +257,12 @@ function TextFields({ o }: { o: TextObj | RectObj }) {
         <label>
           Size <input type="number" min={4} max={72} step={0.5} value={o.fontSize} onChange={(e) => patch((t) => (t.fontSize = Number(e.target.value) || 9))} />
         </label>
+        {fitTextBox(o).size < o.fontSize && <span className="muted small">shrunk to {fitTextBox(o).size}pt to fit</span>}
         <label>
           <input type="checkbox" checked={o.bold} onChange={(e) => patch((t) => (t.bold = e.target.checked))} /> Bold
+        </label>
+        <label title="Off: lines break only where you press Enter. Either way, text shrinks to stay inside the box.">
+          <input type="checkbox" checked={o.wrap !== false} onChange={(e) => patch((t) => (t.wrap = e.target.checked))} /> Wrap
         </label>
         <label>
           Color <input type="color" value={o.color} onChange={(e) => patch((t) => (t.color = e.target.value))} />
@@ -272,11 +284,19 @@ function TextFields({ o }: { o: TextObj | RectObj }) {
   );
 }
 
+function SharedNote({ o }: { o: TextObj | RectObj }) {
+  const project = useStore((s) => s.project);
+  const pageId = useStore((s) => s.pageId);
+  if (project.pages[0]?.id !== pageId || !titleBlockObjects(project).some((x) => x.id === o.id)) return null;
+  return <div className="muted small">In the title block on page 1 — shown on every page.</div>;
+}
+
 function TextSection({ o }: { o: TextObj }) {
   const patch = (fn: (t: TextObj) => void) => patchObjects([o.id], (t) => void (t.kind === 'text' && fn(t as TextObj)));
   return (
     <div className="section">
       <div className="section-title">Text box</div>
+      <SharedNote o={o} />
       <TextFields o={o} />
       <Geometry o={o} />
       <div className="sub">Border</div>

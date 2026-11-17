@@ -17,11 +17,11 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { buildPage, labelBox, labelTAt, TEXT_PAD } from '../render/buildPage';
+import { buildPage, fitTextBox, labelBox, labelTAt, naturalTextSize, TEXT_PAD } from '../render/buildPage';
 import { SvgItems } from '../render/SvgRender';
-import { checkpoint, currentPage, dropCheckpointIfUnchanged, getState, setState, toast, updateProject, useStore } from '../state/store';
-import { addRect, addText, autoStraighten, connect, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
-import { hitObject, hitPort, outlinePoint, portZones, type PortHit } from './hitTest';
+import { checkpoint, currentPage, nextLabel, dropCheckpointIfUnchanged, getState, setState, toast, updateProject, useStore } from '../state/store';
+import { addRect, addText, autoStraighten, connect, describeObject, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
+import { hitObject, hitPort, hitShape, hitShapeDot, outlinePoint, portZones, SIDE_CENTRES, type PortHit, type ShapeDot } from './hitTest';
 
 interface View {
   z: number;
@@ -32,7 +32,7 @@ interface View {
 type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
-  | { t: 'marquee'; start: Pt; cur: Pt; base: Id[] }
+  | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean }
   | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl' }
@@ -81,6 +81,8 @@ export function Canvas() {
   const [guides, setGuides] = useState<Guide[]>([]);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [hoverPort, setHoverPort] = useState<PortHit | null>(null);
+  // Shape under the pointer (shows its connection dots) and the dot that would be used.
+  const [hoverShape, setHoverShape] = useState<{ id: Id; dot: ShapeDot | null } | null>(null);
   const spaceDown = useRef(false);
   const lastPortClick = useRef<PortHit | null>(null);
 
@@ -178,7 +180,9 @@ export function Canvas() {
     }
     const p = toPage(e.clientX, e.clientY);
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
-    if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
+    // Pan: middle or right drag, Space+drag, the Hand tool, or dragging the grey area around the page.
+    const offPage = p.x < 0 || p.y < 0 || p.x > size.w || p.y > size.h;
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && (spaceDown.current || getState().tool === 'pan' || offPage))) {
       setDrag({ t: 'pan', sx: e.clientX, sy: e.clientY, orig: viewRef.current });
       return;
     }
@@ -200,13 +204,13 @@ export function Canvas() {
       const id = s.selection[0];
       const o = pg.objects.find((x) => x.id === id);
       if (!o) return;
-      checkpoint();
+      checkpoint('Resize ' + describeObject(s.project, o));
       const b = objBounds(s.project, o);
       setDrag({ t: 'resize', id, handle: hit.handle as Handle, start: p, orig: o, origSize: { w: b.w, h: b.h } });
       return;
     }
     if (hit.hit === 'label') {
-      checkpoint();
+      checkpoint('Move line label');
       setState({ selection: [hit.id!], selectedPorts: [] });
       setDrag({ t: 'label', connId: hit.id!, moved: false });
       return;
@@ -219,8 +223,14 @@ export function Canvas() {
         return;
       }
       if (!s.selection.includes(hit.id!)) setState({ selection: [hit.id!], selectedPorts: [] });
-      checkpoint();
+      checkpoint('Reroute line');
       setDrag({ t: 'segment', connId: hit.id!, seg: Number(hit.seg), start: p, bends: [...r.bends], moved: false });
+      return;
+    }
+    // Dragging from a rectangle / text box connection dot starts a line from that side.
+    const dot = hitShapeDot(s.project, pg, p.x, p.y, 7 / viewRef.current.z);
+    if (dot && !hitPort(s.project, pg, p.x, p.y)) {
+      setDrag({ t: 'connect', from: { objId: dot.objId, fx: dot.fx, fy: dot.fy }, start: p, cur: p, moved: false, port: null, additive: 'none' });
       return;
     }
     const port = hitPort(s.project, pg, p.x, p.y);
@@ -258,7 +268,7 @@ export function Canvas() {
     }
     // Empty space: marquee
     if (!additive) setState({ selection: [], selectedPorts: [] });
-    setDrag({ t: 'marquee', start: p, cur: p, base: additive ? s.selection : [] });
+    setDrag({ t: 'marquee', start: p, cur: p, base: additive ? s.selection : [], touch: e.altKey });
   };
 
   const toggleSel = (id: Id) => {
@@ -273,7 +283,14 @@ export function Canvas() {
     const s = getState();
     const pg = currentPage(s);
     if (!d) {
-      if (!editing) setHoverPort(hitPort(s.project, pg, p.x, p.y));
+      if (!editing && s.tool === 'select') {
+        const hp = hitPort(s.project, pg, p.x, p.y);
+        setHoverPort(hp);
+        const z0 = viewRef.current.z;
+        const dot = hp ? null : hitShapeDot(s.project, pg, p.x, p.y, 7 / z0);
+        const sh = hp ? null : dot ? { id: dot.objId } : hitShape(s.project, pg, p.x, p.y, 10 / z0);
+        setHoverShape(sh ? { id: sh.id, dot } : null);
+      }
       return;
     }
     const z = viewRef.current.z;
@@ -283,11 +300,11 @@ export function Canvas() {
         return;
       }
       case 'marquee': {
-        const nd = { ...d, cur: p };
+        const nd = { ...d, cur: p, touch: e.altKey };
         setDrag(nd);
         const r = normRect(d.start, p);
-        // Drag left-to-right: select what is fully inside. Right-to-left: anything touched.
-        const crossing = p.x < d.start.x;
+        // Like PowerPoint: select what is fully inside, in any drag direction. Hold Alt to select anything touched.
+        const crossing = e.altKey;
         const inRect = (q: Pt) => q.x >= r.x && q.y >= r.y && q.x <= r.x + r.w && q.y <= r.y + r.h;
         const inside = pg.objects
           .filter((o) => {
@@ -312,7 +329,8 @@ export function Canvas() {
         let dy = p.y - d.start.y;
         if (!d.moved) {
           if (Math.hypot(dx * z, dy * z) < DRAG_THRESHOLD) return;
-          checkpoint();
+          const movedObjs = pg.objects.filter((o) => d.ids.includes(o.id));
+          checkpoint(movedObjs.length === 1 ? 'Move ' + describeObject(s.project, movedObjs[0]) : `Move ${movedObjs.length} objects`);
           d.moved = true;
         }
         if (e.shiftKey) {
@@ -342,7 +360,12 @@ export function Canvas() {
         setDrag({ ...d, cur: p, moved });
         const hp = hitPort(s.project, pg, p.x, p.y);
         // Any port except the one we started from (same-device jumpers are allowed).
-        setHoverPort(hp && !(hp.objId === d.from.objId && hp.portId === (d.from as { portId?: string }).portId) ? hp : null);
+        const okPort = hp && !(hp.objId === d.from.objId && hp.portId === (d.from as { portId?: string }).portId) ? hp : null;
+        setHoverPort(okPort);
+        // Over a rectangle / text box: show its dots and the side the line will attach to.
+        const sh = okPort ? null : hitShape(s.project, pg, p.x, p.y, 6 / z);
+        if (sh && sh.id !== d.from.objId) setHoverShape({ id: sh.id, dot: { objId: sh.id, ...outlinePoint(objBounds(s.project, sh), p.x, p.y) } });
+        else setHoverShape(null);
         return;
       }
       case 'segment': {
@@ -391,6 +414,7 @@ export function Canvas() {
     const d = dragRef.current;
     setDrag(null);
     setGuides([]);
+    if (d?.t === 'connect') setHoverShape(null);
     if (!d) return;
     const s = getState();
     const pg = currentPage(s);
@@ -415,8 +439,8 @@ export function Canvas() {
         const fromPort = (d.from as { portId?: string }).portId;
         if (hp && !(hp.objId === d.from.objId && hp.portId === fromPort)) to = { objId: hp.objId, portId: hp.portId };
         else {
-          const o = hitObject(s.project, pg, p.x, p.y, 4, true);
-          if (o && o.kind !== 'block' && o.id !== d.from.objId) to = { objId: o.id, ...outlinePoint(objBounds(s.project, o), p.x, p.y) };
+          const o = hitShape(s.project, pg, p.x, p.y, 6 / viewRef.current.z);
+          if (o && o.id !== d.from.objId) to = { objId: o.id, ...outlinePoint(objBounds(s.project, o), p.x, p.y) };
         }
         if (to) {
           const id = connect(d.from, to);
@@ -603,6 +627,7 @@ export function Canvas() {
       const hp = hoverPort;
       let eA: Anchor | null = null;
       if (hp) eA = resolveEndpoint(project, page, { objId: hp.objId, portId: hp.portId });
+      else if (hoverShape?.dot) eA = resolveEndpoint(project, page, hoverShape.dot);
       if (!eA) {
         const horizontal = axisOf(sA) === 'h';
         eA = horizontal
@@ -623,7 +648,7 @@ export function Canvas() {
       className={'canvas-wrap' + (tool !== 'select' ? ' tool-' + tool : '')}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      style={{ cursor: drag?.t === 'pan' ? 'grabbing' : undefined }}
+      style={{ cursor: drag?.t === 'pan' ? 'grabbing' : tool === 'pan' ? 'grab' : undefined }}
     >
       <svg
         ref={svgRef}
@@ -655,6 +680,7 @@ export function Canvas() {
             routes={routes}
             selectedPorts={selectedPorts}
             hoverPort={hoverPort}
+            hoverShape={hoverShape}
             connecting={drag?.t === 'connect'}
           />
           {preview && <path d={preview} fill="none" stroke={previewWarn.length ? '#d97706' : '#2563eb'} strokeWidth={1 / z} strokeDasharray={`${4 / z} ${3 / z}`} pointerEvents="none" />}
@@ -664,9 +690,9 @@ export function Canvas() {
               y={normRect(drag.start, drag.cur).y}
               width={normRect(drag.start, drag.cur).w}
               height={normRect(drag.start, drag.cur).h}
-              fill={drag.cur.x < drag.start.x ? 'rgba(22,163,74,0.08)' : 'rgba(37,99,235,0.08)'}
-              stroke={drag.cur.x < drag.start.x ? '#16a34a' : '#2563eb'}
-              strokeDasharray={drag.cur.x < drag.start.x ? `${4 / z} ${3 / z}` : undefined}
+              fill={drag.touch ? 'rgba(22,163,74,0.08)' : 'rgba(37,99,235,0.08)'}
+              stroke={drag.touch ? '#16a34a' : '#2563eb'}
+              strokeDasharray={drag.touch ? `${4 / z} ${3 / z}` : undefined}
               strokeWidth={1 / z}
               pointerEvents="none"
             />
@@ -819,9 +845,10 @@ function Overlay(props: {
   routes: Map<Id, ResolvedRoute>;
   selectedPorts: { objId: Id; portId: Id }[];
   hoverPort: PortHit | null;
+  hoverShape: { id: Id; dot: ShapeDot | null } | null;
   connecting: boolean;
 }) {
-  const { project, page, z, selection, selectedObjs, routes, selectedPorts, hoverPort, connecting } = props;
+  const { project, page, z, selection, selectedObjs, routes, selectedPorts, hoverPort, hoverShape, connecting } = props;
   const hs = 6 / z;
   const sw = 1 / z;
   return (
@@ -877,6 +904,30 @@ function Overlay(props: {
         const rr = portRowRect(project, o, zone.hit.side, zone.hit.index);
         return rr && <rect key={sp.objId + sp.portId} {...rr} width={rr.w} height={rr.h} fill="rgba(37,99,235,0.18)" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />;
       })}
+      {hoverShape &&
+        (() => {
+          const o = page.objects.find((x) => x.id === hoverShape.id);
+          if (!o) return null;
+          const b = objBounds(project, o);
+          return (
+            <g pointerEvents="none">
+              {SIDE_CENTRES.map((c, i) => {
+                const on = hoverShape.dot && hoverShape.dot.fx === c.fx && hoverShape.dot.fy === c.fy;
+                return (
+                  <circle
+                    key={i}
+                    cx={b.x + c.fx * b.w}
+                    cy={b.y + c.fy * b.h}
+                    r={(on ? 3.5 : 2.5) / z}
+                    fill={on ? (connecting ? '#16a34a' : '#2563eb') : '#fff'}
+                    stroke={connecting ? '#16a34a' : '#2563eb'}
+                    strokeWidth={1 / z}
+                  />
+                );
+              })}
+            </g>
+          );
+        })()}
       {hoverPort &&
         (() => {
           const o = page.objects.find((x) => x.id === hoverPort.objId) as BlockObj | undefined;
@@ -954,8 +1005,20 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
     if (!o) return null;
     rect = tr({ x: o.x, y: o.y, w: o.w, h: Math.max(o.h, 20) });
     initial = o.text;
-    fontSize = o.fontSize * view.z;
-    commit = (v) => patchObjects([o.id], (t) => void ((t.kind === 'text' || t.kind === 'rect') && (t.text = v)));
+    fontSize = fitTextBox(o).size * view.z;
+    commit = (v) => {
+      nextLabel('Edit text');
+      patchObjects([o.id], (t) => {
+        if (t.kind !== 'text' && t.kind !== 'rect') return;
+        t.text = v;
+        // Text boxes grow to fit what was typed (like PowerPoint); shrinking the box later scales the text.
+        if (t.kind === 'text') {
+          const n = naturalTextSize({ ...o, text: v });
+          if (t.wrap === false && n.w > t.w) t.w = Math.ceil(n.w);
+          if (n.h > t.h) t.h = Math.ceil(n.h);
+        }
+      });
+    };
   } else if (editing.kind === 'device') {
     const o = pg.objects.find((x) => x.id === editing.id) as BlockObj | undefined;
     if (!o) return null;
@@ -981,7 +1044,10 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
     rect = tr({ x: at.x - 40, y: at.y - 7, w: 80, h: 14 });
     initial = editing.typed ?? c.label;
     fontSize = Math.max(11, 7 * view.z);
-    commit = (v) => patchConnections([c.id], (cc) => void (cc.label = v.trim()));
+    commit = (v) => {
+      nextLabel(v.trim() ? `Label line "${v.trim()}"` : 'Clear line label');
+      patchConnections([c.id], (cc) => void (cc.label = v.trim()));
+    };
   }
 
   const finish = (save: boolean) => {

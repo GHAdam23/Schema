@@ -6,7 +6,7 @@ import { blockLayout } from '../model/blockGeometry';
 import { drawObject } from '../render/buildPage';
 import type { DLItem } from '../render/displayList';
 import { SvgItems } from '../render/SvgRender';
-import { getState, setState, toast, useStore } from '../state/store';
+import { setState, toast, useStore } from '../state/store';
 import { saveProjectDef, upsertLibraryDef } from '../state/actions';
 
 type Col = 'left' | 'right';
@@ -100,10 +100,8 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
     };
     if (target === 'library') upsertLibraryDef(clean);
     else {
-      const before = getState().project;
-      saveProjectDef(clean);
-      const lost = countConns(before) - countConns(getState().project);
-      if (lost) toast(`${lost} connection(s) removed because their ports were deleted.`, 'warn');
+      const lost = saveProjectDef(clean);
+      if (lost.length) toast(`${lost.length} connection(s) removed because their ports were deleted — see History for details.`, 'warn', 8000);
     }
     close();
   };
@@ -435,9 +433,6 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
   );
 }
 
-function countConns(p: Project) {
-  return p.pages.reduce((a, pg) => a + pg.connections.length, 0);
-}
 
 function BlockPreview({ def }: { def: BlockDef }) {
   const name = def.defaultName || 'FRIENDLY NAME';

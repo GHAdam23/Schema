@@ -6,7 +6,7 @@ import { LibraryPanel } from './LibraryPanel';
 import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
 import { QuickInsert } from './QuickInsert';
-import { PrefsDialog, ProjectInfoDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog } from './Dialogs';
+import { PrefsDialog, ProjectInfoDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog } from './Dialogs';
 import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
   copySelection,
@@ -94,6 +94,9 @@ export function App() {
       else if (mod && k === 'd') {
         e.preventDefault();
         duplicateSelection();
+      } else if (mod && k === 'h') {
+        e.preventDefault();
+        setState({ modal: { kind: 'history' } });
       } else if (mod && k === 'a') {
         e.preventDefault();
         selectAll();
@@ -111,6 +114,7 @@ export function App() {
       else if (!mod && k === 't') setState({ tool: 'text' });
       else if (!mod && k === 'r') setState({ tool: 'rect' });
       else if (!mod && k === 's') straighten();
+      else if (!mod && k === 'h') setState({ tool: 'pan' });
       else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
       else if (k.startsWith('arrow')) {
         e.preventDefault();
@@ -151,6 +155,7 @@ export function App() {
       {modal?.kind === 'exportPdf' && <ExportPdfDialog />}
       {modal?.kind === 'backups' && <BackupsDialog />}
       {modal?.kind === 'signalTypes' && <SignalTypesDialog />}
+      {modal?.kind === 'history' && <HistoryDialog />}
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={'toast ' + t.kind}>

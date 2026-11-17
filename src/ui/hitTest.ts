@@ -1,7 +1,7 @@
 import type { BlockObj, Page, PageObject, Project, Side } from '../model/types';
 import { blockFor, blockLayout, BLK } from '../model/blockGeometry';
 import { objBounds } from '../model/routing';
-import { textLines, textTop } from '../render/buildPage';
+import { fitTextBox, textTop } from '../render/buildPage';
 import type { PortRef } from '../state/store';
 
 export interface PortHit extends PortRef {
@@ -53,7 +53,8 @@ export function hitObject(project: Project, page: Page, x: number, y: number, pa
     if (nearEdge) return o;
     if (o.text) {
       const top = textTop(o);
-      const bottom = top + textLines(o).length * o.fontSize * 1.2;
+      const f = fitTextBox(o);
+      const bottom = top + f.lines.length * f.size * 1.2;
       if (y >= top && y <= bottom) return o;
     }
   }
@@ -71,4 +72,41 @@ export function outlinePoint(b: { x: number; y: number; w: number; h: number }, 
     { d: Math.abs(1 - fy) * b.h, fx: 0.5, fy: 1 },
   ].sort((a, b) => a.d - b.d)[0];
   return { fx: d.fx, fy: d.fy };
+}
+
+export const SIDE_CENTRES = [
+  { fx: 0, fy: 0.5 },
+  { fx: 1, fy: 0.5 },
+  { fx: 0.5, fy: 0 },
+  { fx: 0.5, fy: 1 },
+];
+
+export interface ShapeDot {
+  objId: string;
+  fx: number;
+  fy: number;
+}
+
+/** A shape's connection dot (side centre) within `tol` of the point. */
+export function hitShapeDot(project: Project, page: Page, x: number, y: number, tol: number): ShapeDot | null {
+  for (let i = page.objects.length - 1; i >= 0; i--) {
+    const o = page.objects[i];
+    if (o.kind === 'block') continue;
+    const b = objBounds(project, o);
+    for (const c of SIDE_CENTRES) {
+      if (Math.hypot(b.x + c.fx * b.w - x, b.y + c.fy * b.h - y) <= tol) return { objId: o.id, ...c };
+    }
+  }
+  return null;
+}
+
+/** The shape (not block) under or near a point, for showing its dots. */
+export function hitShape(project: Project, page: Page, x: number, y: number, pad: number): PageObject | null {
+  for (let i = page.objects.length - 1; i >= 0; i--) {
+    const o = page.objects[i];
+    if (o.kind === 'block') continue;
+    const b = objBounds(project, o);
+    if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return o;
+  }
+  return null;
 }

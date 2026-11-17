@@ -20,6 +20,9 @@ export interface AppState {
   project: Project;
   past: Project[];
   future: Project[];
+  /** Descriptions aligned with past/future: pastLog[i] describes past[i] → next state; futureLog[0] describes now → future[0]. */
+  pastLog: HistoryEntry[];
+  futureLog: HistoryEntry[];
   pageId: Id;
   /** Selected object and connection ids on the current page. */
   selection: Id[];
@@ -40,7 +43,13 @@ export interface AppState {
   modal: Modal | null;
 }
 
-export type Tool = 'select' | 'text' | 'rect';
+export interface HistoryEntry {
+  label: string;
+  details?: string[];
+  at: number;
+}
+
+export type Tool = 'select' | 'text' | 'rect' | 'pan';
 
 export type Modal =
   | { kind: 'blockEditor'; target: 'library' | 'project'; defId: Id | null }
@@ -49,7 +58,8 @@ export type Modal =
   | { kind: 'projectInfo' }
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
-  | { kind: 'signalTypes' };
+  | { kind: 'signalTypes' }
+  | { kind: 'history' };
 
 const MAX_HISTORY = 200;
 
@@ -60,6 +70,8 @@ let state: AppState = {
   project: freeze(initialProject, true),
   past: [],
   future: [],
+  pastLog: [],
+  futureLog: [],
   pageId: initialProject.pages[0].id,
   selection: [],
   selectedPorts: [],
@@ -96,36 +108,79 @@ export function useStore<T>(sel: (s: AppState) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state));
 }
 
-/** Modify the project. `record` = push the previous version onto the undo stack. */
-export function updateProject(recipe: (d: Draft<Project>) => void, record = true) {
+const entry = (label: string, details?: string[]): HistoryEntry => ({ label, details, at: Date.now() });
+
+let pendingLabel: { label: string; details?: string[] } | null = null;
+/** Describe the next recorded change (used by actions; expires at the end of the current task). */
+export function nextLabel(label: string, details?: string[]) {
+  pendingLabel = { label, details };
+  queueMicrotask(() => (pendingLabel = null));
+}
+function takeLabel(fallback = 'Edit') {
+  const p = pendingLabel;
+  pendingLabel = null;
+  return entry(p?.label ?? fallback, p?.details);
+}
+
+/**
+ * Modify the project. `record` = push the previous version onto the undo stack; pass a string to
+ * record it with that description in the history log.
+ */
+export function updateProject(recipe: (d: Draft<Project>) => void, record: boolean | string = true) {
   const prev = state.project;
   const next = produce(prev, recipe);
   if (next === prev) return;
+  const rec = record !== false;
   setState((s) => ({
     project: next,
-    past: record ? [...s.past.slice(-MAX_HISTORY + 1), prev] : s.past,
-    future: record ? [] : s.future,
+    past: rec ? [...s.past.slice(-MAX_HISTORY + 1), prev] : s.past,
+    pastLog: rec ? [...s.pastLog.slice(-MAX_HISTORY + 1), typeof record === 'string' ? entry(record) : takeLabel()] : s.pastLog,
+    future: rec ? [] : s.future,
+    futureLog: rec ? [] : s.futureLog,
     dirty: true,
     revision: s.revision + 1,
   }));
 }
 
+/** Name (and optionally explain) the most recent history step. */
+export function labelLast(label: string, details?: string[]) {
+  setState((s) => {
+    if (!s.pastLog.length) return {};
+    const log = [...s.pastLog];
+    log[log.length - 1] = { ...log[log.length - 1], label, details: details ?? log[log.length - 1].details };
+    return { pastLog: log };
+  });
+}
+
 /** Push the current project onto the undo stack (start of a drag). Subsequent updates use record=false. */
-export function checkpoint() {
-  setState((s) => ({ past: [...s.past.slice(-MAX_HISTORY + 1), s.project], future: [] }));
+export function checkpoint(label = 'Edit') {
+  setState((s) => ({
+    past: [...s.past.slice(-MAX_HISTORY + 1), s.project],
+    pastLog: [...s.pastLog.slice(-MAX_HISTORY + 1), takeLabel(label)],
+    future: [],
+    futureLog: [],
+  }));
 }
 
 /** Drop the last checkpoint if nothing changed (e.g. a click without drag). */
 export function dropCheckpointIfUnchanged() {
   const s = state;
-  if (s.past.length && s.past[s.past.length - 1] === s.project) setState({ past: s.past.slice(0, -1) });
+  if (s.past.length && s.past[s.past.length - 1] === s.project) setState({ past: s.past.slice(0, -1), pastLog: s.pastLog.slice(0, -1) });
 }
 
 export function undo() {
   const s = state;
   if (!s.past.length) return;
   const prev = s.past[s.past.length - 1];
-  setState({ project: prev, past: s.past.slice(0, -1), future: [s.project, ...s.future], dirty: true, revision: s.revision + 1 });
+  setState({
+    project: prev,
+    past: s.past.slice(0, -1),
+    pastLog: s.pastLog.slice(0, -1),
+    future: [s.project, ...s.future],
+    futureLog: [s.pastLog[s.pastLog.length - 1] ?? entry('Edit'), ...s.futureLog],
+    dirty: true,
+    revision: s.revision + 1,
+  });
   fixPageAndSelection();
 }
 
@@ -133,7 +188,15 @@ export function redo() {
   const s = state;
   if (!s.future.length) return;
   const next = s.future[0];
-  setState({ project: next, past: [...s.past, s.project], future: s.future.slice(1), dirty: true, revision: s.revision + 1 });
+  setState({
+    project: next,
+    past: [...s.past, s.project],
+    pastLog: [...s.pastLog, s.futureLog[0] ?? entry('Edit')],
+    future: s.future.slice(1),
+    futureLog: s.futureLog.slice(1),
+    dirty: true,
+    revision: s.revision + 1,
+  });
   fixPageAndSelection();
 }
 
@@ -151,6 +214,8 @@ export function replaceProject(project: Project, handle: FileSystemFileHandle | 
     project: freeze(project, true),
     past: [],
     future: [],
+    pastLog: [],
+    futureLog: [],
     pageId: project.pages[0].id,
     selection: [],
     selectedPorts: [],

@@ -65,6 +65,8 @@ export interface TextProps {
   align: TextAlign;
   valign: VAlign;
   color: string;
+  /** Word-wrap long lines (otherwise only explicit line breaks). Text always shrinks to fit its box. */
+  wrap?: boolean;
 }
 
 export interface TextObj extends ObjBase, TextProps {

@@ -43,15 +43,65 @@ export const TEXT_PAD = 3;
 
 type TextBox = TextProps & { x: number; y: number; w: number; h: number };
 
-export function textLines(o: TextBox) {
+const LINE = 1.2;
+
+/** Lines and size at a given font size (no fitting). */
+function layoutAt(o: TextBox, size: number) {
   const font = o.bold ? 'narrowBold' : 'narrow';
-  return wrapText(o.text, font, o.fontSize, Math.max(1, o.w - TEXT_PAD * 2));
+  const availW = Math.max(1, o.w - TEXT_PAD * 2);
+  const lines = o.wrap !== false ? wrapText(o.text, font, size, availW) : o.text.split(/\r?\n/);
+  // Widest unbreakable piece: whole lines without wrap, single words with wrap.
+  const pieces = o.wrap !== false ? o.text.split(/\s+/) : lines;
+  const widest = Math.max(0, ...pieces.map((p) => measureText(p, font, size)));
+  return { lines, widest, height: lines.length * size * LINE };
+}
+
+const fitCache = new WeakMap<object, { key: string; size: number; lines: string[] }>();
+
+/**
+ * Text layout for a box: the font size shrinks (never grows) so the text stays inside the box,
+ * the same way a block scales.
+ */
+export function fitTextBox(o: TextBox): { size: number; lines: string[] } {
+  const key = `${o.text}|${o.w}|${o.h}|${o.fontSize}|${o.bold}|${o.wrap}`;
+  const hit = fitCache.get(o);
+  if (hit && hit.key === key) return hit;
+  const availW = Math.max(1, o.w - TEXT_PAD * 2);
+  const availH = Math.max(1, o.h - TEXT_PAD * 2);
+  const fits = (size: number) => {
+    const L = layoutAt(o, size);
+    return L.widest <= availW + 0.01 && L.height <= availH + 0.01;
+  };
+  let size = o.fontSize;
+  if (o.text && !fits(size)) {
+    let lo = 2;
+    let hi = o.fontSize;
+    for (let i = 0; i < 14; i++) {
+      const mid = (lo + hi) / 2;
+      if (fits(mid)) lo = mid;
+      else hi = mid;
+    }
+    size = Math.floor(lo * 4) / 4;
+  }
+  const res = { key, size, lines: layoutAt(o, size).lines };
+  fitCache.set(o, res);
+  return res;
+}
+
+/** Size a text needs at its full font size (used to grow a text box after typing). */
+export function naturalTextSize(o: TextBox) {
+  const L = layoutAt(o, o.fontSize);
+  return { w: L.widest + TEXT_PAD * 2 + 1, h: L.height + TEXT_PAD * 2 };
+}
+
+export function textLines(o: TextBox) {
+  return fitTextBox(o).lines;
 }
 
 /** Top of the first line's box for the given vertical alignment. */
 export function textTop(o: TextBox) {
-  const lh = o.fontSize * 1.2;
-  const total = (o.text ? textLines(o).length : 1) * lh;
+  const { size, lines } = fitTextBox(o);
+  const total = (o.text ? lines.length : 1) * size * LINE;
   if (o.valign === 'middle') return o.y + (o.h - total) / 2;
   if (o.valign === 'bottom') return o.y + o.h - TEXT_PAD - total;
   return o.y + TEXT_PAD;
@@ -60,12 +110,13 @@ export function textTop(o: TextBox) {
 function drawTextIn(out: DLItem[], o: TextBox) {
   if (!o.text) return;
   const font = o.bold ? 'narrowBold' : 'narrow';
-  const lh = o.fontSize * 1.2;
-  let y = textTop(o) + o.fontSize * capHeightEm(font) + (lh - o.fontSize) / 2;
-  for (const line of textLines(o)) {
-    const w = measureText(line, font, o.fontSize);
+  const { size, lines } = fitTextBox(o);
+  const lh = size * LINE;
+  let y = textTop(o) + size * capHeightEm(font) + (lh - size) / 2;
+  for (const line of lines) {
+    const w = measureText(line, font, size);
     const x = o.align === 'left' ? o.x + TEXT_PAD : o.align === 'right' ? o.x + o.w - TEXT_PAD - w : o.x + (o.w - w) / 2;
-    if (line) out.push({ t: 'text', x, y, text: line, font, size: o.fontSize, color: o.color });
+    if (line) out.push({ t: 'text', x, y, text: line, font, size, color: o.color });
     y += lh;
   }
 }
@@ -293,88 +344,158 @@ export function strokePath(pts: Pt[], gap: [number, number] | null, hops: Map<nu
 function drawFrame(out: DLItem[], project: Project, page: Page, opts: BuildOptions) {
   const P = PAGE_SIZES[page.size];
   const m = PAGE_MARGIN;
-  const tbw = titleBlockWidth(page.size);
   const frame: DLStroke = { color: '#000000', width: 1, dash: [] };
   out.push({ t: 'rect', x: m, y: m, w: P.w - 2 * m, h: P.h - 2 * m, fill: null, stroke: frame });
-  const x0 = P.w - m - tbw;
-  out.push({ t: 'path', d: [{ c: 'M', x: x0, y: m }, { c: 'L', x: x0, y: P.h - m }], fill: null, stroke: frame });
-  drawTitleBlock(out, project, page, opts, { x: x0, y: m, w: tbw, h: P.h - 2 * m });
+  const r = titleBlockRect(page.size);
+  out.push({ t: 'path', d: [{ c: 'M', x: r.x, y: m }, { c: 'L', x: r.x, y: P.h - m }], fill: null, stroke: frame });
+  drawTitleBlock(out, project, page, opts, r);
+  // Shared title-block content: text boxes / rectangles placed inside the title block column on
+  // page 1 are repeated on every other page (scaled if the page size differs).
+  if (opts.pageIndex > 1) {
+    const first = project.pages[0];
+    const r1 = titleBlockRect(first.size);
+    const k = r.w / r1.w;
+    for (const o of titleBlockObjects(project)) {
+      if (o.kind === 'block') continue;
+      const moved = { ...o, x: r.x + (o.x - r1.x) * k, y: r.y + (o.y - r1.y) * k, w: o.w * k, h: o.h * k, fontSize: o.fontSize * k };
+      drawObject(out, project, moved);
+    }
+  }
 }
 
+/** Rectangle of the title block column on a page. */
+export function titleBlockRect(size: Page['size']) {
+  const P = PAGE_SIZES[size];
+  const m = PAGE_MARGIN;
+  const w = titleBlockWidth(size);
+  return { x: P.w - m - w, y: m, w, h: P.h - 2 * m };
+}
+
+/** Text boxes and rectangles on page 1 that sit entirely inside the title block column. */
+export function titleBlockObjects(project: Project): PageObject[] {
+  const first = project.pages[0];
+  if (!first) return [];
+  const r = titleBlockRect(first.size);
+  return first.objects.filter((o) => o.kind !== 'block' && o.x >= r.x - 0.5 && o.y >= r.y - 0.5 && o.x + o.w <= r.x + r.w + 0.5 && o.y + o.h <= r.y + r.h + 0.5);
+}
+
+/**
+ * Title block column, modelled on the designer's reference sheet: logo · project address ·
+ * designer · (free area, shared from page 1) · dates · project name + revision · page title ·
+ * large page number. Sizes scale with the column width; section heights with its height.
+ * Returns the free area.
+ */
 function drawTitleBlock(out: DLItem[], project: Project, page: Page, opts: BuildOptions, r: { x: number; y: number; w: number; h: number }) {
   const info = project.info;
-  const pad = 5;
-  const iw = r.w - pad * 2;
-  let y = r.y + pad;
-  const line = (yy: number) => out.push({ t: 'path', d: [{ c: 'M', x: r.x, y: yy }, { c: 'L', x: r.x + r.w, y: yy }], fill: null, stroke: THIN });
-  const text = (t: string, font: 'title' | 'titleBold', size: number, align: 'left' | 'center' = 'left') => {
-    for (const ln of wrapText(t, font, size, iw)) {
-      y += size * 1.15;
-      const w = measureText(ln, font, size);
-      out.push({ t: 'text', x: align === 'left' ? r.x + pad : r.x + (r.w - w) / 2, y: y - size * 0.25, text: ln, font, size, color: '#000000' });
+  const k = r.w / 132; // 132 pt = tabloid column; letter is narrower and scales down
+  const inset = r.w * 0.05;
+  const iw = r.w - inset * 2;
+  // Proportions measured from the reference sheet: body text ≈ 7% of the column width,
+  // generous ~1.4 line spacing, page number ≈ 3× body size.
+  const body = 9 * k;
+  const lh = body * 1.38;
+  const pad = body * 0.7;
+  const BLACK = '#000000';
+  const sep = (yy: number) =>
+    out.push({ t: 'path', d: [{ c: 'M', x: r.x + inset, y: yy }, { c: 'L', x: r.x + r.w - inset, y: yy }], fill: null, stroke: { color: '#666666', width: 0.75, dash: [] } });
+  type F = 'title' | 'titleBold';
+  /** Lines of text from `top`; returns the y below them. */
+  const lines = (ls: { t: string; f: F; align?: 'left' | 'right' }[], top: number) => {
+    let y = top;
+    for (const l of ls) {
+      for (const w of wrapText(l.t, l.f, body, iw)) {
+        y += lh;
+        const tw = measureText(w, l.f, body);
+        out.push({ t: 'text', x: l.align === 'right' ? r.x + r.w - inset - tw : r.x + inset, y: y - lh * 0.27, text: w, font: l.f, size: body, color: BLACK });
+      }
     }
+    return y;
   };
+  const wrapCount = (t: string, f: F) => (t ? wrapText(t, f, body, iw).length : 0);
 
-  // Logo
-  const logoH = r.w * 0.55;
+  // ---- Top: logo
+  let y = r.y;
+  const logoH = r.h * 0.12;
   const logo = info.logoAssetId ? project.assets[info.logoAssetId] : undefined;
   if (logo && info.logoAssetId) {
-    const scale = Math.min(iw / logo.w, (logoH - pad) / logo.h);
-    const w = logo.w * scale;
-    const h = logo.h * scale;
-    out.push({ t: 'image', x: r.x + (r.w - w) / 2, y: y + (logoH - pad - h) / 2, w, h, assetId: info.logoAssetId });
+    const boxW = iw;
+    const boxH = logoH * 0.7;
+    const sc = Math.min(boxW / logo.w, boxH / logo.h);
+    const w = logo.w * sc;
+    const h = logo.h * sc;
+    out.push({ t: 'image', x: r.x + (r.w - w) / 2, y: y + (logoH - h) / 2, w, h, assetId: info.logoAssetId });
   }
   y += logoH;
-  line(y);
-  y += 2;
+  sep(y);
 
-  // Project
-  if (info.name) text(info.name, 'titleBold', 9);
-  if (info.address) text(info.address, 'title', 7);
-  y += 4;
-  line(y);
-  y += 2;
+  // ---- Project address (all bold)
+  const addr = info.address.split(/\r?\n/).filter((l) => l.trim());
+  const addrLines = [{ t: 'PROJECT ADDRESS', f: 'titleBold' as F }, ...addr.map((t) => ({ t, f: 'titleBold' as F }))];
+  const addrH = Math.max(r.h * 0.07, addrLines.reduce((a, l) => a + wrapCount(l.t, l.f), 0) * lh + pad * 2);
+  lines(addrLines, y + pad * 0.6);
+  y += addrH;
+  sep(y);
 
-  // Designer
-  if (info.designerName) text(info.designerName, 'titleBold', 7);
-  if (info.copyright) text(info.copyright, 'title', 6);
-  if (info.phone) text(info.phone, 'title', 6);
-  if (info.email) text(info.email, 'title', 6);
-  y += 4;
-  line(y);
+  // ---- Designer (all bold, no closing line — the free area follows)
+  const copyright = info.copyright.trim();
+  const designer = [
+    info.designerName && { t: `Designed by ${info.designerName}`, f: 'titleBold' as F },
+    copyright && { t: /^(copyright|©)/i.test(copyright) ? copyright : `Copyright © ${copyright}`, f: 'titleBold' as F },
+    info.phone && { t: info.phone, f: 'titleBold' as F },
+    info.email && { t: info.email, f: 'titleBold' as F },
+  ].filter(Boolean) as { t: string; f: F }[];
+  const freeTop = lines(designer, y + pad * 0.6) + pad;
 
-  // Bottom: page box, above it the dates box.
-  const pageBoxH = 64;
-  const datesH = 3 * 8 + 8;
-  const pb = r.y + r.h - pageBoxH;
-  const db = pb - datesH;
-  line(db);
-  line(pb);
+  // ---- Bottom group, built upwards from the bottom edge.
+  const numH = r.h * 0.055;
+  const titleText = `(${opts.pageIndex}) ${page.name}`;
+  // Room for two title lines on every page so the separators line up from page to page.
+  const titleH = Math.max(2, wrapCount(titleText, 'titleBold')) * lh + pad * 1.4;
+  const projLines = wrapCount(info.name, 'title') + (info.revision ? 1 : 0);
+  const projH = Math.max(r.h * 0.07, projLines * lh + pad * 2);
+  const datesH = Math.max(r.h * 0.07, 2 * lh + pad * 2);
+  const numTop = r.y + r.h - numH;
+  const titleTop = numTop - titleH;
+  const projTop = titleTop - projH;
+  const datesTop = projTop - datesH;
+  sep(datesTop);
+  sep(projTop);
+  sep(titleTop);
+  sep(numTop);
+
+  // Dates: labels left, values in a second column.
   const fmtDate = (iso: string) => {
     if (!iso) return '';
     const d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+    return isNaN(d.getTime()) ? iso : `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;
   };
-  const rows: [string, string][] = [
-    ['Created', fmtDate(info.created)],
-    ['Modified', fmtDate(info.modified)],
-    ['Revision', info.revision],
-  ];
-  rows.forEach(([k, v], i) => {
-    const by = db + 4 + (i + 1) * 8 - 1.5;
-    out.push({ t: 'text', x: r.x + pad, y: by, text: k, font: 'title', size: 6.5, color: '#000000' });
-    const vw = measureText(v, 'titleBold', 6.5);
-    out.push({ t: 'text', x: r.x + r.w - pad - vw, y: by, text: v, font: 'titleBold', size: 6.5, color: '#000000' });
+  [
+    ['Created:', fmtDate(info.created)],
+    ['Modified:', fmtDate(info.modified)],
+  ].forEach(([kx, v], i) => {
+    const by = datesTop + pad * 0.6 + (i + 1) * lh - lh * 0.27;
+    out.push({ t: 'text', x: r.x + inset, y: by, text: kx, font: 'title', size: body, color: BLACK });
+    out.push({ t: 'text', x: r.x + r.w * 0.5, y: by, text: v, font: 'title', size: body, color: BLACK });
   });
 
-  // Page name + number
-  y = pb + 2;
-  const title = `(${opts.pageIndex}) ${page.name}`;
-  text(title, 'titleBold', 8, 'center');
-  const num = `${opts.pageIndex}/${opts.pageCount}`;
-  const ns = 18;
-  const nw = measureText(num, 'titleBold', ns);
-  out.push({ t: 'text', x: r.x + (r.w - nw) / 2, y: r.y + r.h - 8, text: num, font: 'titleBold', size: ns, color: '#000000' });
+  // Project name + revision (right aligned).
+  lines([...(info.name ? [{ t: info.name, f: 'title' as F }] : []), ...(info.revision ? [{ t: `Rev. ${info.revision}`, f: 'title' as F, align: 'right' as const }] : [])], projTop + pad * 0.6);
+
+  // Page title.
+  lines([{ t: titleText, f: 'titleBold' }], titleTop + pad * 0.4);
+
+  // Page number: "11" in black, "/19" in light grey.
+  const ns = 27 * k;
+  const a = String(opts.pageIndex);
+  const bTxt = `/${opts.pageCount}`;
+  const aw = measureText(a, 'titleBold', ns);
+  const bw = measureText(bTxt, 'titleBold', ns);
+  const nx = r.x + (r.w - aw - bw) / 2;
+  const ny = numTop + (numH + ns * capHeightEm('titleBold')) / 2;
+  out.push({ t: 'text', x: nx, y: ny, text: a, font: 'titleBold', size: ns, color: BLACK });
+  out.push({ t: 'text', x: nx + aw, y: ny, text: bTxt, font: 'titleBold', size: ns, color: '#c4c4c4' });
+
+  return { x: r.x, y: freeTop, w: r.w, h: datesTop - freeTop };
 }
 
 /**
