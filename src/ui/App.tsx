@@ -17,6 +17,7 @@ import {
   paste,
   rangeConnect,
   selectAll,
+  straighten,
 } from '../state/actions';
 import { openProjectCmd, saveCmd } from '../state/fileOps';
 
@@ -109,6 +110,7 @@ export function App() {
       else if (!mod && k === 'v') setState({ tool: 'select' });
       else if (!mod && k === 't') setState({ tool: 'text' });
       else if (!mod && k === 'r') setState({ tool: 'rect' });
+      else if (!mod && k === 's') straighten();
       else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
       else if (k.startsWith('arrow')) {
         e.preventDefault();

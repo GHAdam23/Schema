@@ -20,7 +20,7 @@ import {
 import { buildPage, labelBox, labelTAt, TEXT_PAD } from '../render/buildPage';
 import { SvgItems } from '../render/SvgRender';
 import { checkpoint, currentPage, dropCheckpointIfUnchanged, getState, setState, toast, updateProject, useStore } from '../state/store';
-import { addRect, addText, connect, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
+import { addRect, addText, autoStraighten, connect, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
 import { hitObject, hitPort, outlinePoint, portZones, type PortHit } from './hitTest';
 
 interface View {
@@ -170,7 +170,7 @@ export function Canvas() {
   // Pointer handling
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (editing) {
+    if (editing && document.querySelector('.inline-editor')) {
       // Clicking the canvas finishes an inline edit (blur commits it).
       (document.activeElement as HTMLElement | null)?.blur?.();
       setEditing(null);
@@ -420,7 +420,10 @@ export function Canvas() {
         }
         if (to) {
           const id = connect(d.from, to);
-          if (id) setState({ selection: [id], selectedPorts: [] });
+          if (id) {
+            autoStraighten(id);
+            setState({ selection: [id], selectedPorts: [] });
+          }
         }
         break;
       }
@@ -716,6 +719,33 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
   let snappedX = false;
   let snappedY = false;
 
+  // 1) Lines attached to what's moving: snap so they come out perfectly straight. This wins
+  //    over everything else and has a generous catch zone, so small jogs are never left behind.
+  if (prefs.snap || prefs.smartGuides) {
+    const tol = Math.max(10 / z, BLK.rowH * 0.8);
+    let best: { d: number; v: number; at: number; x1: number; x2: number } | null = null;
+    for (const c of page.connections) {
+      const fromMoving = idSet.has(c.from.objId);
+      const toMoving = idSet.has(c.to.objId);
+      if (fromMoving === toMoving) continue;
+      const sA = resolveEndpoint(project, page, c.from);
+      const eA = resolveEndpoint(project, page, c.to);
+      if (!sA || !eA || axisOf(sA) !== 'h' || axisOf(eA) !== 'h') continue;
+      const mine = fromMoving ? sA : eA;
+      const other = fromMoving ? eA : sA;
+      const movedObj = page.objects.find((o) => o.id === (fromMoving ? c.from.objId : c.to.objId))!;
+      const op = orig.get(movedObj.id)!;
+      const myY0 = mine.y - (movedObj.y - op.y); // anchor y at drag start
+      const d = Math.abs(myY0 + dy - other.y);
+      if (d < tol && (!best || d < best.d)) best = { d, v: other.y - myY0, at: other.y, x1: Math.min(mine.x, other.x), x2: Math.max(mine.x, other.x) };
+    }
+    if (best) {
+      sdy = best.v;
+      snappedY = true;
+      guides.push({ x1: best.x1 - 20, y1: best.at, x2: best.x2 + 20, y2: best.at });
+    }
+  }
+
   if (prefs.smartGuides) {
     const tol = 6 / z;
     const others = page.objects.filter((o) => !idSet.has(o.id)).map((o) => ({ o, b: objBounds(project, o) }));
@@ -744,6 +774,7 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
       guides.push({ x1: best.at, y1: 0, x2: best.at, y2: 2000 });
     }
     best = { d: tol, v: 0, at: 0 };
+    if (!snappedY) {
     // Port rows first (they matter most for straight lines).
     for (const my of myPortY) for (const oy of portYs) {
       const d = Math.abs(my + dy - oy);
@@ -754,10 +785,11 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
         const d = Math.abs(my + dy - oy);
         if (d < best.d) best = { d, v: oy - my, at: oy };
       }
-    if (best.d < tol) {
-      sdy = best.v;
-      snappedY = true;
-      guides.push({ x1: 0, y1: best.at, x2: 3000, y2: best.at });
+      if (best.d < tol) {
+        sdy = best.v;
+        snappedY = true;
+        guides.push({ x1: 0, y1: best.at, x2: 3000, y2: best.at });
+      }
     }
   }
   if (prefs.snap) {

@@ -19,7 +19,7 @@ import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
 import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER } from '../model/defaults';
 import { findPort } from '../model/blockGeometry';
-import { objBounds, resolvePageRoutes, type ResolvedRoute } from '../model/routing';
+import { objBounds, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
 import { labelBox, labelTAt } from '../render/buildPage';
 import { currentPage, getState, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
@@ -630,4 +630,72 @@ export function projectDefToLibrary(defId: Id) {
     d.blockDefs[defId].libraryId = libDef.id;
   });
   toast(existing ? 'Library block updated.' : 'Added to library.');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Straightening lines by moving blocks
+
+/**
+ * Move objects so their lines run perfectly straight.
+ * - Selected objects move to straighten their nearest-to-straight line to something unselected.
+ * - With only lines selected, each line's input end (the "to" object) moves.
+ */
+export function straighten() {
+  const s = getState();
+  const page = currentPage(s);
+  const sel = new Set(s.selection);
+  const moves = new Map<string, number>();
+  const selObjs = page.objects.filter((o) => sel.has(o.id));
+  if (selObjs.length) {
+    for (const o of selObjs) {
+      let best: number | null = null;
+      for (const c of page.connections) {
+        const mineFrom = c.from.objId === o.id;
+        const mineTo = c.to.objId === o.id;
+        if (mineFrom === mineTo) continue;
+        if (sel.has(mineFrom ? c.to.objId : c.from.objId)) continue;
+        const d = straightenDelta(s.project, page, c);
+        if (d === null || Math.abs(d) < 1e-6) continue;
+        const myMove = mineTo ? -d : d;
+        if (best === null || Math.abs(myMove) < Math.abs(best)) best = myMove;
+      }
+      if (best !== null) moves.set(o.id, best);
+    }
+  } else {
+    for (const c of page.connections.filter((c) => sel.has(c.id))) {
+      const d = straightenDelta(s.project, page, c);
+      if (d === null || Math.abs(d) < 1e-6 || moves.has(c.to.objId)) continue;
+      moves.set(c.to.objId, -d);
+    }
+  }
+  if (!moves.size) {
+    toast(selObjs.length || sel.size ? 'Nothing to straighten — the selected lines are already straight (or can\'t be).' : 'Select blocks or lines to straighten.', 'info');
+    return;
+  }
+  updateProject((d) => {
+    for (const o of pageDraft(d).objects) if (moves.has(o.id)) o.y += moves.get(o.id)!;
+  });
+}
+
+/**
+ * After drawing a line with a small jog, move one end so it's straight — but only an end that
+ * has no other lines (so nothing else gets bent). Merged into the same undo step as the line.
+ */
+export function autoStraighten(connId: string, maxJog = 24) {
+  const s = getState();
+  const page = currentPage(s);
+  const c = page.connections.find((x) => x.id === connId);
+  if (!c) return;
+  const d = straightenDelta(s.project, page, c);
+  if (d === null || Math.abs(d) < 1e-6 || Math.abs(d) > maxJog) return;
+  const lines = (objId: string) => page.connections.filter((x) => x.from.objId === objId || x.to.objId === objId).length;
+  let id: string | null = null;
+  let dy = 0;
+  if (lines(c.to.objId) === 1) [id, dy] = [c.to.objId, -d];
+  else if (lines(c.from.objId) === 1) [id, dy] = [c.from.objId, d];
+  if (!id) return;
+  updateProject((dr) => {
+    const o = pageDraft(dr).objects.find((x) => x.id === id);
+    if (o) o.y += dy;
+  }, false);
 }

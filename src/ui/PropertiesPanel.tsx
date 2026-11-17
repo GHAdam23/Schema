@@ -103,7 +103,10 @@ function PageSection({ s }: { s: AppState }) {
           with other labels. Select several lines and use the align buttons to line their labels up.
         </p>
         <p>
-          <b>Reroute:</b> select a line and drag its segments. Lines route around blocks automatically until you move a segment.
+          <b>Reroute:</b> select a line and drag its segments. Lines route around blocks and shapes automatically until you move a segment.
+        </p>
+        <p>
+          <b>Straight lines:</b> dragging a block snaps its ports level with the blocks it's wired to. <b>Straighten</b> (toolbar, or <kbd>S</kbd>) fixes jogs on the selected blocks or lines.
         </p>
         <p>
           <b>Range connect:</b> click a port, Shift-click to extend the run, Ctrl-click ports on a second block, then <kbd>Shift+C</kbd>.

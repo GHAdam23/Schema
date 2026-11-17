@@ -168,7 +168,7 @@ export function rawPoints(s: Anchor, e: Anchor, bends: number[]): Pt[] {
   return pts;
 }
 
-export function resolveRoute(project: Project, page: Page, conn: Connection, obstacles = blockObstacles(project, page)): ResolvedRoute | null {
+export function resolveRoute(project: Project, page: Page, conn: Connection, obstacles = pageObstacles(project, page)): ResolvedRoute | null {
   const s = resolveEndpoint(project, page, conn.from);
   const e = resolveEndpoint(project, page, conn.to);
   if (!s || !e) return null;
@@ -187,8 +187,23 @@ export interface Rect {
   h: number;
 }
 
-export function blockObstacles(project: Project, page: Page): Rect[] {
-  return page.objects.filter((o) => o.kind === 'block').map((o) => objBounds(project, o));
+/** Everything on the page is an obstacle for automatic routing: blocks, rectangles, text boxes. */
+export function pageObstacles(project: Project, page: Page): Rect[] {
+  return page.objects.map((o) => objBounds(project, o));
+}
+
+/**
+ * Vertical offset that would make a line perfectly straight (both ends horizontal, facing each
+ * other, at the same height): `to.y - from.y`, or null if the line can't be straightened that way.
+ */
+export function straightenDelta(project: Project, page: Page, conn: Connection): number | null {
+  const s = resolveEndpoint(project, page, conn.from);
+  const e = resolveEndpoint(project, page, conn.to);
+  if (!s || !e || axisOf(s) !== 'h' || axisOf(e) !== 'h') return null;
+  if (conn.from.objId === conn.to.objId) return null;
+  // Facing each other with room for a straight run.
+  if (s.dx !== -e.dx || (e.x - s.x) * s.dx <= 0) return null;
+  return e.y - s.y;
 }
 
 /** Does an orthogonal segment pass through the inside of a rectangle? (Touching the edge is fine.) */
@@ -212,6 +227,9 @@ const routeCache = new Map<string, number[]>();
 export function autoRoute(s: Anchor, e: Anchor, obstacles: Rect[]): number[] {
   const simple = autoBends(s, e);
   const pts = simplify(rawPoints(s, e, simple));
+  // Shapes that enclose an end's anchor don't count (the end is inside them).
+  const encloses = (r: Rect, p: Pt) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+  obstacles = obstacles.filter((r) => !encloses(r, s) && !encloses(r, e));
   const blocked = pts.some((p, i) => i > 0 && obstacles.some((r) => segCrosses(pts[i - 1], p, r)));
   if (!blocked) return simple;
   const key = [s.x, s.y, s.dx, s.dy, e.x, e.y, e.dx, e.dy].join(',') + '|' + obstacles.map((r) => `${r.x},${r.y},${r.w},${r.h}`).join(';');
@@ -227,11 +245,28 @@ const PAD = 8;
 const BEND_COST = 24;
 
 function searchRoute(s: Anchor, e: Anchor, obstacles: Rect[]): number[] | null {
-  const S1 = { x: s.x + s.dx * STUB, y: s.y + s.dy * STUB };
-  const E1 = { x: e.x + e.dx * STUB, y: e.y + e.dy * STUB };
   const inside = (p: Pt, r: Rect) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+  // Stub out of each end: normally STUB, shortened when something sits closer than that.
+  const stubFor = (a: Anchor) => {
+    let len = STUB;
+    for (const r of obstacles) {
+      const p = { x: a.x + a.dx * len, y: a.y + a.dy * len };
+      if (!inside(p, r)) continue;
+      const gap = a.dx > 0 ? r.x - a.x : a.dx < 0 ? a.x - (r.x + r.w) : a.dy > 0 ? r.y - a.y : a.y - (r.y + r.h);
+      if (gap > 0) len = Math.min(len, gap / 2);
+    }
+    return { x: a.x + a.dx * len, y: a.y + a.dy * len };
+  };
+  const S1 = stubFor(s);
+  const E1 = stubFor(e);
+  // Pad obstacles for clearance, but never so much that the padding swallows an end's stub.
+  const outside = (p: Pt, r: Rect) => Math.max(r.x - p.x, p.x - (r.x + r.w), r.y - p.y, p.y - (r.y + r.h));
   const obs = obstacles
-    .map((r) => ({ x: r.x - PAD, y: r.y - PAD, w: r.w + PAD * 2, h: r.h + PAD * 2 }))
+    .map((r) => {
+      const room = Math.min(outside(S1, r), outside(E1, r));
+      const pad = room > 0 ? Math.max(1, Math.min(PAD, room - 1)) : PAD;
+      return { x: r.x - pad, y: r.y - pad, w: r.w + pad * 2, h: r.h + pad * 2 };
+    })
     .filter((r) => !inside(S1, r) && !inside(E1, r));
   const uniq = (v: number[]) => [...new Set(v.map((n) => Math.round(n * 100) / 100))].sort((a, b) => a - b);
   const xs = uniq([S1.x, E1.x, (S1.x + E1.x) / 2, ...obs.flatMap((r) => [r.x, r.x + r.w])]);
@@ -394,7 +429,7 @@ export const LANE_SPACING = 6;
 export function resolvePageRoutes(project: Project, page: Page): Map<string, ResolvedRoute> {
   const out = new Map<string, ResolvedRoute>();
   const autoZ: ResolvedRoute[] = [];
-  const obstacles = blockObstacles(project, page);
+  const obstacles = pageObstacles(project, page);
   for (const c of page.connections) {
     const r = resolveRoute(project, page, c, obstacles);
     if (!r) continue;

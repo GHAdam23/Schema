@@ -75,8 +75,9 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 ## 6. Connections (lines)
 
 - Drawn port-to-port by dragging. Endpoints anchor to a block row, a shape, or a reference tag, and stay anchored when objects move.
-- Routing: right-angle (default) or curved, selectable per line. New lines get an automatic right-angle path that **goes around blocks** (feedback round 1); **the user can drag segments/bends to reroute**, after which the line keeps the manual route.
+- Routing: right-angle (default) or curved, selectable per line. New lines get an automatic right-angle path that **goes around blocks, rectangles and text boxes** (feedback rounds 1–2; future shapes too); **the user can drag segments/bends to reroute**, after which the line keeps the manual route.
 - Jumpers: a line may run from a device back to another port on the same device.
+- **No avoidable jogs** (round 2): moving a block snaps its ports level with the far ends of its lines (generous catch zone, wins over grid snap); a new line with a small jog straightens itself by moving an end that has no other lines; **Straighten** (toolbar / `S`) moves selected blocks — or the input ends of selected lines — so lines run straight.
 - Lines to a text box / rectangle attach to the centre of the nearest side.
 - **Line hops** drawn automatically where lines cross.
 - **Fan-out**: one output may feed multiple inputs.
@@ -142,7 +143,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Unfilled rectangles are only grabbed by their outline or text, so you can click and drag-select inside them.
 - Marquee: left-to-right selects objects fully inside; right-to-left (green, dashed) selects anything touched.
 - Route model: a line stores alternating bend coordinates (null = automatic). The end segments always stretch to the anchors, so lines stay attached when blocks move while keeping manual edits. Dragging a middle segment moves it; dragging an end segment inserts a jog. "Reset route" returns to automatic.
-- Automatic routing: the simple Z/L route is used when it's clear of blocks; otherwise a shortest orthogonal path around the blocks (8 pt clearance, penalty per bend) is found on a grid built from block edges (A*, cached). Text boxes/rectangles are not obstacles.
+- Automatic routing: the simple Z/L route is used when it's clear of obstacles; otherwise a shortest orthogonal path around them (8 pt clearance, penalty per bend) is found on a grid built from obstacle edges (A*, cached). Obstacles = every object on the page (blocks, rectangles, text boxes). A shape that encloses a line's end (a rack/room frame) doesn't block that line. When something sits closer than the 12 pt stub, the stub and clearance shrink so the line still goes around.
+- Straightening: block drags snap to connected ports first (catch zone max(10 px, 8 pt)), then smart guides, then grid. Auto-straighten after drawing a line only moves an end with no other lines and only for jogs ≤ 24 pt (one undo step with the line).
 - Automatic Z-routes that would overlap are spread into 6 pt lanes, ordered so they don't cross; lines leaving the same port share a trunk (fan-out). Lines routed around blocks are not yet laned, so two of them can share or cross a channel — drag a segment to tidy.
 - Hops: horizontal segments hop over vertical segments of other lines (not over lines from the same source port).
 - Labels: click a line and type (or double-click / Enter / F2 to edit); default position is the middle of the longest horizontal run; drag to slide (then it's fixed until "Auto label position"). Labels on vertical segments are rotated.
@@ -156,6 +158,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - No obstacle-avoiding autorouter (spec). "Used elsewhere" port markers and reference tags are Phase 2.
 
 ## 11. Feedback log
+
+**Round 2** (all addressed): rectangles/text boxes (and future shapes) are routing obstacles · easy alignment so lines stay straight (port snap while dragging, auto-straighten on connect, Straighten command).
 
 **Round 1** (all addressed): no IN/OUT dropdown (column = direction) · centre divider + split header per reference block · export only highlighted library blocks · text inside rectangles · same-device jumpers · lines snap to the centre of a text box/rectangle side · click a line and type to label · line labels up with each other · drag-select (marquee rectangle was invisible — fixed; plus crossing selection) · auto lines avoid blocks · "push to library" reworked into context-dependent buttons · Prefs designer info now updates the open project.
 

@@ -1,5 +1,5 @@
 import { redo, setState, undo, useStore } from '../state/store';
-import { alignSelection, distributeSelection, rangeConnect, zOrder, type AlignMode } from '../state/actions';
+import { alignSelection, distributeSelection, rangeConnect, straighten, zOrder, type AlignMode } from '../state/actions';
 import { newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
 import { savePrefs } from '../state/prefs';
 import { getState } from '../state/store';
@@ -62,6 +62,7 @@ export function Toolbar() {
         <Btn label="⤒" title="Align top" disabled={selCount < 2} onClick={align('top')} />
         <Btn label="↕" title="Align middles vertically" disabled={selCount < 2} onClick={align('vcenter')} />
         <Btn label="⤓" title="Align bottom" disabled={selCount < 2} onClick={align('bottom')} />
+        <Btn label="Straighten" title="Move blocks so their lines run straight (S). Works on selected blocks or lines." disabled={!selCount} onClick={straighten} />
         <Btn label="⋯H" title="Distribute horizontally" disabled={selCount < 3} onClick={() => distributeSelection('h')} />
         <Btn label="⋮V" title="Distribute vertically" disabled={selCount < 3} onClick={() => distributeSelection('v')} />
       </div>
