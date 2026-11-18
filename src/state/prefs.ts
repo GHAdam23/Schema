@@ -1,5 +1,5 @@
 import type { Asset, PageSizeId } from '../model/types';
-import { DEFAULT_SIGNAL_TYPES } from '../model/defaults';
+import { DEFAULT_SIGNAL_TYPES, OLD_DEFAULT_SIGNAL_TYPES } from '../model/defaults';
 
 export interface Prefs {
   designerName: string;
@@ -39,7 +39,12 @@ export const DEFAULT_PREFS: Prefs = {
 export function loadPrefs(): Prefs {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULT_PREFS, ...JSON.parse(raw) };
+    if (raw) {
+      const p: Prefs = { ...DEFAULT_PREFS, ...JSON.parse(raw) };
+      // Untouched old default list → the new defaults.
+      if (p.signalTypes.join('|') === OLD_DEFAULT_SIGNAL_TYPES.join('|')) p.signalTypes = DEFAULT_SIGNAL_TYPES;
+      return p;
+    }
   } catch {
     /* ignore */
   }

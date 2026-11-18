@@ -8,6 +8,7 @@ import { DEFAULT_SIGNAL_TYPES, PAGE_SIZES } from '../model/defaults';
 import type { PageSizeId, SignalStyle, TagObj } from '../model/types';
 import { SIGNAL_COLOR_SUGGESTIONS } from '../model/signals';
 import { ColorSwatch } from './controls';
+import { ProjectSettingsBody } from './ProjectSettings';
 import { setTagTarget } from '../state/actions';
 import { devicePages } from '../model/tags';
 
@@ -141,6 +142,30 @@ export function SignalTypesDialog() {
 // ---------------------------------------------------------------------------------------------
 
 /** Line colour / style per signal type (saved in the project, so the PDF looks the same for everyone). */
+/** Signal colours are edited from Project settings; closing goes back there. */
+const back = () => setState({ modal: { kind: 'projectSettings' } });
+
+export function ProjectSettingsDialog() {
+  return (
+    <Modal
+      title="Project settings"
+      buttons={
+        <>
+          <div className="spacer" />
+          <button className="primary" onClick={close}>
+            Done
+          </button>
+        </>
+      }
+    >
+      <div className="muted small">Saved in this project and used on every page. Changes apply right away (and can be undone).</div>
+      <div className="projsettings">
+        <ProjectSettingsBody />
+      </div>
+    </Modal>
+  );
+}
+
 export function SignalColorsDialog() {
   const project = useStore((s) => s.project);
   const prefs = useStore((s) => s.prefs);
@@ -159,6 +184,7 @@ export function SignalColorsDialog() {
   return (
     <Modal
       title="Signal colours"
+      onClose={back}
       buttons={
         <>
           <button
@@ -173,7 +199,7 @@ export function SignalColorsDialog() {
           </button>
           <button onClick={() => setStyles({})}>Clear all</button>
           <div className="spacer" />
-          <button onClick={close}>Cancel</button>
+          <button onClick={back}>Cancel</button>
           <button
             className="primary"
             onClick={() => {
@@ -182,7 +208,7 @@ export function SignalColorsDialog() {
                 d.signalStyles = styles;
                 d.signalColors = on;
               });
-              close();
+              back();
             }}
           >
             Save

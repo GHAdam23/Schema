@@ -30,7 +30,7 @@ function portEnd(project: Project, deviceId: string, portId: string | undefined,
   const dev = project.devices[deviceId];
   const def = project.blockDefs[defId ?? ''] ?? (dev ? project.blockDefs[dev.defId] : undefined);
   const p = def && portId ? findPort(def, portId)?.port : undefined;
-  return { device: dev?.name ?? '?', port: p?.name ?? '', connector: p?.connector ?? '', signal: (p?.signal ?? '').toUpperCase() };
+  return { device: dev?.name || (def ? def.model : '?'), port: p?.name ?? '', connector: p?.connector ?? '', signal: (p?.signal ?? '').toUpperCase() };
 }
 
 function endOf(project: Project, page: Page, e: Endpoint): CableEnd {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, RackUnitObj, TagObj, TextualObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, RackAccessory, RackUnitObj, TagObj, TextualObj } from '../model/types';
 import type { Tool } from '../state/store';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
@@ -44,7 +44,7 @@ import {
   patchBundles,
   patchConnections,
   patchObjects,
-  placeBlock,
+  placeBlocks,
   placeInstance,
   renameDevice,
   routesToCarry,
@@ -59,7 +59,10 @@ import {
   type Carry,
 } from '../state/actions';
 import { importMedia } from '../state/fileOps';
-import { addRack, mountDevice, mountFromLibrary, settleUnits } from '../state/rackActions';
+import { addAccessory, addRack, imageIntoRack, mountDevice, mountFromLibrary, mountImage, settleUnits } from '../state/rackActions';
+import { importMediaFile } from '../io/importMedia';
+import { newId } from '../model/ids';
+import { toast } from '../state/store';
 import { rackAt } from '../model/rack';
 import { isBox, centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
 import { tagRowFit, tagSize } from '../model/tags';
@@ -77,7 +80,7 @@ type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
   | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean; enclose?: boolean }
-  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry; units?: Map<Id, { rackId: Id | null; u: number; slot: number; x: number; y: number }> }
+  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry; units?: Map<Id, { rackId: Id | null; u: number; slot: number; x: number; y: number; at?: Pt }> }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
   | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
   | { t: 'tail'; id: Id }
@@ -456,7 +459,7 @@ export function Canvas() {
           // Rack units dragged without their rack come loose while dragging; they snap into a rack space on release.
           const loose = movedObjs.filter((o): o is RackUnitObj => o.kind === 'rackunit' && !!o.rackId && !d.ids.includes(o.rackId));
           if (loose.length) {
-            d.units = new Map(loose.map((o) => [o.id, { rackId: o.rackId, u: o.u, slot: o.slot, x: o.x, y: o.y }]));
+            d.units = new Map(loose.map((o) => [o.id, { rackId: o.rackId, u: o.u, slot: o.slot, x: o.x, y: o.y, at: o.at }]));
             updateProject((dr) => {
               for (const o of dr.pages.find((x) => x.id === pg.id)!.objects) if (o.kind === 'rackunit' && d.units!.has(o.id)) o.rackId = null;
             }, false);
@@ -669,7 +672,12 @@ export function Canvas() {
         break;
       case 'move':
         setLineSnap(null);
-        if (d.moved) settleUnits(d.ids, d.units ?? new Map());
+        if (d.moved) {
+          settleUnits(d.ids, d.units ?? new Map());
+          // A single image dragged onto a rack becomes that space's front panel.
+          const only = d.ids.length === 1 ? pg.objects.find((o) => o.id === d.ids[0]) : undefined;
+          if (only?.kind === 'image') imageIntoRack(only.id);
+        }
         if (!d.moved && !d.additive && d.clickId) setState({ selection: [d.clickId] });
         if (!d.moved && d.additive && d.clickId && d.wasSelected) toggleSel(d.clickId);
         break;
@@ -960,21 +968,43 @@ export function Canvas() {
 
   const onDragOver = (e: React.DragEvent) => {
     const t = e.dataTransfer.types;
-    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('Files')) {
+    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('application/x-schema-rackpart') || t.includes('Files')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   };
   const onDrop = (e: React.DragEvent) => {
     const p = toPage(e.clientX, e.clientY);
+    // Dropped on a rack: mount it there (the same device as on the schematics).
+    const rack = rackAt(currentPage(), p, 4);
     const files = [...e.dataTransfer.files].filter(isMediaFile);
     if (files.length) {
       e.preventDefault();
-      void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
+      if (rack) {
+        // Front-panel pictures go into the rack space they're dropped on.
+        void (async () => {
+          let at = p;
+          for (const f of files) {
+            try {
+              const r = await importMediaFile(f);
+              const id = mountImage(r.asset, newId('as'), r.name, at);
+              const u = id && currentPage().objects.find((o) => o.id === id);
+              if (u) at = { x: p.x, y: u.y + localBox(getState().project, u).h + 2 };
+            } catch (err) {
+              toast(`Could not import ${f.name}: ${(err as Error).message}`, 'error', 7000);
+            }
+          }
+        })();
+      } else void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
       return;
     }
-    // Dropped on a rack: mount it there (the same device as on the schematics).
-    const rack = rackAt(currentPage(), p, 4);
+    const part = e.dataTransfer.getData('application/x-schema-rackpart');
+    if (part) {
+      e.preventDefault();
+      const { type, ru } = JSON.parse(part) as { type: RackAccessory; ru: number };
+      addAccessory(type, ru, p);
+      return;
+    }
     const dev = e.dataTransfer.getData('application/x-schema-device');
     if (dev) {
       e.preventDefault();
@@ -982,13 +1012,14 @@ export function Canvas() {
       else placeInstance(dev, snapV(p.x), snapV(p.y));
       return;
     }
-    const id = e.dataTransfer.getData('application/x-schema-block');
-    if (!id) return;
+    const ids = e.dataTransfer.getData('application/x-schema-block');
+    if (!ids) return;
     e.preventDefault();
-    const def = getState().library.find((l) => l.id === id);
-    if (!def) return;
-    if (rack) mountFromLibrary(def, p);
-    else placeBlock(def, snapV(p.x), snapV(p.y));
+    const lib = getState().library;
+    const defs = ids.split(',').map((id) => lib.find((l) => l.id === id)).filter((d): d is NonNullable<typeof d> => !!d);
+    if (!defs.length) return;
+    if (rack) mountFromLibrary(defs, p);
+    else placeBlocks(defs, snapV(p.x), snapV(p.y));
   };
 
   // ------------------------------------------------------------------------------------------
@@ -1162,10 +1193,10 @@ function ContextMenu({ at, onClose }: { at: { x: number; y: number }; onClose: (
       {item('Duplicate', 'Ctrl+D', duplicateSelection, !objCount)}
       {item('Delete', 'Del', deleteSelection, none)}
       <hr />
-      {item('Bring to front', '', () => zOrder('front'), !objCount)}
-      {item('Bring forward', '', () => zOrder('forward'), !objCount)}
-      {item('Send backward', '', () => zOrder('backward'), !objCount)}
-      {item('Send to back', '', () => zOrder('back'), !objCount)}
+      {item('Bring to front', 'Ctrl+Shift+]', () => zOrder('front'), !objCount)}
+      {item('Bring forward', 'Ctrl+]', () => zOrder('forward'), !objCount)}
+      {item('Send backward', 'Ctrl+[', () => zOrder('backward'), !objCount)}
+      {item('Send to back', 'Ctrl+Shift+[', () => zOrder('back'), !objCount)}
       {objCount === 0 && !none && <div className="ctxnote">Lines are always drawn above objects.</div>}
     </div>
   );
@@ -1562,6 +1593,31 @@ function Overlay(props: {
           );
         });
       })}
+      {/* Blocks without a friendly name yet: a reminder in the footer (screen only, not printed). */}
+      {page.objects.map((o) => {
+        if (o.kind !== 'block') return null;
+        const { dev, def } = blockFor(project, o);
+        if (!dev || !def || dev.name.trim()) return null;
+        const sz = blockSize(project, o);
+        const fh = BLK.footerH * o.scale;
+        return (
+          <text
+            key={'nn' + o.id}
+            x={o.x + sz.w / 2}
+            y={o.y + sz.h - fh / 2}
+            dominantBaseline="central"
+            textAnchor="middle"
+            fontFamily="SchemaNarrow"
+            fontStyle="italic"
+            fontSize={BLK.footerSize * o.scale * 0.9}
+            fill="#e11d48"
+            fillOpacity={0.75}
+            pointerEvents="none"
+          >
+            add friendly name
+          </text>
+        );
+      })}
       {/* Port hover / selection */}
       {selectedPorts.map((sp) => {
         const o = page.objects.find((x) => x.id === sp.objId);
@@ -1800,7 +1856,7 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
     initial = dev?.name ?? '';
     commit = (v) => {
       const name = v.trim();
-      if (name && dev && name !== dev.name) renameDevice(dev.id, name);
+      if (dev && name !== dev.name) renameDevice(dev.id, name);
     };
   } else {
     // A line, or a snake (its trunk route carries the snake's label).

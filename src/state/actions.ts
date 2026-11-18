@@ -28,7 +28,7 @@ import { isPortEndpoint } from '../model/types';
 import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
 import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } from '../model/defaults';
-import { blockFor, findPort, portAnchor } from '../model/blockGeometry';
+import { blockFor, blockLayout, findPort, portAnchor } from '../model/blockGeometry';
 import { LINE_H, lineBox, lineEnds } from '../model/glue';
 import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
 import { isBox, normDeg, rotOf } from '../model/geom';
@@ -136,7 +136,7 @@ export function placeBlock(def: BlockDef, x: number, y: number, fromLibrary = tr
       defId = newDef.id;
     }
   }
-  const dev: ProjectDevice = { id: newId('dv'), defId, name: uniqueDeviceName(s.project, def.defaultName || def.model || 'DEVICE') };
+  const dev: ProjectDevice = { id: newId('dv'), defId, name: '' };
   const obj: BlockObj = { id: newId('ob'), kind: 'block', deviceId: dev.id, x, y, scale: 1, border: { ...DEFAULT_BLOCK_BORDER } };
   nextLabel(`Add ${dev.name} (${def.manufacturer} ${def.model})`);
   updateProject((d) => {
@@ -148,7 +148,39 @@ export function placeBlock(def: BlockDef, x: number, y: number, fromLibrary = tr
   return obj.id;
 }
 
+/** Several library blocks at once (dragged together): stacked downwards from (x, y), one history step. */
+export function placeBlocks(defs: BlockDef[], x: number, y: number, gap = 18): Id[] {
+  if (defs.length === 1) return [placeBlock(defs[0], x, y)];
+  const s = getState();
+  const newDefs: BlockDef[] = [];
+  const devices: ProjectDevice[] = [];
+  const objs: BlockObj[] = [];
+  let top = y;
+  for (const def of defs) {
+    let pdef = Object.values(s.project.blockDefs).find((b) => b.libraryId === def.id) ?? newDefs.find((b) => b.libraryId === def.id);
+    if (!pdef) {
+      pdef = { ...cloneDef(def), libraryId: def.id };
+      newDefs.push(pdef);
+    }
+    const dev: ProjectDevice = { id: newId('dv'), defId: pdef.id, name: '' };
+    devices.push(dev);
+    objs.push({ id: newId('ob'), kind: 'block', deviceId: dev.id, x, y: top, scale: 1, border: { ...DEFAULT_BLOCK_BORDER } });
+    const h = blockLayout(pdef, '').h;
+    top = Math.round((top + h + gap) / s.prefs.gridSize) * s.prefs.gridSize;
+  }
+  nextLabel(`Add ${defs.length} blocks`);
+  updateProject((d) => {
+    for (const nd of newDefs) d.blockDefs[nd.id] = nd;
+    for (const dv of devices) d.devices[dv.id] = dv;
+    pageDraft(d).objects.push(...objs);
+  });
+  setState({ selection: objs.map((o) => o.id), selectedPorts: [] });
+  return objs.map((o) => o.id);
+}
+
 export function uniqueDeviceName(p: Project, base: string): string {
+  // Devices without a friendly name yet ("add friendly name") don't need to be unique.
+  if (!base.trim()) return '';
   const names = new Set(Object.values(p.devices).map((d) => d.name));
   if (!names.has(base)) return base;
   const m = base.match(/^(.*?)(\d+)$/);
@@ -818,7 +850,7 @@ export function renameDevice(deviceId: Id, name: string) {
   const p = getState().project;
   const dev = p.devices[deviceId];
   if (!dev) return;
-  const other = Object.values(p.devices).find((d) => d.id !== deviceId && d.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const other = name.trim() ? Object.values(p.devices).find((d) => d.id !== deviceId && d.name.trim().toLowerCase() === name.trim().toLowerCase()) : undefined;
   if (other) {
     const a = p.blockDefs[dev.defId];
     const b = p.blockDefs[other.defId];
@@ -835,7 +867,7 @@ export function renameDevice(deviceId: Id, name: string) {
     } else if (!sameModel) toast(`Another device is already named "${other.name}" (${b?.manufacturer} ${b?.model}).`, 'warn', 5000);
     else toast(`"${other.name}" is already on this page — kept as two devices with the same name.`, 'warn', 5000);
   }
-  nextLabel(`Rename device "${dev.name}" → "${name}"`);
+  nextLabel(name ? `Rename device "${dev.name}" → "${name}"` : `Clear the name of "${dev.name}"`);
   updateProject((d) => {
     const dv = d.devices[deviceId];
     if (dv) dv.name = name;
@@ -1166,6 +1198,19 @@ export function numberLines(ids: Id[], relabel = false) {
       if (c) c.label = formatLabel(auto, auto.next + i);
     });
     d.autoLabel = { ...auto, next: auto.next + lines.length };
+  });
+}
+
+/** Remove the labels of the given lines. */
+export function clearLabels(ids: Id[]) {
+  const pg = currentPage();
+  const n = pg.connections.filter((c) => ids.includes(c.id) && c.label).length;
+  if (!n) return;
+  nextLabel(`Clear ${plural(n, 'line label')}`);
+  patchConnections(ids, (c) => {
+    c.label = '';
+    c.labelT = null;
+    delete c.labelEndsT;
   });
 }
 

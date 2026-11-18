@@ -18,8 +18,8 @@ export interface BlockDef {
   id: Id;
   manufacturer: string;
   model: string;
-  /** Default friendly name used when a new device is placed. */
-  defaultName: string;
+  /** (Older files) default friendly name — no longer used: new devices start without a name. */
+  defaultName?: string;
   left: PortDef[];
   right: PortDef[];
   /** For project-local copies: the library definition this was copied from. */
@@ -28,15 +28,23 @@ export interface BlockDef {
   rack?: RackSpec;
 }
 
-/** Rack-mount size of a model. Height comes from the RU count (1RU = 1.75"). */
+/** Rack size of a model. Rack-mount gear: height from the RU count (1RU = 1.75"). */
 export interface RackSpec {
-  /** Rack units tall. */
+  /** Rack units tall (rack-mount gear). */
   ru: number;
-  /** Fraction of the 19" rack width: full, half (2 per space) or a third (3 per space). */
-  width?: 'full' | 'half' | 'third';
+  /**
+   * Fraction of the 19" rack width: full, half (2 per space) or a third (3 per space); `custom` =
+   * not rack-mount (sits on a shelf), drawn at its real width × height (`w`, `h`).
+   */
+  width?: 'full' | 'half' | 'third' | 'custom';
   /** Depth behind the front rail, inches (used by the side view). */
   depth?: number;
+  /** Not rack-mount: real width and height, inches. */
+  w?: number;
+  h?: number;
 }
+
+export type RackAccessory = 'blank' | 'brush' | 'vent' | 'shelf';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 
@@ -203,8 +211,8 @@ export interface RackObj extends ObjBase {
   depth: number;
   /** Drawing scale: points per inch. */
   scale: number;
-  /** Empty spaces drawn as grey blank panels. */
-  blanks?: boolean;
+  /** Derived (kept up to date by syncRacks): how far the deepest unit sticks out past the rear rail, inches. */
+  over?: number;
 }
 
 /**
@@ -213,13 +221,24 @@ export interface RackObj extends ObjBase {
  */
 export interface RackUnitObj extends ObjBase {
   kind: 'rackunit';
+  /** The device ('' for accessories and image faces). */
   deviceId: Id;
+  /** Rack hardware instead of a device: blank / brush / vent panel or a shelf. */
+  accessory?: RackAccessory;
+  /** An imported image / PDF / SVG drawn as the unit's face (instead of a device). */
+  assetId?: Id;
+  /** Own size (accessories and image faces); devices take theirs from their model. */
+  size?: { ru: number; width?: 'full' | 'half' | 'third'; depth?: number };
+  /** Optional text on an accessory / image unit (e.g. "BLANK PANEL"). */
+  label?: string;
   rackId: Id | null;
   /** Lowest rack unit it occupies (1 = bottom space). */
   u: number;
   /** Position across the rack for half / third-width units (0-based from the left). */
   slot: number;
-  /** Face colour (null = white) and text colour. */
+  /** Not-rack-mount devices in a rack (on a shelf): top-left offset from the mounting area's top-left, inches. */
+  at?: { x: number; y: number };
+  /** Face colour (null = default) and text colour. */
   fill: string | null;
   color: string;
   /** Points per inch when outside a rack (in a rack the rack's scale applies). */

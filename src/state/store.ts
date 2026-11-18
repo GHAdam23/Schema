@@ -57,7 +57,7 @@ export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callo
 export type Modal =
   /** library: a library block; project: the ports shared by a model's devices; instance: one placed block only. */
   | { kind: 'blockEditor'; target: 'library' | 'project' | 'instance'; defId: Id | null; objId?: Id }
-  | { kind: 'quickInsert' }
+  | { kind: 'projectSettings' }
   | { kind: 'prefs' }
   | { kind: 'titleBlock' }
   | { kind: 'exportPdf' }

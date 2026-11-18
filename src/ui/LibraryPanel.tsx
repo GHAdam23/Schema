@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
-import type { BlockDef } from '../model/types';
+import type { BlockDef, RackAccessory } from '../model/types';
+import { ACCESSORY_NAMES } from '../model/rack';
 import { currentPage, getState, setState, toast, useStore } from '../state/store';
 import { deleteLibraryDef, placeBlock, placeInstance, setLibrary, setPage, upsertLibraryDef } from '../state/actions';
 import { devicePages } from '../model/tags';
@@ -13,7 +14,7 @@ export function filterLibrary(lib: BlockDef[], q: string, man = '', sig = '') {
   return lib.filter((d) => {
     if (man && d.manufacturer !== man) return false;
     if (sig && ![...d.left, ...d.right].some((p) => p.signal === sig)) return false;
-    const hay = `${d.manufacturer} ${d.model} ${d.defaultName}`.toLowerCase();
+    const hay = `${d.manufacturer} ${d.model}`.toLowerCase();
     return terms.every((t) => hay.includes(t));
   });
 }
@@ -40,18 +41,21 @@ function pointOrCentre() {
 }
 
 export function LibraryPanel() {
-  const [tab, setTab] = useState<'library' | 'devices'>('library');
+  const [tab, setTab] = useState<'library' | 'devices' | 'rack'>('library');
   return (
     <div className="panel library">
       <div className="panel-tabs">
         <button className={tab === 'library' ? 'active' : ''} onClick={() => setTab('library')}>
-          Block library
+          Library
         </button>
         <button className={tab === 'devices' ? 'active' : ''} onClick={() => setTab('devices')} title="Devices in this project — place one on more pages">
           Devices
         </button>
+        <button className={tab === 'rack' ? 'active' : ''} onClick={() => setTab('rack')} title="Rack hardware: blank, brush and vent panels, shelves">
+          Rack parts
+        </button>
       </div>
-      {tab === 'library' ? <LibraryTab /> : <DevicesTab />}
+      {tab === 'library' ? <LibraryTab /> : tab === 'devices' ? <DevicesTab /> : <RackPartsTab />}
     </div>
   );
 }
@@ -86,7 +90,7 @@ function DevicesTab() {
             }}
             title="Drag onto the page (or double-click) to show this same device here too"
           >
-            <div className="model">{d.name}</div>
+            <div className="model">{d.name || <i className="warntext">add friendly name</i>}</div>
             <div className="man">{def ? `${def.manufacturer} ${def.model}` : '(missing definition)'}</div>
             <div className="meta">
               page{' '}
@@ -191,12 +195,14 @@ function LibraryTab() {
             className={'libitem' + (selSet.has(d.id) ? ' sel' : '')}
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.setData('application/x-schema-block', d.id);
+              // Dragging one of several highlighted blocks brings them all.
+              const ids = selSet.has(d.id) && selSet.size > 1 ? list.filter((x) => selSet.has(x.id)).map((x) => x.id) : [d.id];
+              e.dataTransfer.setData('application/x-schema-block', ids.join(','));
               e.dataTransfer.effectAllowed = 'copy';
             }}
             onClick={(e) => clickItem(e, d.id)}
             onDoubleClick={() => placeAtPointerOrCenter(d)}
-            title="Drag onto the page, or double-click to place"
+            title="Drag onto the page or a rack (with several highlighted, drag one of them to bring them all), or double-click to place"
           >
             <div className="man">{d.manufacturer || '—'}</div>
             <div className="model">{d.model || '(no model)'}</div>
@@ -253,6 +259,52 @@ function LibraryTab() {
           Select none
         </button>
         <span className="muted">{exportCount ? `${exportCount} selected` : 'Ctrl/Shift-click to multi-select'}</span>
+      </div>
+    </>
+  );
+}
+
+const PARTS: [RackAccessory, string][] = [
+  ['blank', 'Closes an empty space'],
+  ['brush', 'Cable pass-through with brush strip'],
+  ['vent', 'Perforated / slotted for airflow'],
+  ['shelf', 'Holds gear that isn\u2019t rack-mount'],
+];
+
+/** Rack hardware to drag into a rack, each with its height. */
+function RackPartsTab() {
+  const [sizes, setSizes] = useState<Record<RackAccessory, number>>({ blank: 1, brush: 1, vent: 1, shelf: 2 });
+  return (
+    <>
+      <div className="liblist">
+        {PARTS.map(([type, hint]) => (
+          <div
+            key={type}
+            className="libitem"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData('application/x-schema-rackpart', JSON.stringify({ type, ru: sizes[type] }));
+              e.dataTransfer.effectAllowed = 'copy';
+            }}
+            title="Drag onto a rack space"
+          >
+            <div className="model">{ACCESSORY_NAMES[type]}</div>
+            <div className="man">{hint}</div>
+            <div className="meta" onMouseDown={(e) => e.stopPropagation()}>
+              <span className="seg">
+                {[1, 2, 3, 4].map((n) => (
+                  <button key={n} className={sizes[type] === n ? 'active' : ''} onClick={() => setSizes({ ...sizes, [type]: n })}>
+                    {n}U
+                  </button>
+                ))}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="muted small pad">
+        Pick a height, then drag the part onto an empty rack space. Change the height later in its properties. Gear that isn&rsquo;t rack-mount (width
+        “Shelf / custom” in its size) can be dragged onto a shelf. Front-panel images (PNG, JPG, PDF, SVG) can be dropped straight onto a rack space.
       </div>
     </>
   );

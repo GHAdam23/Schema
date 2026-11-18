@@ -102,34 +102,150 @@ kbd {
 }
 .toolbar {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  align-items: stretch;
+  gap: 0;
+  padding: 3px 6px 2px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
+  row-gap: 4px;
 }
-.toolbar .brand {
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  margin-right: 6px;
-}
-.toolbar .group {
+/* Sections: buttons on top, caption underneath (Office-ribbon style). */
+.tsection {
   display: flex;
-  gap: 2px;
-  padding-right: 6px;
+  flex-direction: column;
+  padding: 0 3px;
   border-right: 1px solid var(--border);
 }
-.toolbar .group:last-child {
-  border-right: none;
+.tsection-body {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  flex: 1;
+}
+.tsection-title {
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-top: 1px;
+}
+.tsection-lines {
+  background: #eef4ff;
+  border-radius: 4px;
+}
+.tsub {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  padding: 0 4px;
+  border-left: 1px dashed var(--border);
+}
+.tsub:first-child {
+  border-left: none;
+  padding-left: 0;
+}
+.tsub-title {
+  writing-mode: horizontal-tb;
+  font-size: 10px;
+  color: var(--muted);
+  max-width: 70px;
+  line-height: 1.15;
+  align-self: center;
+  margin-right: 2px;
 }
 .toolbar .tb {
-  padding: 3px 7px;
-  min-width: 28px;
+  font-size: 12px;
+  padding: 2px 4px 1px;
+  min-width: 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
+}
+.toolbar .tb .tb-keys {
+  font-size: 9.5px;
+  color: var(--muted);
+}
+.toolbar .tb.active .tb-keys {
+  color: #dbe7ff;
+}
+.tfile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0 8px 0 2px;
+  border-right: 1px solid var(--border);
+  max-width: 280px;
 }
 .toolbar .filename {
   color: var(--muted);
-  margin-right: 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tfile-menus {
+  display: flex;
+  gap: 3px;
+}
+.tmenu {
+  position: relative;
+}
+.toolbar .tb.menu-btn {
+  flex-direction: row;
+  white-space: nowrap;
+  padding: 4px 6px;
+  font-weight: 600;
+}
+.tmenu-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 600;
+  margin-top: 2px;
+  min-width: 210px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.tmenu-pop button {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border: none;
+  text-align: left;
+  padding: 5px 8px;
+}
+.tmenu-pop button:hover {
+  background: var(--accent-soft);
+}
+.tmenu-pop kbd {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+}
+.tmenu-pop hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+.warntext {
+  color: #dc2626;
+}
+details.tips > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 4px;
 }
 
 .main {
@@ -930,4 +1046,31 @@ details.rows summary {
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+.projsettings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.tgrid {
+  display: grid;
+  grid-template-columns: repeat(3, 24px);
+  grid-template-rows: repeat(2, 14px);
+  gap: 1px;
+}
+.tgridwrap {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.tgrid-cap {
+  font-size: 9.5px;
+  color: var(--muted);
+  text-align: center;
+}
+.tgrid button {
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
 }

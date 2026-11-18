@@ -1,10 +1,6 @@
 import type { BlockDef, BlockObj, BoxObj, Bundle, Connection, ImageObj, PageObject, StrokeStyle, TagObj, TextObj, TextProps, TextualObj } from '../model/types';
 import { setState, useStore, currentPage, type AppState } from '../state/store';
 import {
-  alignLabels,
-  numberLines,
-  bundleProblem,
-  bundleSelection,
   connectionWarnings,
   jumpToTag,
   kindName,
@@ -26,13 +22,12 @@ import {
 import { DEFAULT_LINE } from '../model/defaults';
 import { fitTextBox, textBoxOf, titleBlockObjects } from '../render/buildPage';
 import { devicePages, tagRowFit, tagTargetPage, tagText } from '../model/tags';
-import { nextLabel, updateProject } from '../state/store';
-import { connSignal, DEFAULT_AUTO_LABEL, formatLabel } from '../model/signals';
+import { nextLabel } from '../state/store';
+import { connSignal } from '../model/signals';
 import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
 import { isBox } from '../model/geom';
 import { RackSection, RackUnitSection } from './RackProps';
-import { FontSettings } from './FontSettings';
 import { ColorSwatch, Field, FillEditor, Group, NumberField, StrokeEditor } from './controls';
 import { calloutTip } from '../render/buildPage';
 import { getState } from '../state/store';
@@ -125,43 +120,7 @@ export function PropertiesPanel() {
                   Label at both ends
                 </label>
               )}
-              <div className="btnrow">
-                <button title="Label the selected lines with the next numbers (top to bottom); lines that already have a label keep it — Shift-click to renumber them too" onClick={(e) => numberLines(conns.map((c) => c.id), e.shiftKey)} disabled={!conns.length}>
-                  Number these lines
-                </button>
-                <button
-                  disabled={!!bundleProblem(s.project, page, conns.map((c) => c.id))}
-                  title={bundleProblem(s.project, page, conns.map((c) => c.id)) ?? 'Draw these lines as one heavier trunk with short labelled legs at each end'}
-                  onClick={bundleSelection}
-                >
-                  Bundle into snake
-                </button>
-              </div>
-              {conns.length >= 4 && bundleProblem(s.project, page, conns.map((c) => c.id)) && (
-                <div className="muted small">Snake: {bundleProblem(s.project, page, conns.map((c) => c.id))}</div>
-              )}
-            </>
-          )}
-          {conns.length > 1 && (
-            <>
-              <div className="sub">Line up labels (with the first line selected)</div>
-              <div className="btnrow">
-                <button title="Left edges in line with the first selected line's label" onClick={() => alignLabels('left')}>
-                  ⇤ Left
-                </button>
-                <button title="Centres in line with the first selected line's label" onClick={() => alignLabels('hcenter')}>
-                  Centre
-                </button>
-                <button title="Right edges in line with the first selected line's label" onClick={() => alignLabels('right')}>
-                  Right ⇥
-                </button>
-              </div>
-              <div className="btnrow small">
-                <span className="muted">Labels on vertical runs:</span>
-                <button onClick={() => alignLabels('top')}>Top</button>
-                <button onClick={() => alignLabels('vcenter')}>Middle</button>
-                <button onClick={() => alignLabels('bottom')}>Bottom</button>
-              </div>
+              <div className="muted small">Labels, label alignment and bundling: the <b>Lines</b> section of the toolbar.</div>
             </>
           )}
           <Group title={conns.length + bundles.length && !objs.length ? 'Line style' : 'Border / line style'}>
@@ -181,11 +140,21 @@ function PageSection({ s }: { s: AppState }) {
       <div className="muted">
         {page.objects.filter((o) => o.kind === 'block').length} blocks · {page.connections.length} lines
       </div>
-      <LineSettings s={s} />
-      <FontSettings />
-      <div className="help">
+      <div className="muted small">Line label numbering, signal colours and fonts are project settings (toolbar → Project).</div>
+      <details
+        className="tips help"
+        open={tipsOpen()}
+        onToggle={(e) => {
+          try {
+            localStorage.setItem('schema.tipsOpen', (e.currentTarget as HTMLDetailsElement).open ? '1' : '0');
+          } catch {
+            /* ignore */
+          }
+        }}
+      >
+        <summary>Tips</summary>
         <p>
-          <b>Place blocks:</b> drag from the library, double-click a library entry,, or use <b>Insert…</b> to search.
+          <b>Place blocks:</b> drag from the library (several highlighted ones come together) or double-click a library entry.
         </p>
         <p>
           <b>Move a block:</b> drag its header, footer or centre. <b>Connect:</b> drag from a port row to another port. Drag from the dots on a text box or rectangle to connect to it.
@@ -224,12 +193,13 @@ function PageSection({ s }: { s: AppState }) {
           to draw; set arrowheads in the line's properties; ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
-          <b>Racks:</b> the <b>Rack</b> tool places a numbered rack; drag blocks from the library, or devices from the <b>Devices</b> tab, onto it —
-          they snap to the nearest free space. Drag a unit to move it, or off the rack to take it out. Rack sizes (U, width, depth) are in the
-          unit's properties; the rack's properties add a side view, casters and blank panels.
+          <b>Racks:</b> the <b>Rack</b> tool (<kbd>K</kbd>) places a numbered rack; drag blocks from the library, devices from the <b>Devices</b> tab,
+          parts from <b>Rack parts</b> (blank / brush / vent panels, shelves) or front-panel images onto a rack space — they go exactly where you
+          drop them. Drag a unit to another space, or off the rack to take it out. Sizes (U, width, depth) are in the unit's properties;
+          the rack's properties add a side view and casters.
         </p>
         <p>
-          <b>Right-click</b> an object for cut / copy / paste and stacking order (bring to front, send to back…).
+          <b>Right-click</b> an object for cut / copy / paste and stacking order — or <kbd>Ctrl+]</kbd> / <kbd>Ctrl+[</kbd> (forward / backward), with Shift to front / back.
         </p>
         <p>
           <b>Images:</b> drop PNG, JPG, PDF or SVG files on the page, paste an image, or use <b>Image…</b>. PDFs stay vector in the export; SVGs are
@@ -250,60 +220,17 @@ function PageSection({ s }: { s: AppState }) {
           the trunk and type to label it. <b>Curved lines</b> (lines and snakes): in their properties — they route around objects, and the
           square handles on a selected curve reshape it.
         </p>
-      </div>
+      </details>
     </div>
   );
 }
 
-/** Project-wide line settings: auto-numbered labels and signal colours. */
-function LineSettings({ s }: { s: AppState }) {
-  const auto = s.project.autoLabel ?? DEFAULT_AUTO_LABEL;
-  const setAuto = (patch: Partial<typeof auto>, label: string) => {
-    nextLabel(label);
-    updateProject((d) => void (d.autoLabel = { ...auto, ...patch }));
-  };
-  const nStyles = Object.keys(s.project.signalStyles ?? {}).length;
-  return (
-    <>
-      <Group title="Line labels">
-        <label className="check" title="Every new line gets the next number as its label">
-          <input type="checkbox" checked={auto.on} onChange={(e) => setAuto({ on: e.target.checked }, e.target.checked ? 'Auto-number line labels' : 'Stop auto-numbering line labels')} /> Number new lines automatically
-        </label>
-        <div className="fieldgroup">
-          <label>
-            Prefix <input style={{ width: 60 }} key={auto.prefix} defaultValue={auto.prefix} onBlur={(e) => e.target.value !== auto.prefix && setAuto({ prefix: e.target.value }, 'Label prefix')} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
-          </label>
-          <label>
-            Next <NumberField min={0} step={1} width={60} value={auto.next} onCommit={(v) => setAuto({ next: Math.round(v) }, 'Next label number')} />
-          </label>
-          <label title="Pad with zeros to this many digits">
-            Digits <NumberField min={0} max={6} step={1} width={44} value={auto.digits} onCommit={(v) => setAuto({ digits: Math.round(v) }, 'Label digits')} />
-          </label>
-        </div>
-        <div className="muted small">
-          Next label: <b>{formatLabel(auto, auto.next)}</b>. To number existing lines, select them and use “Number these lines”.
-        </div>
-      </Group>
-      <Group title="Signal colours">
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={!!s.project.signalColors}
-            onChange={(e) => {
-              if (e.target.checked && !nStyles) {
-                setState({ modal: { kind: 'signalColors' } });
-                return;
-              }
-              nextLabel(e.target.checked ? 'Colour lines by signal type' : 'Black lines');
-              updateProject((d) => void (d.signalColors = e.target.checked));
-            }}
-          />{' '}
-          Colour lines by signal type
-        </label>
-        <button onClick={() => setState({ modal: { kind: 'signalColors' } })}>Edit colours…{nStyles ? ` (${nStyles} set)` : ''}</button>
-      </Group>
-    </>
-  );
+function tipsOpen() {
+  try {
+    return localStorage.getItem('schema.tipsOpen') !== '0';
+  } catch {
+    return true;
+  }
 }
 
 function PortsSection({ s }: { s: AppState }) {
@@ -632,7 +559,7 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
     <div className="section">
       <div className="section-title">Block</div>
       <Field label="Friendly name">
-        <input key={dev.id + dev.name} defaultValue={dev.name} onBlur={(e) => e.target.value.trim() && e.target.value !== dev.name && renameDevice(dev.id, e.target.value.trim())} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
+        <input key={dev.id + dev.name} defaultValue={dev.name} placeholder="add friendly name" onBlur={(e) => e.target.value.trim() !== dev.name && renameDevice(dev.id, e.target.value.trim())} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
       </Field>
       <div className="muted">
         {def.manufacturer} | {def.model} · {shown!.left.length} in / {shown!.right.length} out{hidden.size ? ` (${hidden.size} hidden)` : ''}
@@ -703,13 +630,13 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
       {o.defId && <div className="muted small">This block has its own port list (edited for this block only).</div>}
       <div className="btnrow">
         <button title="Add, delete or rename rows on this block only — other pages, other devices and your library don't change" onClick={() => setState({ modal: { kind: 'blockEditor', target: 'instance', defId: null, objId: o.id } })}>
-          Edit ports — this block only…
+          Edit ports — this instance…
         </button>
         <button
           title={`Changes every ${model} in this project${o.defId ? ' (except blocks with their own port list, like this one)' : ''}; your library stays as it is`}
           onClick={() => setState({ modal: { kind: 'blockEditor', target: 'project', defId: def.id } })}
         >
-          Edit ports — every {def.model || 'block of this model'}{usage > 1 ? ` (${usage} devices)` : ''}…
+          Edit ports — all project instances{usage > 1 ? ` (${usage} devices)` : ''}…
         </button>
         {o.defId && (
           <button onClick={() => revertInstanceDef(o.id)} title="Drop this block's own port list and use the device's again">
@@ -718,7 +645,7 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
         )}
       </div>
       <div className="sub">Library</div>
-      <div className="muted">{!lib ? 'Not in your library.' : differs ? 'This project’s ports differ from your library.' : 'Matches your library.'}</div>
+      <div className={differs ? 'warntext' : 'muted'}>{!lib ? 'Not in your library.' : differs ? 'This project’s version differs from your library.' : 'Matches your library.'}</div>
       <div className="btnrow">
         {differs && (
           <>
@@ -944,5 +871,5 @@ function BundleSection({ b }: { b: Bundle }) {
 function sameDef(a: BlockDef, b: BlockDef) {
   const ports = (d: BlockDef) => JSON.stringify([d.left, d.right].map((col) => col.map((p) => [p.name, p.signal, p.connector])));
   const rack = (d: BlockDef) => JSON.stringify(d.rack ? [d.rack.ru, d.rack.width ?? 'full', d.rack.depth ?? 0] : null);
-  return a.manufacturer === b.manufacturer && a.model === b.model && a.defaultName === b.defaultName && ports(a) === ports(b) && rack(a) === rack(b);
+  return a.manufacturer === b.manufacturer && a.model === b.model && ports(a) === ports(b) && rack(a) === rack(b);
 }

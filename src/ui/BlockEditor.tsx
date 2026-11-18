@@ -103,7 +103,6 @@ export function BlockEditor({ target, defId, objId }: { target: 'library' | 'pro
       ...def,
       manufacturer: def.manufacturer.trim(),
       model: def.model.trim(),
-      defaultName: def.defaultName.trim(),
       left: def.left.filter((p) => p.name || p.signal || p.connector).map((p) => ({ ...p, dir: colDir('left') })),
       right: def.right.filter((p) => p.name || p.signal || p.connector).map((p) => ({ ...p, dir: colDir('right') })),
     };
@@ -328,10 +327,6 @@ export function BlockEditor({ target, defId, objId }: { target: 'library' | 'pro
                 Model
                 <input value={def.model} onChange={(e) => commit({ ...def, model: e.target.value })} />
               </label>
-              <label>
-                Default friendly name
-                <input value={def.defaultName} onChange={(e) => commit({ ...def, defaultName: e.target.value })} placeholder="e.g. CAM-1" />
-              </label>
             </div>
             {target !== 'instance' && (
               <div className="be-header be-rack" title="Physical size for rack elevations">
@@ -487,7 +482,7 @@ export function BlockEditor({ target, defId, objId }: { target: 'library' | 'pro
 
 
 function BlockPreview({ def }: { def: BlockDef }) {
-  const name = def.defaultName || 'FRIENDLY NAME';
+  const name = 'FRIENDLY NAME';
   const L = blockLayout(def, name);
   const items: DLItem[] = [];
   const proj: Project = {

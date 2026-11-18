@@ -21,23 +21,10 @@ export function drawingArea(size: PageSizeId) {
   };
 }
 
-export const DEFAULT_SIGNAL_TYPES = [
-  'HDSDI',
-  '12GSDI',
-  'HDMI',
-  'DVI',
-  'DP',
-  'HDBT',
-  'AUDIO',
-  'AES',
-  'DANTE',
-  'DATA',
-  'FIBER',
-  'RS232',
-  'GPIO',
-  'USB',
-  'AC',
-];
+export const DEFAULT_SIGNAL_TYPES = ['SDI', 'RF', 'HDMI', 'DVI', 'DP', 'HDBT', 'NDI', 'AUDIO', 'AES/EBU', 'DANTE', 'MADI', 'DATA', 'FIBER', 'GPIO', 'USB', 'POWER'];
+
+/** The list before Phase 3 round 1 (a stored preference equal to it is updated to the new defaults). */
+export const OLD_DEFAULT_SIGNAL_TYPES = ['HDSDI', '12GSDI', 'HDMI', 'DVI', 'DP', 'HDBT', 'AUDIO', 'AES', 'DANTE', 'DATA', 'FIBER', 'RS232', 'GPIO', 'USB', 'AC'];
 
 export const DEFAULT_LINE: StrokeStyle = { color: '#000000', width: 0.75, dash: 'solid' };
 export const DEFAULT_BLOCK_BORDER: StrokeStyle = { color: '#000000', width: 1, dash: 'solid' };

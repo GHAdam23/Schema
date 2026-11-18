@@ -1,19 +1,23 @@
 // Block library import/export as CSV or XLSX.
-// One row per port:  Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector
+// One row per port:  Manufacturer, Model, Column (IN/OUT), Port, Signal, Connector, then the rack size
+// (Rack Units, Rack Width, Depth, and Width / Height in inches for shelf gear). An old "Default Name" column is ignored.
 // (an older 'Direction' column is accepted on import and only used when Column is missing).
 // A block with no ports is written as a single row with the port fields empty.
 import * as XLSX from 'xlsx';
 import type { BlockDef, PortDef } from '../model/types';
 import { newId } from '../model/ids';
 
-export const LIB_HEADERS = ['Manufacturer', 'Model', 'Default Name', 'Column', 'Port', 'Signal', 'Connector', 'Rack Units', 'Rack Width', 'Depth (in)'];
+export const LIB_HEADERS = ['Manufacturer', 'Model', 'Column', 'Port', 'Signal', 'Connector', 'Rack Units', 'Rack Width', 'Depth (in)', 'Width (in)', 'Height (in)'];
 
 export function libraryToRows(lib: BlockDef[]): string[][] {
   const rows: string[][] = [LIB_HEADERS];
   for (const d of lib) {
-    const base = [d.manufacturer, d.model, d.defaultName];
+    const base = [d.manufacturer, d.model];
     // Rack size repeats on every row of the block (so filtering in Excel keeps it).
-    const rack = d.rack ? [String(d.rack.ru), d.rack.width && d.rack.width !== 'full' ? d.rack.width : 'full', d.rack.depth ? String(d.rack.depth) : ''] : ['', '', ''];
+    const custom = d.rack?.width === 'custom';
+    const rack = d.rack
+      ? [String(d.rack.ru), d.rack.width ?? 'full', d.rack.depth ? String(d.rack.depth) : '', custom ? String(d.rack.w ?? '') : '', custom ? String(d.rack.h ?? '') : '']
+      : ['', '', '', '', ''];
     if (!d.left.length && !d.right.length) rows.push([...base, '', '', '', '', ...rack]);
     for (const p of d.left) rows.push([...base, 'IN', p.name, p.signal, p.connector, ...rack]);
     for (const p of d.right) rows.push([...base, 'OUT', p.name, p.signal, p.connector, ...rack]);
@@ -24,15 +28,17 @@ export function libraryToRows(lib: BlockDef[]): string[][] {
 export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
   if (!rows.length) return [];
   const header = rows[0].map((h) => String(h ?? '').trim().toLowerCase());
+  const hasHeader = header.includes('manufacturer') || header.includes('model');
+  // With a header row columns are found by name; without one, the old positional layout is assumed.
   const col = (names: string[], fallback: number) => {
     const i = header.findIndex((h) => names.includes(h));
-    return i >= 0 ? i : fallback;
+    return i >= 0 ? i : hasHeader ? -1 : fallback;
   };
-  const hasHeader = header.includes('manufacturer') || header.includes('model');
   const iMan = col(['manufacturer', 'make', 'mfr'], 0);
   const iModel = col(['model'], 1);
-  const iName = col(['default name', 'name', 'friendly name'], 2);
   const iCol = col(['column', 'side'], 3);
+  const iW = col(['width (in)'], -1);
+  const iH = col(['height (in)'], -1);
   const iPort = col(['port', 'port name'], 4);
   const iSig = col(['signal', 'signal type'], 5);
   const iCon = col(['connector', 'connector type'], 6);
@@ -50,7 +56,7 @@ export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
     const key = man + '\u0000' + model;
     let def = byKey.get(key);
     if (!def) {
-      def = { id: newId('bd'), manufacturer: man, model, defaultName: g(iName), left: [], right: [] };
+      def = { id: newId('bd'), manufacturer: man, model, left: [], right: [] };
       byKey.set(key, def);
       out.push(def);
     }
@@ -58,8 +64,12 @@ export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
     if (!def.rack && ru > 0) {
       const w = g(iRw).toLowerCase();
       const depth = Number(g(iDepth));
-      def.rack = { ru, width: w.startsWith('h') || w === '1/2' ? 'half' : w.startsWith('t') || w === '1/3' ? 'third' : 'full', depth: depth > 0 ? depth : undefined };
+      def.rack = { ru, width: w.startsWith('h') || w === '1/2' ? 'half' : w.startsWith('t') || w === '1/3' ? 'third' : w.startsWith('c') || w.startsWith('s') ? 'custom' : 'full', depth: depth > 0 ? depth : undefined };
       if (!def.rack.depth) delete def.rack.depth;
+      if (def.rack.width === 'custom') {
+        def.rack.w = Number(g(iW)) || 8;
+        def.rack.h = Number(g(iH)) || 1.75;
+      }
     }
     const portName = g(iPort);
     if (!portName && !g(iSig) && !g(iCon)) continue;

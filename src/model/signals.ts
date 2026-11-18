@@ -35,19 +35,25 @@ export function formatLabel(a: AutoLabel, n: number) {
 
 /** Suggested colours for common signal types (print-friendly). */
 export const SIGNAL_COLOR_SUGGESTIONS: Record<string, string> = {
+  SDI: '#0060c0',
   HDSDI: '#0060c0',
   '12GSDI': '#0060c0',
+  RF: '#8b4513',
   HDMI: '#7030a0',
   DVI: '#7030a0',
   DP: '#7030a0',
   HDBT: '#8b4513',
+  NDI: '#f07800',
   AUDIO: '#00963c',
+  'AES/EBU': '#00963c',
   AES: '#00963c',
   DANTE: '#e6b800',
+  MADI: '#00963c',
   DATA: '#f07800',
   FIBER: '#d00000',
-  RS232: '#404040',
   GPIO: '#404040',
+  RS232: '#404040',
   USB: '#404040',
+  POWER: '#d00000',
   AC: '#d00000',
 };

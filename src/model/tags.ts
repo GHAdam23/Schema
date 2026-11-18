@@ -70,7 +70,7 @@ export function tagText(project: Project, tag: TagObj): string {
   else if (!dev) parts.push('(?)', 'missing device');
   else {
     const pi = tagTargetPage(project, tag);
-    parts.push(`(${pi >= 0 ? pi + 1 : '?'})`, dev.name);
+    parts.push(`(${pi >= 0 ? pi + 1 : '?'})`, dev.name || project.blockDefs[dev.defId]?.model || '?');
     if (tag.showPort && tag.target.portId) {
       const def = project.blockDefs[dev.defId];
       const port = def && findPort(def, tag.target.portId);

@@ -328,7 +328,7 @@ function vectorItems(a: Asset): DLItem[] {
   return v;
 }
 
-function drawImage(out: DLItem[], project: Project, o: ImageObj) {
+export function drawImage(out: DLItem[], project: Project, o: ImageObj) {
   const a = project.assets[o.assetId];
   if (!a) out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: '#ffdddd', stroke: THIN });
   else if (a.vector) out.push({ t: 'group', m: [o.w / a.w, 0, 0, o.h / a.h, o.x, o.y], items: vectorItems(a) });

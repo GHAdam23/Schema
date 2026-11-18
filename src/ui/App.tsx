@@ -5,8 +5,7 @@ import { PageTabs } from './PageTabs';
 import { LibraryPanel } from './LibraryPanel';
 import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
-import { QuickInsert } from './QuickInsert';
-import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, SignalColorsDialog, HistoryDialog, TagTargetDialog } from './Dialogs';
+import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, SignalColorsDialog, ProjectSettingsDialog, HistoryDialog, TagTargetDialog } from './Dialogs';
 import { isMediaFile } from '../io/importMedia';
 import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
@@ -18,6 +17,7 @@ import {
   paste,
   selectAll,
   selectNextLine,
+  zOrder,
 } from '../state/actions';
 import { importMedia, openProjectCmd, saveCmd } from '../state/fileOps';
 
@@ -84,6 +84,13 @@ export function App() {
           if (obj && 'text' in obj) return edit({ kind: 'text', id });
         }
       }
+      if (mod && (e.code === 'BracketRight' || e.code === 'BracketLeft')) {
+        // Stacking order, as in PowerPoint: Ctrl+] / Ctrl+[ one step, with Shift all the way.
+        e.preventDefault();
+        const up = e.code === 'BracketRight';
+        zOrder(e.shiftKey ? (up ? 'front' : 'back') : up ? 'forward' : 'backward');
+        return;
+      }
       if (mod && k === 'z') {
         e.preventDefault();
         if (e.shiftKey) redo();
@@ -127,6 +134,7 @@ export function App() {
       else if (!mod && k === 'f') setState({ tool: 'container' });
       else if (!mod && k === 'l') setState({ tool: 'callout' });
       else if (!mod && k === 'h') setState({ tool: 'pan' });
+      else if (!mod && k === 'k') setState({ tool: 'rack' });
       else if (e.shiftKey && (k === 'arrowdown' || k === 'arrowup') && s.selection.length === 1 && currentPage(s).connections.some((c) => c.id === s.selection[0])) {
         // A line is selected: step to the next / previous line (then just type to label it).
         e.preventDefault();
@@ -183,13 +191,13 @@ export function App() {
         <PropertiesPanel />
       </div>
       {modal?.kind === 'blockEditor' && <BlockEditor target={modal.target} defId={modal.defId} objId={modal.objId} />}
-      {modal?.kind === 'quickInsert' && <QuickInsert />}
       {modal?.kind === 'prefs' && <PrefsDialog />}
       {modal?.kind === 'titleBlock' && <TitleBlockDialog />}
       {modal?.kind === 'exportPdf' && <ExportPdfDialog />}
       {modal?.kind === 'backups' && <BackupsDialog />}
       {modal?.kind === 'signalTypes' && <SignalTypesDialog />}
       {modal?.kind === 'signalColors' && <SignalColorsDialog />}
+      {modal?.kind === 'projectSettings' && <ProjectSettingsDialog />}
       {modal?.kind === 'history' && <HistoryDialog />}
       {modal?.kind === 'tagTarget' && <TagTargetDialog key={modal.objId} objId={modal.objId} isNew={modal.isNew} />}
       <div className="toasts">
