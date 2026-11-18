@@ -29,6 +29,7 @@ export function newProject(prefs: Prefs): Project {
       revision: '0',
     },
     pages: [newPage('Page 1', prefs.defaultPageSize)],
+    signalTypes: [...prefs.signalTypes],
     devices: {},
     blockDefs: {},
     assets,

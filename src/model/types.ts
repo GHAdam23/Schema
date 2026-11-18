@@ -44,7 +44,10 @@ export interface RackSpec {
   h?: number;
 }
 
-export type RackAccessory = 'blank' | 'brush' | 'vent' | 'shelf';
+export type RackAccessory = 'blank' | 'brush' | 'vent' | 'shelf' | 'drawer';
+
+/** Where a rack unit's manufacturer / model / name go: on its face, beside the rack (left / right), or nowhere. */
+export type RackLabelSide = 'face' | 'left' | 'right' | 'none';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 
@@ -213,6 +216,10 @@ export interface RackObj extends ObjBase {
   scale: number;
   /** Derived (kept up to date by syncRacks): how far the deepest unit sticks out past the rear rail, inches. */
   over?: number;
+  /** Default place for the units' labels (default: on their faces). */
+  labels?: Exclude<RackLabelSide, 'none'>;
+  /** Derived (syncRacks): width of the label columns beside the rack, inches. */
+  labW?: [number, number];
 }
 
 /**
@@ -225,8 +232,10 @@ export interface RackUnitObj extends ObjBase {
   deviceId: Id;
   /** Rack hardware instead of a device: blank / brush / vent panel or a shelf. */
   accessory?: RackAccessory;
-  /** An imported image / PDF / SVG drawn as the unit's face (instead of a device). */
+  /** An imported image / PDF / SVG drawn as the unit's face (an image-only unit, or a device's face picture). */
   assetId?: Id;
+  /** Where its label goes (default: the rack's setting; side for a device with a face picture). */
+  labelSide?: RackLabelSide;
   /** Own size (accessories and image faces); devices take theirs from their model. */
   size?: { ru: number; width?: 'full' | 'half' | 'third'; depth?: number };
   /** Optional text on an accessory / image unit (e.g. "BLANK PANEL"). */
@@ -352,6 +361,8 @@ export interface Project {
   signalColors?: boolean;
   /** Automatic numbering of new line labels. */
   autoLabel?: AutoLabel;
+  /** Signal types for this project (block editor suggestions, signal colours); new projects copy the app list. */
+  signalTypes?: string[];
   /** Uploaded fonts replacing the built-in ones (embedded in the project and in PDFs). */
   fonts?: { narrow?: CustomFont; title?: CustomFont };
 }

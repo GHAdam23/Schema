@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { currentPage, redo, setState, undo, useStore } from '../state/store';
-import { alignLabels, alignSelection, bundleProblem, bundleSelection, clearLabels, distributeSelection, numberLines, straighten, type AlignMode } from '../state/actions';
+import { currentPage, nextLabel, redo, setState, undo, updateProject, useStore } from '../state/store';
+import { clearLabels, numberLines } from '../state/actions';
+import { DEFAULT_AUTO_LABEL, formatLabel } from '../model/signals';
+import { NumberField } from './controls';
 import { exportCableListCmd, exportEquipmentListCmd, importMedia, newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
 import { pickFile } from '../io/files';
 import { MEDIA_ACCEPT } from '../io/importMedia';
@@ -18,12 +20,32 @@ function Btn(props: { label: string; keys?: string; title?: string; onClick: (e:
   );
 }
 
-/** A titled toolbar section (caption underneath, like an Office ribbon group). */
-function Section({ title, children, className }: { title: string; children: React.ReactNode; className?: string }) {
+/** Small line icons for the section titles. */
+const ICONS: Record<string, string> = {
+  edit: 'M3 13l1-4 7-7 3 3-7 7-4 1z M9 4l3 3',
+  cursor: 'M4 2l9 6-4 1 2 5-2 1-2-5-3 3z',
+  plus: 'M8 3v10 M3 8h10',
+  eye: 'M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
+  tag: 'M2 3h6l6 6-5 5-6-6z M5 6h.01',
+};
+
+export function Icon({ name }: { name: string }) {
+  return (
+    <svg className="ticon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round">
+      <path d={ICONS[name]} />
+    </svg>
+  );
+}
+
+/** A titled toolbar section: caption with an icon on top, buttons below. */
+function Section({ title, icon, children, className, extra }: { title: string; icon: string; children: React.ReactNode; className?: string; extra?: React.ReactNode }) {
   return (
     <div className={'tsection' + (className ? ' ' + className : '')}>
+      <div className="tsection-title">
+        <Icon name={icon} /> {title}
+        {extra}
+      </div>
       <div className="tsection-body">{children}</div>
-      <div className="tsection-title">{title}</div>
     </div>
   );
 }
@@ -92,11 +114,13 @@ export function Toolbar() {
   const fileName = useStore((s) => s.fileName);
 
   const sel = new Set(selection);
-  const objCount = page.objects.filter((o) => sel.has(o.id)).length;
   const lineIds = page.connections.filter((c) => sel.has(c.id)).map((c) => c.id);
-  const bundleWhy = lineIds.length ? bundleProblem(project, page, lineIds) : null;
   const toolBtn = (t: Tool, label: string, keys: string | undefined, title: string) => <Btn label={label} keys={keys} title={title} active={tool === t} onClick={() => setState({ tool: t })} />;
-  const align = (m: AlignMode) => () => alignSelection(m);
+  const auto = project.autoLabel ?? DEFAULT_AUTO_LABEL;
+  const setAuto = (patch: Partial<typeof auto>, label: string) => {
+    nextLabel(label);
+    updateProject((d) => void (d.autoLabel = { ...auto, ...patch }));
+  };
 
   return (
     <div className="toolbar">
@@ -128,7 +152,7 @@ export function Toolbar() {
           <Menu
             label="Settings"
             items={[
-              ['Project settings…', 'labels, colours, fonts', () => setState({ modal: { kind: 'projectSettings' } })],
+              ['Project settings…', 'signals, fonts', () => setState({ modal: { kind: 'projectSettings' } })],
               ['Title block…', '', () => setState({ modal: { kind: 'titleBlock' } })],
               null,
               ['Backups…', '', () => setState({ modal: { kind: 'backups' } })],
@@ -137,23 +161,24 @@ export function Toolbar() {
           />
         </div>
       </div>
-      <Section title="Edit">
+      <Section title="Edit" icon="edit">
         <Btn label="↶" keys="Ctrl+Z" title="Undo" onClick={undo} disabled={!canUndo} />
         <Btn label="↷" keys="Ctrl+Y" title="Redo" onClick={redo} disabled={!canRedo} />
         <Btn label="History" keys="Ctrl+H" title="Recent changes — see what changed and undo to any point" onClick={() => setState({ modal: { kind: 'history' } })} />
       </Section>
-      <Section title="Tools">
+      <Section title="Tools" icon="cursor">
         {toolBtn('select', 'Select', 'V', 'Select and move objects')}
         {toolBtn('pan', 'Move', 'H', 'Move around the page by dragging (also right-drag, middle-drag, Space-drag, or drag the grey area)')}
+        <Btn label="Snap" keys="to grid" active={prefs.snap} title="Snap to the grid while placing and moving" onClick={() => togglePref('snap')} />
+        <Btn label="Guides" keys="smart" active={prefs.smartGuides} title="Smart guides: snap to other objects' edges, centres and port rows while moving" onClick={() => togglePref('smartGuides')} />
       </Section>
-      <Section title="Insert">
+      <Section title="Insert" icon="plus">
         {toolBtn('text', 'Text', 'T', 'Text box: click, or drag out a box')}
         {toolBtn('rect', 'Rect', 'R', 'Rectangle (Shift: square)')}
         {toolBtn('ellipse', 'Ellipse', 'E', 'Ellipse (Shift: circle)')}
         {toolBtn('container', 'Container', 'F', "Container: a labelled frame that moves what's inside it")}
         {toolBtn('callout', 'Callout', 'L', 'Callout: text with a pointer')}
         {toolBtn('cloud', 'Bubble', undefined, 'Thought bubble — drag the yellow diamond to point it')}
-        {toolBtn('rack', 'Rack', 'K', 'Rack elevation: click to place a rack, then drag blocks, devices, rack parts or panel images onto its spaces')}
         {toolBtn('line', 'Line', undefined, 'Draw a line or arrow (drag; Shift = 15° steps). Arrowheads are set in its properties.')}
         <Btn
           label="Image"
@@ -164,63 +189,40 @@ export function Toolbar() {
           }}
         />
       </Section>
-      <Section title="View">
-        <Btn label="Grid" active={prefs.showGrid} title="Show the grid" onClick={() => togglePref('showGrid')} />
-        <Btn label="Snap" active={prefs.snap} title="Snap to the grid" onClick={() => togglePref('snap')} />
-        <Btn label="Guides" active={prefs.smartGuides} title="Smart guides: snap to other objects' edges, centres and port rows" onClick={() => togglePref('smartGuides')} />
+      <Section title="View" icon="eye">
+        <Btn label="Grid" keys="show" active={prefs.showGrid} title="Show the grid" onClick={() => togglePref('showGrid')} />
         <Btn label="−" keys="Ctrl+−" title="Zoom out" onClick={() => view('out')} />
         <Btn label="Fit" keys="Ctrl+0" title="Fit the page" onClick={() => view('fit')} />
         <Btn label="100%" title="Actual size" onClick={() => view('100')} />
         <Btn label="+" keys="Ctrl++" title="Zoom in" onClick={() => view('in')} />
       </Section>
-      {(objCount > 0 || !lineIds.length) && (
-      <Section title="Arrange">
-        <Btn label="⇤" title="Align left edges" disabled={objCount < 2} onClick={align('left')} />
-        <Btn label="↔" title="Align centres horizontally" disabled={objCount < 2} onClick={align('hcenter')} />
-        <Btn label="⇥" title="Align right edges" disabled={objCount < 2} onClick={align('right')} />
-        <Btn label="⤒" title="Align top edges" disabled={objCount < 2} onClick={align('top')} />
-        <Btn label="↕" title="Align middles vertically" disabled={objCount < 2} onClick={align('vcenter')} />
-        <Btn label="⤓" title="Align bottom edges" disabled={objCount < 2} onClick={align('bottom')} />
-        <Btn label="⋯" title="Distribute horizontally (3 or more)" disabled={objCount < 3} onClick={() => distributeSelection('h')} />
-        <Btn label="⋮" title="Distribute vertically (3 or more)" disabled={objCount < 3} onClick={() => distributeSelection('v')} />
-        <Btn label="Straighten" title="Move blocks so their lines run straight. Works on selected blocks or lines." disabled={!selection.length} onClick={straighten} />
+      <Section title="Line labels" icon="tag" extra={<span className="tnext" title="The next label">next {formatLabel(auto, auto.next)}</span>}>
+        <div className="tlabels">
+          <label className="tcheck" title="Every new line gets the next label">
+            <input type="checkbox" checked={auto.on} onChange={(e) => setAuto({ on: e.target.checked }, e.target.checked ? 'Auto-number line labels' : 'Stop auto-numbering line labels')} /> Auto
+          </label>
+          <label className="tfield" title="Label prefix, e.g. DD-3 or SDI-">
+            <span>Prefix</span>
+            <input key={'p' + auto.prefix} defaultValue={auto.prefix} onBlur={(e) => e.target.value !== auto.prefix && setAuto({ prefix: e.target.value }, 'Label prefix')} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} style={{ width: 56 }} />
+          </label>
+          <label className="tfield" title="Next number to hand out">
+            <span>Next</span>
+            <NumberField min={0} step={1} width={46} value={auto.next} onCommit={(v) => setAuto({ next: Math.round(v) }, 'Next label number')} />
+          </label>
+          <label className="tfield" title="Pad the number with zeros to this many digits">
+            <span>Digits</span>
+            <NumberField min={0} max={6} step={1} width={36} value={auto.digits} onCommit={(v) => setAuto({ digits: Math.round(v) }, 'Label digits')} />
+          </label>
+        </div>
+        <div className="tstack">
+          <button disabled={!lineIds.length} title="Number the selected lines: give them the next labels (top to bottom). Lines that already have a label keep it; Shift-click to renumber them too." onClick={(e) => numberLines(lineIds, e.shiftKey)}>
+            Number
+          </button>
+          <button disabled={!lineIds.length} title="Clear the labels of the selected lines" onClick={() => clearLabels(lineIds)}>
+            Clear
+          </button>
+        </div>
       </Section>
-      )}
-      {lineIds.length > 0 && (
-        <Section title={`Lines (${lineIds.length} selected)`} className="tsection-lines">
-          <div className="tsub">
-            <Btn label="Number" keys="labels" title="Give the selected lines the next auto-numbers (top to bottom). Lines that already have a label keep it; Shift-click to renumber them too." onClick={(e) => numberLines(lineIds, e.shiftKey)} />
-            <Btn label="Clear" keys="labels" title="Remove the labels of the selected lines" onClick={() => clearLabels(lineIds)} />
-          </div>
-          {lineIds.length > 1 && (
-            <div className="tsub">
-              <div className="tgridwrap">
-              <div className="tgrid" title="Line up the labels with the first selected line's label">
-                {(
-                  [
-                    ['⇤', 'left', 'Left edges in line (labels on horizontal runs)'],
-                    ['↔', 'hcenter', 'Centres in line (labels on horizontal runs)'],
-                    ['⇥', 'right', 'Right edges in line (labels on horizontal runs)'],
-                    ['⤒', 'top', 'Tops in line (labels on vertical runs)'],
-                    ['↕', 'vcenter', 'Middles in line (labels on vertical runs)'],
-                    ['⤓', 'bottom', 'Bottoms in line (labels on vertical runs)'],
-                  ] as const
-                ).map(([l, m, t]) => (
-                  <button key={m} title={t + ' — with the first selected line'} onClick={() => alignLabels(m)}>
-                    {l}
-                  </button>
-                ))}
-              </div>
-              <div className="tgrid-cap">line up labels</div>
-              </div>
-            </div>
-          )}
-          <div className="tsub">
-            <Btn label="Straighten" keys="lines" title="Move blocks so these lines run straight" onClick={straighten} />
-            <Btn label="Bundle" keys="into snake" title={bundleWhy ?? 'Draw these lines as one heavier trunk with short labelled legs at each end'} disabled={!!bundleWhy} onClick={bundleSelection} />
-          </div>
-        </Section>
-      )}
     </div>
   );
 }

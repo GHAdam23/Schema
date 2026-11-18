@@ -968,7 +968,7 @@ export function Canvas() {
 
   const onDragOver = (e: React.DragEvent) => {
     const t = e.dataTransfer.types;
-    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('application/x-schema-rackpart') || t.includes('Files')) {
+    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('application/x-schema-rackpart') || t.includes('application/x-schema-rack') || t.includes('Files')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
@@ -996,6 +996,12 @@ export function Canvas() {
           }
         })();
       } else void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
+      return;
+    }
+    const newRack = e.dataTransfer.getData('application/x-schema-rack');
+    if (newRack) {
+      e.preventDefault();
+      addRack(snapV(p.x), snapV(p.y), Number(newRack) || 12);
       return;
     }
     const part = e.dataTransfer.getData('application/x-schema-rackpart');

@@ -1,8 +1,8 @@
 import type { PageSizeId, StrokeStyle } from './types';
 
 export const PAGE_SIZES: Record<PageSizeId, { label: string; w: number; h: number }> = {
-  letter: { label: 'Letter 11×8.5', w: 792, h: 612 },
-  tabloid: { label: 'Tabloid 17×11', w: 1224, h: 792 },
+  letter: { label: 'Letter 8.5×11', w: 792, h: 612 },
+  tabloid: { label: 'Tabloid 11×17', w: 1224, h: 792 },
 };
 
 export const PAGE_MARGIN = 18;

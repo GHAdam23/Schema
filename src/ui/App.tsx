@@ -195,7 +195,7 @@ export function App() {
       {modal?.kind === 'titleBlock' && <TitleBlockDialog />}
       {modal?.kind === 'exportPdf' && <ExportPdfDialog />}
       {modal?.kind === 'backups' && <BackupsDialog />}
-      {modal?.kind === 'signalTypes' && <SignalTypesDialog />}
+      {modal?.kind === 'signalTypes' && <SignalTypesDialog scope={modal.scope} />}
       {modal?.kind === 'signalColors' && <SignalColorsDialog />}
       {modal?.kind === 'projectSettings' && <ProjectSettingsDialog />}
       {modal?.kind === 'history' && <HistoryDialog />}

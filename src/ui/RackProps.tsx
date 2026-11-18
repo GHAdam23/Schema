@@ -1,9 +1,12 @@
 // Properties for racks and the units mounted in them.
-import type { RackObj, RackSpec, RackUnitObj } from '../model/types';
-import { currentPage, nextLabel, setState, type AppState } from '../state/store';
+import type { RackLabelSide, RackObj, RackSpec, RackUnitObj } from '../model/types';
+import { pickFile } from '../io/files';
+import { importMediaFile, MEDIA_ACCEPT } from '../io/importMedia';
+import { newId } from '../model/ids';
+import { currentPage, nextLabel, setState, toast, updateProject, type AppState } from '../state/store';
 import { patchObjects, projectDefToLibrary, renameDevice, setPage } from '../state/actions';
 import { rackProblems, setRackSpec, setUnitPosition, setUnitSize } from '../state/rackActions';
-import { ACCESSORY_NAMES, isCustom, rackSpecOf, slotsOf, unitDef, unitName, unitSpec, unitsIn } from '../model/rack';
+import { ACCESSORY_NAMES, labelSideOf, isCustom, rackSpecOf, slotsOf, unitDef, unitName, unitSpec, unitsIn } from '../model/rack';
 import { devicePages } from '../model/tags';
 import { ColorSwatch, Field, Group, NumberField } from './controls';
 
@@ -61,6 +64,22 @@ export function RackSection({ s, o }: { s: AppState; o: RackObj }) {
           <label>
             <input type="checkbox" checked={!!o.casters} onChange={(e) => patchRack(o.id, (r) => (r.casters = e.target.checked || undefined), 'Rack casters')} /> Casters
           </label>
+        </div>
+        <div className="fieldgroup">
+          <span title="Where the equipment's manufacturer, model and name are written (each unit can override it)">Equipment labels</span>
+          <span className="seg">
+            {(
+              [
+                ['face', 'On face'],
+                ['left', 'Left'],
+                ['right', 'Right'],
+              ] as const
+            ).map(([v, l]) => (
+              <button key={v} className={(o.labels ?? 'face') === v ? 'active' : ''} onClick={() => patchRack(o.id, (r) => (r.labels = v === 'face' ? undefined : v), 'Rack label position')}>
+                {l}
+              </button>
+            ))}
+          </span>
         </div>
         <div className="fieldgroup">
           <label title="Drawing scale on paper: 1 : 9 means 9 inches of rack per inch of paper. Or drag a corner handle.">
@@ -204,12 +223,13 @@ function PartSection({ s, o }: { s: AppState; o: RackUnitObj }) {
         </Group>
       )}
       <PositionGroup s={s} o={o} />
+      {o.assetId && <LabelGroup s={s} o={o} />}
     </div>
   );
 }
 
 export function RackUnitSection({ s, o }: { s: AppState; o: RackUnitObj }) {
-  if (o.accessory || o.assetId) return <PartSection s={s} o={o} />;
+  if (o.accessory || !o.deviceId) return <PartSection s={s} o={o} />;
   const dev = s.project.devices[o.deviceId];
   const def = unitDef(s.project, o);
   if (!dev || !def) return <div className="section">Missing device.</div>;
@@ -286,7 +306,16 @@ export function RackUnitSection({ s, o }: { s: AppState; o: RackUnitObj }) {
         )}
       </Group>
       <PositionGroup s={s} o={o} />
+      <LabelGroup s={s} o={o} />
       <Group title="Face">
+        <div className="btnrow small">
+          <button title="Show a picture of the front panel (PNG, JPG, PDF or SVG, cropped to the panel) instead of the drawn face" onClick={() => void pickFacePicture(o.id)}>
+            {o.assetId ? 'Replace picture…' : 'Use a picture…'}
+          </button>
+          {o.assetId && (
+            <button onClick={() => patch((u) => delete u.assetId, 'Remove face picture')}>Drawn face</button>
+          )}
+        </div>
         <div className="fieldgroup">
           <label>
             Panel <ColorSwatch value={o.fill ?? '#ffffff'} defaultColor="#ffffff" defaultLabel="Default (white)" onChange={(c) => patch((u) => (u.fill = c && c !== '#ffffff' ? c : null), 'Unit face colour')} />
@@ -297,5 +326,62 @@ export function RackUnitSection({ s, o }: { s: AppState; o: RackUnitObj }) {
         </div>
       </Group>
     </div>
+  );
+}
+
+/** Pick a front-panel picture for a device unit. */
+async function pickFacePicture(id: string) {
+  const f = await pickFile(MEDIA_ACCEPT);
+  if (!f) return;
+  try {
+    const r = await importMediaFile(f);
+    const assetId = newId('as');
+    nextLabel('Face picture');
+    updateProject((d) => {
+      d.assets[assetId] = r.asset;
+      for (const pg of d.pages) for (const o of pg.objects) if (o.id === id && o.kind === 'rackunit') o.assetId = assetId;
+    });
+  } catch (e) {
+    toast(`Could not import ${f.name}: ${(e as Error).message}`, 'error', 7000);
+  }
+}
+
+/** Where a unit's label goes: on its face, beside the rack, or nowhere. */
+function LabelGroup({ s, o }: { s: AppState; o: RackUnitObj }) {
+  const rack = o.rackId ? currentPage(s).objects.find((x): x is RackObj => x.id === o.rackId && x.kind === 'rack') : undefined;
+  const cur = labelSideOf(rack, o);
+  const set = (v: RackLabelSide | undefined) => {
+    nextLabel('Unit label position');
+    patchObjects([o.id], (t) => {
+      if (t.kind !== 'rackunit') return;
+      if (v) t.labelSide = v;
+      else delete t.labelSide;
+    });
+  };
+  return (
+    <Group title="Label">
+      <div className="fieldgroup">
+        <span className="seg">
+          {(
+            [
+              ['face', 'On face'],
+              ['left', 'Left'],
+              ['right', 'Right'],
+              ['none', 'None'],
+            ] as const
+          ).map(([v, l]) => (
+            <button key={v} className={cur === v ? 'active' : ''} title={v === 'left' || v === 'right' ? `Beside the rack on the ${v}, with a leader line` : undefined} onClick={() => set(v)}>
+              {l}
+            </button>
+          ))}
+        </span>
+        {o.labelSide && (
+          <button className="small" title="Use the rack's setting" onClick={() => set(undefined)}>
+            Rack default
+          </button>
+        )}
+      </div>
+      {!rack && cur !== 'face' && <div className="muted small">Side labels show once the unit is in a rack.</div>}
+    </Group>
   );
 }

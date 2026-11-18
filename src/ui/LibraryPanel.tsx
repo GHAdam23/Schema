@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import type { BlockDef, RackAccessory } from '../model/types';
 import { ACCESSORY_NAMES } from '../model/rack';
 import { currentPage, getState, setState, toast, useStore } from '../state/store';
-import { deleteLibraryDef, placeBlock, placeInstance, setLibrary, setPage, upsertLibraryDef } from '../state/actions';
+import { deleteLibraryDef, placeBlock, placeInstance, renameDevice, setLibrary, setPage, upsertLibraryDef } from '../state/actions';
 import { devicePages } from '../model/tags';
 import { cloneDef } from '../model/project';
 import { exportLibraryCsv, exportLibraryXlsx, importLibraryFile, mergeLibrary } from '../io/libraryIO';
@@ -49,10 +49,10 @@ export function LibraryPanel() {
           Library
         </button>
         <button className={tab === 'devices' ? 'active' : ''} onClick={() => setTab('devices')} title="Devices in this project — place one on more pages">
-          Devices
+          Devices in project
         </button>
-        <button className={tab === 'rack' ? 'active' : ''} onClick={() => setTab('rack')} title="Rack hardware: blank, brush and vent panels, shelves">
-          Rack parts
+        <button className={tab === 'rack' ? 'active' : ''} onClick={() => setTab('rack')} title="Racks, and rack hardware: blank, brush and vent panels, drawers, shelves">
+          Racks &amp; components
         </button>
       </div>
       {tab === 'library' ? <LibraryTab /> : tab === 'devices' ? <DevicesTab /> : <RackPartsTab />}
@@ -90,7 +90,7 @@ function DevicesTab() {
             }}
             title="Drag onto the page (or double-click) to show this same device here too"
           >
-            <div className="model">{d.name || <i className="warntext">add friendly name</i>}</div>
+            <DeviceName id={d.id} name={d.name} />
             <div className="man">{def ? `${def.manufacturer} ${def.model}` : '(missing definition)'}</div>
             <div className="meta">
               page{' '}
@@ -268,15 +268,42 @@ const PARTS: [RackAccessory, string][] = [
   ['blank', 'Closes an empty space'],
   ['brush', 'Cable pass-through with brush strip'],
   ['vent', 'Perforated / slotted for airflow'],
-  ['shelf', 'Holds gear that isn\u2019t rack-mount'],
+  ['drawer', 'Storage drawer'],
+  ['shelf', 'Holds gear that isn\u2019t rack-mountable'],
 ];
 
-/** Rack hardware to drag into a rack, each with its height. */
+/** Racks (drag one onto the page) and rack hardware to drag into a rack, each with its height. */
 function RackPartsTab() {
-  const [sizes, setSizes] = useState<Record<RackAccessory, number>>({ blank: 1, brush: 1, vent: 1, shelf: 2 });
+  const [sizes, setSizes] = useState<Record<RackAccessory, number>>({ blank: 1, brush: 1, vent: 1, drawer: 2, shelf: 2 });
+  const [rackU, setRackU] = useState(12);
   return (
     <>
       <div className="liblist">
+        <div
+          className="libitem rackitem"
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData('application/x-schema-rack', String(rackU));
+            e.dataTransfer.effectAllowed = 'copy';
+          }}
+          title="Drag onto the page to place a rack"
+        >
+          <div className="model">Rack</div>
+          <div className="man">Numbered rack outline — drag onto the page</div>
+          <div className="meta" onMouseDown={(e) => e.stopPropagation()}>
+            <label className="rackusize">
+              <input type="number" min={1} max={60} value={rackU} onChange={(e) => setRackU(Math.max(1, Math.min(60, Math.round(Number(e.target.value)) || 12)))} /> U
+            </label>
+            <span className="seg">
+              {[12, 24, 42].map((n) => (
+                <button key={n} className={rackU === n ? 'active' : ''} onClick={() => setRackU(n)}>
+                  {n}U
+                </button>
+              ))}
+            </span>
+          </div>
+        </div>
+        <div className="libgroup">Components — drag onto an empty rack space</div>
         {PARTS.map(([type, hint]) => (
           <div
             key={type}
@@ -292,7 +319,7 @@ function RackPartsTab() {
             <div className="man">{hint}</div>
             <div className="meta" onMouseDown={(e) => e.stopPropagation()}>
               <span className="seg">
-                {[1, 2, 3, 4].map((n) => (
+                {[1, 2, 3, 4, 5, 6].map((n) => (
                   <button key={n} className={sizes[type] === n ? 'active' : ''} onClick={() => setSizes({ ...sizes, [type]: n })}>
                     {n}U
                   </button>
@@ -303,9 +330,48 @@ function RackPartsTab() {
         ))}
       </div>
       <div className="muted small pad">
-        Pick a height, then drag the part onto an empty rack space. Change the height later in its properties. Gear that isn&rsquo;t rack-mount (width
-        “Shelf / custom” in its size) can be dragged onto a shelf. Front-panel images (PNG, JPG, PDF, SVG) can be dropped straight onto a rack space.
+        Pick a size, then drag. Heights can be changed later in the properties. Gear that isn&rsquo;t rack-mountable (mounting “Shelf” in its
+        size) sits on a shelf. Front-panel images (PNG, JPG, PDF, SVG) can be dropped straight onto a rack space.
       </div>
     </>
+  );
+}
+
+/** A device's friendly name in the list: click it (or the reminder) to type a name. */
+function DeviceName({ id, name }: { id: string; name: string }) {
+  const [editing, setEditing] = useState(false);
+  if (editing)
+    return (
+      <input
+        className="devname-edit"
+        autoFocus
+        onFocus={(e) => e.target.select()}
+        defaultValue={name}
+        placeholder="friendly name"
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onBlur={(e) => {
+          setEditing(false);
+          const v = e.target.value.trim();
+          if (v !== name) renameDevice(id, v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Escape') setEditing(false);
+        }}
+      />
+    );
+  return (
+    <div
+      className="model devname"
+      title="Click to edit the friendly name"
+      onClick={(e) => {
+        e.stopPropagation();
+        setEditing(true);
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      {name || <i className="warntext">add friendly name</i>}
+    </div>
   );
 }

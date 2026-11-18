@@ -1,6 +1,7 @@
 // Rack elevations: geometry of racks and the units mounted in them.
 // Everything is laid out in inches and multiplied by the rack's scale (points per inch).
-import type { BlockDef, Id, Page, PageObject, Project, RackAccessory, RackObj, RackSpec, RackUnitObj } from './types';
+import type { BlockDef, Id, Page, PageObject, Project, RackAccessory, RackLabelSide, RackObj, RackSpec, RackUnitObj } from './types';
+import { measureText } from '../text/fonts';
 import type { Rect } from './geom';
 
 export const RU_IN = 1.75;
@@ -26,8 +27,11 @@ export const DEFAULT_RACK_SCALE = 8;
 export const DEFAULT_RACK_DEPTH = 24;
 export const DEFAULT_UNIT_DEPTH = 12;
 
-export const ACCESSORY_NAMES: Record<RackAccessory, string> = { blank: 'Blank panel', brush: 'Brush panel', vent: 'Vent panel', shelf: 'Shelf' };
-export const ACCESSORY_DEPTH: Record<RackAccessory, number> = { blank: 0.5, brush: 1, vent: 0.5, shelf: 16 };
+export const ACCESSORY_NAMES: Record<RackAccessory, string> = { blank: 'Blank panel', brush: 'Brush panel', vent: 'Vent panel', shelf: 'Shelf', drawer: 'Drawer' };
+export const ACCESSORY_DEPTH: Record<RackAccessory, number> = { blank: 0.5, brush: 1, vent: 0.5, shelf: 16, drawer: 16 };
+/** Side labels: font size (inches at the rack's scale), leader length and gap. */
+export const SIDE_LABEL_IN = 0.7;
+const LEADER_IN = 1.5;
 
 export interface UnitSpec {
   ru: number;
@@ -70,10 +74,37 @@ export function isCustom(sp: UnitSpec) {
 /** Name of what a unit shows: device name, accessory type, or image. */
 export function unitName(project: Project, o: RackUnitObj): string {
   if (o.accessory) return ACCESSORY_NAMES[o.accessory];
-  if (o.assetId) return o.label?.trim() || 'Image';
   const dev = project.devices[o.deviceId];
+  if (!dev) return o.label?.trim() || 'Image';
   return dev?.name || unitDef(project, o)?.model || '?';
 }
+
+/** Where a unit's label goes. */
+export function labelSideOf(r: RackObj | undefined, o: RackUnitObj): RackLabelSide {
+  if (o.labelSide) return o.labelSide;
+  if (o.accessory) return 'face';
+  // A picture-only unit shows just its picture unless asked otherwise.
+  if (o.assetId && !o.deviceId) return 'none';
+  // A device shown by a picture keeps its label off the picture.
+  if (o.assetId && o.deviceId) return r?.labels && r.labels !== 'face' ? r.labels : 'right';
+  return r?.labels ?? 'face';
+}
+
+/** The label lines of a unit (manufacturer + model, friendly name; or an image unit's name). */
+export function unitLabelLines(project: Project, o: RackUnitObj): string[] {
+  if (o.accessory) return o.label?.trim() ? [o.label.trim()] : [];
+  const def = unitDef(project, o);
+  if (!def) return o.label?.trim() ? [o.label.trim()] : [];
+  return [[def.manufacturer, def.model].filter((t) => t.trim()).join(' '), project.devices[o.deviceId]?.name ?? ''].filter((t) => t.trim());
+}
+
+/** Width needed by a side label column, inches (leader + text). */
+export function sideLabelWidth(lines: string[]) {
+  const w = Math.max(0, ...lines.map((t) => measureText(t, 'narrow', SIDE_LABEL_IN)));
+  return w ? LEADER_IN + w + 0.25 : 0;
+}
+
+export const LEADER = LEADER_IN;
 
 function titleLines(r: RackObj) {
   return (r.name.trim() ? 1 : 0) + (r.tag.trim() ? 1 : 0);
@@ -93,7 +124,9 @@ export function rackLayout(r: RackObj) {
   const sideFrameW = (depth + SIDE_IN * 2) * k;
   const sideW = r.side ? over + sideFrameW : 0;
   const sideGap = r.side ? SIDE_GAP_IN * k : 0;
-  const frameX = r.x + sideW + sideGap;
+  const labL = (r.labW?.[0] ?? 0) * k;
+  const labR = (r.labW?.[1] ?? 0) * k;
+  const frameX = r.x + labL + sideW + sideGap;
   const frameY = r.y + titleH;
   const casterH = r.casters ? CASTER_IN * k : 0;
   return {
@@ -104,10 +137,13 @@ export function rackLayout(r: RackObj) {
     /** Mounting area (19" wide, RU × 1.75" tall). */
     mount: { x: frameX + SIDE_IN * k, y: frameY + TOP_IN * k, w: PANEL_IN * k, h: mountH },
     /** Side view frame (if shown). Front rail on its right edge. */
-    side: r.side ? { x: r.x + over, y: frameY, w: sideFrameW, h: frameH } : null,
-    sideMount: r.side ? { x: r.x + over + SIDE_IN * k, y: frameY + TOP_IN * k, w: depth * k, h: mountH } : null,
+    side: r.side ? { x: r.x + labL + over, y: frameY, w: sideFrameW, h: frameH } : null,
+    sideMount: r.side ? { x: r.x + labL + over + SIDE_IN * k, y: frameY + TOP_IN * k, w: depth * k, h: mountH } : null,
+    /** Label columns: left of everything, right of the front view. */
+    labL,
+    labR,
     casterH,
-    w: sideW + sideGap + frameW,
+    w: labL + sideW + sideGap + frameW + labR,
     h: titleH + frameH + casterH,
     ruH: RU_IN * k,
   };
@@ -251,9 +287,27 @@ export function syncRacks(project: Project) {
       const sp = unitSpec(project, o);
       deepest.set(o.rackId, Math.max(deepest.get(o.rackId) ?? 0, sp.depth || (o.accessory ? 0 : DEFAULT_UNIT_DEPTH)));
     }
+    // Side label columns.
+    const labs = new Map<Id, [number, number]>();
+    for (const o of pg.objects) {
+      if (o.kind !== 'rackunit' || !o.rackId || !racks.has(o.rackId)) continue;
+      const side = labelSideOf(racks.get(o.rackId), o);
+      if (side !== 'left' && side !== 'right') continue;
+      const w = sideLabelWidth(unitLabelLines(project, o));
+      const cur = labs.get(o.rackId) ?? [0, 0];
+      cur[side === 'left' ? 0 : 1] = Math.max(cur[side === 'left' ? 0 : 1], w);
+      labs.set(o.rackId, cur);
+    }
     for (const r of racks.values()) {
       const over = Math.max(0, (deepest.get(r.id) ?? 0) - Math.max(4, r.depth));
       if ((r.over ?? 0) !== over) r.over = over || undefined;
+      const lw = labs.get(r.id);
+      const round = (v: number) => Math.ceil(v * 4) / 4;
+      const nl = lw && (lw[0] || lw[1]) ? ([round(lw[0]), round(lw[1])] as [number, number]) : undefined;
+      if (JSON.stringify(r.labW ?? null) !== JSON.stringify(nl ?? null)) {
+        if (nl) r.labW = nl;
+        else delete r.labW;
+      }
     }
     for (const o of pg.objects) {
       if (o.kind !== 'rackunit' || !o.rackId) continue;

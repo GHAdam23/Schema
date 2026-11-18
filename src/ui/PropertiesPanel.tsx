@@ -1,6 +1,12 @@
 import type { BlockDef, BlockObj, BoxObj, Bundle, Connection, ImageObj, PageObject, StrokeStyle, TagObj, TextObj, TextProps, TextualObj } from '../model/types';
 import { setState, useStore, currentPage, type AppState } from '../state/store';
 import {
+  alignLabels,
+  alignSelection,
+  bundleProblem,
+  bundleSelection,
+  distributeSelection,
+  straighten,
   connectionWarnings,
   jumpToTag,
   kindName,
@@ -77,6 +83,7 @@ export function PropertiesPanel() {
           <div className="section-title">
             {objs.length} object(s), {conns.length} line(s){bundles.length ? `, ${bundles.length} snake(s)` : ''}
           </div>
+          {objs.length > 1 && <ArrangeGroup n={objs.length} />}
           {conns.length + bundles.length > 0 && (
             <>
               <div className="sub">
@@ -120,7 +127,37 @@ export function PropertiesPanel() {
                   Label at both ends
                 </label>
               )}
-              <div className="muted small">Labels, label alignment and bundling: the <b>Lines</b> section of the toolbar.</div>
+              {conns.length > 1 && (
+                <div className="fieldgroup">
+                  <span title="Line the labels up with the first selected line's label">Line up labels</span>
+                  <div className="tgrid">
+                    {(
+                      [
+                        ['⇤', 'left', 'Left edges in line (labels on horizontal runs)'],
+                        ['↔', 'hcenter', 'Centres in line (labels on horizontal runs)'],
+                        ['⇥', 'right', 'Right edges in line (labels on horizontal runs)'],
+                        ['⤒', 'top', 'Tops in line (labels on vertical runs)'],
+                        ['↕', 'vcenter', 'Middles in line (labels on vertical runs)'],
+                        ['⤓', 'bottom', 'Bottoms in line (labels on vertical runs)'],
+                      ] as const
+                    ).map(([l, m, t]) => (
+                      <button key={m} title={t + ' — with the first selected line'} onClick={() => alignLabels(m)}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="btnrow">
+                <button title="Move blocks so these lines run straight" onClick={straighten}>
+                  Straighten
+                </button>
+                {conns.length > 0 && (
+                  <button disabled={!!bundleProblem(s.project, page, conns.map((c) => c.id))} title={bundleProblem(s.project, page, conns.map((c) => c.id)) ?? 'Draw these lines as one heavier trunk with short labelled legs at each end'} onClick={bundleSelection}>
+                    Bundle into snake
+                  </button>
+                )}
+              </div>
             </>
           )}
           <Group title={conns.length + bundles.length && !objs.length ? 'Line style' : 'Border / line style'}>
@@ -132,15 +169,48 @@ export function PropertiesPanel() {
   );
 }
 
+/** Align / distribute / straighten for several selected objects. */
+function ArrangeGroup({ n }: { n: number }) {
+  const btn = (label: string, title: string, fn: () => void, disabled = false) => (
+    <button title={title} onClick={fn} disabled={disabled}>
+      {label}
+    </button>
+  );
+  return (
+    <Group title="Arrange">
+      <div className="fieldgroup">
+        <span className="arr-label">Align</span>
+        <span className="seg">
+          {btn('⇤', 'Align left edges', () => alignSelection('left'))}
+          {btn('↔', 'Align centres (horizontally)', () => alignSelection('hcenter'))}
+          {btn('⇥', 'Align right edges', () => alignSelection('right'))}
+        </span>
+        <span className="seg">
+          {btn('⤒', 'Align top edges', () => alignSelection('top'))}
+          {btn('↕', 'Align middles (vertically)', () => alignSelection('vcenter'))}
+          {btn('⤓', 'Align bottom edges', () => alignSelection('bottom'))}
+        </span>
+      </div>
+      <div className="fieldgroup">
+        <span className="arr-label">Spread</span>
+        <span className="seg">
+          {btn('⋯ Across', 'Distribute horizontally (3 or more)', () => distributeSelection('h'), n < 3)}
+          {btn('⋮ Down', 'Distribute vertically (3 or more)', () => distributeSelection('v'), n < 3)}
+        </span>
+        {btn('Straighten', 'Move blocks so their lines run straight', straighten)}
+      </div>
+    </Group>
+  );
+}
+
 function PageSection({ s }: { s: AppState }) {
   const page = currentPage(s);
   return (
-    <div className="section">
+    <div className="section page-section">
       <div className="section-title">Page</div>
       <div className="muted">
         {page.objects.filter((o) => o.kind === 'block').length} blocks · {page.connections.length} lines
       </div>
-      <div className="muted small">Line label numbering, signal colours and fonts are project settings (toolbar → Project).</div>
       <details
         className="tips help"
         open={tipsOpen()}
@@ -161,7 +231,7 @@ function PageSection({ s }: { s: AppState }) {
         </p>
         <p>
           <b>Labels:</b> click a line and just start typing (Enter to edit an existing label); <kbd>Shift+↓</kbd> / <kbd>Shift+↑</kbd> moves on to the next line. Drag a label to slide it — it snaps in line
-          with other labels. Select several lines and use the align buttons to line their labels up.
+          with other labels. Select several lines to line their labels up (in their properties). Auto-numbering is in the toolbar's <b>Line labels</b> section.
         </p>
         <p>
           <b>Reroute:</b> select a line and drag its segments. Lines route around blocks and shapes automatically until you move a segment.
@@ -193,10 +263,10 @@ function PageSection({ s }: { s: AppState }) {
           to draw; set arrowheads in the line's properties; ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
-          <b>Racks:</b> the <b>Rack</b> tool (<kbd>K</kbd>) places a numbered rack; drag blocks from the library, devices from the <b>Devices</b> tab,
-          parts from <b>Rack parts</b> (blank / brush / vent panels, shelves) or front-panel images onto a rack space — they go exactly where you
-          drop them. Drag a unit to another space, or off the rack to take it out. Sizes (U, width, depth) are in the unit's properties;
-          the rack's properties add a side view and casters.
+          <b>Racks:</b> drag a <b>Rack</b> from the <b>Racks &amp; components</b> tab onto the page (or press <kbd>K</kbd> and click). Then drag
+          blocks from the library, devices from <b>Devices in project</b>, components (blank / brush / vent panels, drawers, shelves) or
+          front-panel pictures onto a rack space — they go exactly where you drop them. Drag a unit to another space, or off the rack to take it out.
+          Sizes, label position (on the face or beside the rack) and a face picture are in the unit's properties.
         </p>
         <p>
           <b>Right-click</b> an object for cut / copy / paste and stacking order — or <kbd>Ctrl+]</kbd> / <kbd>Ctrl+[</kbd> (forward / backward), with Shift to front / back.
@@ -548,8 +618,10 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
   const usage = Object.values(s.project.devices).filter((d) => d.defId === def.id).length;
   const pages = devicePages(s.project, dev.id);
   const here = s.project.pages.findIndex((p) => p.id === s.pageId);
-  const lib = s.library.find((l) => l.id === def.libraryId);
-  const differs = !!lib && !sameDef(lib, def);
+  // Compare what this block actually uses: its own port list (this instance) or the project's model.
+  const cmp = base;
+  const lib = s.library.find((l) => l.id === cmp.libraryId) ?? s.library.find((l) => l.manufacturer === cmp.manufacturer && l.model === cmp.model);
+  const differs = !!lib && !sameDef(lib, cmp);
   const hidden = new Set(o.hidden ?? []);
   const all = [...base.left, ...base.right];
   const signals = [...new Set(all.map((p) => p.signal).filter(Boolean))].sort();
@@ -589,6 +661,9 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
         <label>
           Scale <NumberField min={30} max={400} step={5} width={56} value={Math.round(o.scale * 1000) / 10} onCommit={(v) => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = Math.min(4, Math.max(0.3, v / 100)))))} /> %
         </label>
+        <button title="Move this block so its lines run straight" onClick={straighten}>
+          Straighten
+        </button>
         {o.scale !== 1 && (
           <button title="Back to 100% (rows then line up with other 100% blocks)" onClick={() => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = 1)))}>
             Reset to 100%
@@ -645,14 +720,16 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
         )}
       </div>
       <div className="sub">Library</div>
-      <div className={differs ? 'warntext' : 'muted'}>{!lib ? 'Not in your library.' : differs ? 'This project’s version differs from your library.' : 'Matches your library.'}</div>
+      <div className={differs ? 'warntext' : 'muted'}>
+        {!lib ? 'Not in your library.' : differs ? (o.defId ? 'This instance’s ports differ from your library.' : 'This project’s version differs from your library.') : 'Matches your library.'}
+      </div>
       <div className="btnrow">
         {differs && (
           <>
-            <button onClick={() => updateFromLibrary(def.id)} title="Replace this project's ports for this model with your library version">
+            <button onClick={() => updateFromLibrary(cmp.id)} title={o.defId ? "Replace this instance's ports with your library version" : "Replace this project's ports for this model with your library version"}>
               Use library version
             </button>
-            <button onClick={() => projectDefToLibrary(def.id)} title="Save this project's version into your library for future projects">
+            <button onClick={() => projectDefToLibrary(cmp.id)} title={o.defId ? "Save this instance's ports into your library for future projects" : "Save this project's version into your library for future projects"}>
               Save to library
             </button>
           </>
@@ -817,6 +894,9 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
       <div className="btnrow">
         <button disabled={!c.bends || !!c.curved || !!bundle} onClick={() => patchConnections([c.id], (x) => void (x.bends = null))}>
           Reset route
+        </button>
+        <button title="Move a block so this line runs straight" onClick={straighten}>
+          Straighten
         </button>
         <button
           onClick={() =>

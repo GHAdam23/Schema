@@ -47,9 +47,10 @@ export function PrefsDialog() {
       buttons={
         <>
           <button
+            title="Save these preferences to a file (e.g. to use them on another computer)"
             onClick={() => download(new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }), 'schema-preferences.json')}
           >
-            Export…
+            Export preferences…
           </button>
           <button
             onClick={async () => {
@@ -63,7 +64,7 @@ export function PrefsDialog() {
               }
             }}
           >
-            Import…
+            Import preferences…
           </button>
           <div className="spacer" />
           <button onClick={close}>Cancel</button>
@@ -101,31 +102,47 @@ export function PrefsDialog() {
         <label>
           Backups to keep <input type="number" min={1} max={200} value={p.backupsToKeep} onChange={(e) => set('backupsToKeep', Math.max(1, Number(e.target.value) || 20))} />
         </label>
-        <div className="sub">Signal types</div>
-        <button onClick={() => setState({ modal: { kind: 'signalTypes' } })}>Edit signal types…</button>
+        <div className="sub">Signal types for new projects</div>
+        <div className="muted small">Each project keeps its own list (Settings → Project settings); this is the list new projects start with.</div>
+        <button onClick={() => setState({ modal: { kind: 'signalTypes', scope: 'app' } })}>Edit default signal types…</button>
       </div>
     </Modal>
   );
 }
 
-export function SignalTypesDialog() {
+export function SignalTypesDialog({ scope }: { scope: 'app' | 'project' }) {
   const prefs = useStore((s) => s.prefs);
-  const [text, setText] = useState(prefs.signalTypes.join('\n'));
+  const project = useStore((s) => s.project);
+  const cur = scope === 'app' ? prefs.signalTypes : project.signalTypes ?? prefs.signalTypes;
+  const [text, setText] = useState(cur.join('\n'));
+  const done = () => setState({ modal: scope === 'app' ? { kind: 'prefs' } : { kind: 'projectSettings' } });
   return (
     <Modal
-      title="Signal types"
+      title={scope === 'app' ? 'Default signal types (new projects)' : 'Signal types — this project'}
+      onClose={done}
       buttons={
         <>
-          <button onClick={() => setText(DEFAULT_SIGNAL_TYPES.join('\n'))}>Reset to defaults</button>
+          {scope === 'project' && (
+            <button title="Replace this project's list with your default list (Preferences)" onClick={() => setText(prefs.signalTypes.join('\n'))}>
+              Use my default list
+            </button>
+          )}
+          <button onClick={() => setText(DEFAULT_SIGNAL_TYPES.join('\n'))}>Built-in list</button>
           <div className="spacer" />
-          <button onClick={close}>Cancel</button>
+          <button onClick={done}>Cancel</button>
           <button
             className="primary"
             onClick={() => {
               const list = [...new Set(text.split(/\r?\n/).map((s) => s.trim().toUpperCase()).filter(Boolean))];
-              const p = { ...prefs, signalTypes: list };
-              savePrefs(p);
-              setState({ prefs: p, modal: null });
+              if (scope === 'app') {
+                const p = { ...prefs, signalTypes: list };
+                savePrefs(p);
+                setState({ prefs: p });
+              } else {
+                nextLabel('Edit signal types');
+                updateProject((d) => void (d.signalTypes = list));
+              }
+              done();
             }}
           >
             Save
@@ -133,7 +150,12 @@ export function SignalTypesDialog() {
         </>
       }
     >
-      <div className="muted small">One per line. Used for suggestions in the block editor and for mismatch warnings.</div>
+      <div className="muted small">
+        One per line.{' '}
+        {scope === 'app'
+          ? 'New projects start with this list; each project can then have its own.'
+          : 'Suggested in the block editor and listed under signal colours for this project.'}
+      </div>
       <textarea className="textedit" rows={16} value={text} onChange={(e) => setText(e.target.value)} />
     </Modal>
   );
@@ -174,7 +196,7 @@ export function SignalColorsDialog() {
   // Signal types: the preference list plus any used on blocks in this project.
   const used = new Set<string>();
   for (const d of Object.values(project.blockDefs)) for (const p of [...d.left, ...d.right]) if (p.signal) used.add(p.signal.toUpperCase());
-  const types = [...new Set([...prefs.signalTypes, ...used, ...Object.keys(styles)])];
+  const types = [...new Set([...(project.signalTypes ?? prefs.signalTypes), ...used, ...Object.keys(styles)])];
   const set = (t: string, v: SignalStyle | null) => {
     const n = { ...styles };
     if (v) n[t] = v;

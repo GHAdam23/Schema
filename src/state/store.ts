@@ -62,7 +62,8 @@ export type Modal =
   | { kind: 'titleBlock' }
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
-  | { kind: 'signalTypes' }
+  /** app: the list new projects start with; project: this project's list. */
+  | { kind: 'signalTypes'; scope: 'app' | 'project' }
   | { kind: 'signalColors' }
   | { kind: 'history' }
   /** Choose the device (and port) a reference tag points to. `isNew`: cancelling removes the tag again. */

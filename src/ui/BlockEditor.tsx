@@ -45,7 +45,7 @@ function incrementName(name: string, by: number): string {
 export function BlockEditor({ target, defId, objId }: { target: 'library' | 'project' | 'instance'; defId: string | null; objId?: string }) {
   const library = useStore((s) => s.library);
   const project = useStore((s) => s.project);
-  const signalTypes = useStore((s) => s.prefs.signalTypes);
+  const signalTypes = useStore((s) => (target === 'library' ? s.prefs.signalTypes : s.project.signalTypes ?? s.prefs.signalTypes));
   const initial = useMemo<BlockDef>(() => {
     if (target === 'library') {
       const d = library.find((l) => l.id === defId);
@@ -312,7 +312,7 @@ export function BlockEditor({ target, defId, objId }: { target: 'library' | 'pro
     <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="modal block-editor" ref={rootRef} onPaste={onRootPaste}>
         <div className="modal-title">
-          {target === 'library' ? 'Library block' : target === 'instance' ? `Ports of ${instName} — this block only` : `Ports of every ${def.manufacturer} ${def.model} in this project`}
+          {target === 'library' ? 'Library block' : target === 'instance' ? `Ports of this instance${instName ? ` (${instName})` : ''}` : `Ports of every ${def.manufacturer} ${def.model} in this project`}
           {target === 'project' && <span className="muted"> — all blocks of this model in this project (not your library)</span>}
           {target === 'instance' && <span className="muted"> — other pages, other devices and your library don't change</span>}
         </div>
@@ -329,43 +329,7 @@ export function BlockEditor({ target, defId, objId }: { target: 'library' | 'pro
               </label>
             </div>
             {target !== 'instance' && (
-              <div className="be-header be-rack" title="Physical size for rack elevations">
-                <label>
-                  Rack units
-                  <input
-                    type="number"
-                    min={0}
-                    max={20}
-                    placeholder="—"
-                    value={def.rack?.ru ?? ''}
-                    onChange={(e) => {
-                      const ru = Math.round(Number(e.target.value));
-                      commit({ ...def, rack: e.target.value === '' || ru <= 0 ? undefined : { ...def.rack, ru } });
-                    }}
-                  />
-                </label>
-                <label>
-                  Width
-                  <select disabled={!def.rack} value={def.rack?.width ?? 'full'} onChange={(e) => def.rack && commit({ ...def, rack: { ...def.rack, width: e.target.value as 'full' } })}>
-                    <option value="full">Full (19″)</option>
-                    <option value="half">Half</option>
-                    <option value="third">Third</option>
-                  </select>
-                </label>
-                <label>
-                  Depth (in)
-                  <input
-                    type="number"
-                    min={0}
-                    max={48}
-                    step={0.25}
-                    disabled={!def.rack}
-                    placeholder="—"
-                    value={def.rack?.depth ?? ''}
-                    onChange={(e) => def.rack && commit({ ...def, rack: { ...def.rack, depth: Number(e.target.value) || undefined } })}
-                  />
-                </label>
-              </div>
+              <RackSizeFields rack={def.rack} onChange={(rack) => commit({ ...def, rack })} />
             )}
             <div className="be-tools">
               <button onClick={() => addRow(activeCol)}>+ Row</button>
@@ -579,6 +543,68 @@ function PatternFill({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+type Mount = 'none' | 'rack' | 'shelf';
+
+/** Physical size for rack elevations: rack-mount (U, width, depth) or not rack-mountable (W × H × D, sits on a shelf). */
+function RackSizeFields({ rack, onChange }: { rack: BlockDef['rack']; onChange: (r: BlockDef['rack']) => void }) {
+  const mount: Mount = !rack ? 'none' : rack.width === 'custom' ? 'shelf' : 'rack';
+  const num = (v: string) => (v === '' ? undefined : Number(v) > 0 ? Number(v) : undefined);
+  return (
+    <div className="be-header be-rack" title="Physical size for rack elevations">
+      <label>
+        Mounting
+        <select
+          value={mount}
+          onChange={(e) => {
+            const m = e.target.value as Mount;
+            if (m === 'none') onChange(undefined);
+            else if (m === 'rack') onChange({ ru: rack?.ru ?? 1, depth: rack?.depth, width: 'full' });
+            else onChange({ ru: 1, width: 'custom', w: rack?.w ?? 8, h: rack?.h ?? 1.75, depth: rack?.depth });
+          }}
+        >
+          <option value="none">— not set —</option>
+          <option value="rack">Rack-mount</option>
+          <option value="shelf">Not rack-mountable (shelf)</option>
+        </select>
+      </label>
+      {mount === 'rack' && (
+        <>
+          <label>
+            Height (U)
+            <input type="number" min={1} max={20} value={rack!.ru} onChange={(e) => onChange({ ...rack!, ru: Math.max(1, Math.round(Number(e.target.value)) || 1) })} />
+          </label>
+          <label>
+            Width
+            <select value={rack!.width ?? 'full'} onChange={(e) => onChange({ ...rack!, width: e.target.value as 'full' })}>
+              <option value="full">Full (19″)</option>
+              <option value="half">Half</option>
+              <option value="third">Third</option>
+            </select>
+          </label>
+        </>
+      )}
+      {mount === 'shelf' && (
+        <>
+          <label>
+            Width (in)
+            <input type="number" min={0.25} max={19} step={0.25} value={rack!.w ?? ''} onChange={(e) => onChange({ ...rack!, w: num(e.target.value) })} />
+          </label>
+          <label>
+            Height (in)
+            <input type="number" min={0.25} max={40} step={0.25} value={rack!.h ?? ''} onChange={(e) => onChange({ ...rack!, h: num(e.target.value) })} />
+          </label>
+        </>
+      )}
+      {mount !== 'none' && (
+        <label>
+          Depth (in)
+          <input type="number" min={0} max={60} step={0.25} placeholder="—" value={rack!.depth ?? ''} onChange={(e) => onChange({ ...rack!, depth: num(e.target.value) })} />
+        </label>
+      )}
     </div>
   );
 }

@@ -711,7 +711,7 @@ export function gc(d: D) {
   }
   // Imported images no longer used (the logo is kept).
   const usedAssets = new Set<string>(d.info.logoAssetId ? [d.info.logoAssetId] : []);
-  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'image') usedAssets.add(o.assetId);
+  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'image' || (o.kind === 'rackunit' && o.assetId)) usedAssets.add(o.assetId!);
   // Uploaded fonts.
   for (const f of [d.fonts?.narrow, d.fonts?.title]) if (f) [f.regular, f.bold].forEach((id) => id && usedAssets.add(id));
   for (const id of Object.keys(d.assets)) if (!usedAssets.has(id)) delete d.assets[id];
@@ -1362,7 +1362,10 @@ export function paste(newDevices = false) {
   }
   // Images bring their assets along (e.g. pasting from another project).
   const assets: Record<string, Asset> = {};
-  for (const o of clip.objects) if (o.kind === 'image' && !s.project.assets[o.assetId] && clip.project.assets[o.assetId]) assets[o.assetId] = clip.project.assets[o.assetId];
+  for (const o of clip.objects) {
+    const aid = o.kind === 'image' ? o.assetId : o.kind === 'rackunit' ? o.assetId : undefined;
+    if (aid && !s.project.assets[aid] && clip.project.assets[aid]) assets[aid] = clip.project.assets[aid];
+  }
   const copy = copyObjectsInto(s.project, clip.project, clip.objects, clip.connections, off, off, clip.bundles, { onPage: page, forceNew: newDevices });
   const reused = copy.objects.filter((o) => o.kind === 'block' && s.project.devices[o.deviceId]).length;
   updateProject((d) => {

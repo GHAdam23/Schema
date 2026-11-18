@@ -14,6 +14,11 @@ import {
   unitSpec,
   unitsIn,
   TITLE_SIZE_IN,
+  LEADER,
+  SIDE_LABEL_IN,
+  labelSideOf,
+  rackOf,
+  unitLabelLines,
 } from '../model/rack';
 import { ellipsePath, drawImage, drawTextIn } from './buildPage';
 import { measureText } from '../text/fonts';
@@ -54,7 +59,7 @@ export function drawRack(out: DLItem[], project: Project, r: RackObj, page: Page
     for (let i = 0; i < r.ru; i++) {
       const top = m.y + i * L.ruH;
       // EIA hole pattern: 1/4", 7/8" and 1 1/2" from the top of each space.
-      for (const dy of [0.25, 0.875, 1.5]) out.push({ t: 'rect', x: x + railW / 2 - hole / 2, y: top + dy * k - hole / 2, w: hole, h: hole, fill: HOLE, stroke: null });
+      for (const dy of [0.25, 0.875, 1.5]) out.push({ t: 'path', d: ellipsePath(x + railW / 2 - hole / 2, top + dy * k - hole / 2, hole, hole), fill: HOLE, stroke: null });
     }
   }
   const numSize = Math.min(L.ruH * 0.55, 0.85 * k);
@@ -147,7 +152,9 @@ function screw(out: DLItem[], cx: number, cy: number, k: number) {
 /** Screws in both rack ears of a full-width panel. */
 function earScrews(out: DLItem[], b: { x: number; y: number; w: number; h: number }, ru: number, k: number) {
   const ear = RAIL_IN * k;
-  const ys = ru === 1 ? [b.y + b.h / 2] : [b.y + 0.875 * k, b.y + b.h - 0.875 * k];
+  // Two screws per ear on every panel, 1/4" from its top and bottom (the outer holes of the EIA pattern).
+  void ru;
+  const ys = [b.y + 0.25 * k, b.y + b.h - 0.25 * k];
   for (const cx of [b.x + ear / 2, b.x + b.w - ear / 2]) for (const cy of ys) screw(out, cx, cy, k);
 }
 
@@ -172,7 +179,8 @@ export function drawRackUnit(out: DLItem[], project: Project, o: RackUnitObj, pa
     const inner = { x: b.x + ear + 0.4 * k, w: b.w - ear * 2 - 0.8 * k };
     if (o.accessory === 'brush') {
       // A horizontal opening filled with bristles.
-      const oh = Math.min(b.h * 0.5, 0.9 * k);
+      // The opening grows with the panel's height.
+      const oh = Math.max(0.4 * k, b.h - 0.9 * k);
       const oy = b.y + (b.h - oh) / 2;
       out.push({ t: 'rect', x: inner.x, y: oy, w: inner.w, h: oh, fill: '#262626', stroke: LINE });
       const d: DLItem[] = [];
@@ -181,6 +189,13 @@ export function drawRackUnit(out: DLItem[], project: Project, o: RackUnitObj, pa
       for (let x = inner.x + step / 2; x < inner.x + inner.w; x += step) path.push({ c: 'M' as const, x, y: oy + 0.04 * k }, { c: 'L' as const, x: x + step * 0.3, y: oy + oh - 0.04 * k });
       d.push({ t: 'path', d: path, fill: null, stroke: { color: '#8c8c8c', width: Math.max(0.15, 0.03 * k), dash: [] } });
       out.push(...d);
+    } else if (o.accessory === 'drawer') {
+      // Drawer front inside the ears, with a handle.
+      const inset = 0.15 * k;
+      out.push({ t: 'rect', x: b.x + ear + inset, y: b.y + inset, w: b.w - ear * 2 - inset * 2, h: b.h - inset * 2, fill: o.fill ?? BLANK, stroke: LINE });
+      const hw = Math.min(6 * k, b.w * 0.35);
+      const hh = 0.32 * k;
+      out.push({ t: 'rect', x: b.x + b.w / 2 - hw / 2, y: b.y + Math.min(b.h / 2, 0.875 * k) - hh / 2, w: hw, h: hh, fill: '#a6a6a6', stroke: LINE });
     } else if (o.accessory === 'vent') {
       // Rows of slots.
       const rows = Math.max(1, Math.round(sp.ru * 2));
@@ -194,17 +209,44 @@ export function drawRackUnit(out: DLItem[], project: Project, o: RackUnitObj, pa
     if (o.label?.trim()) drawTextIn(out, { x: b.x + ear, y: b.y, w: b.w - ear * 2, h: b.h, text: o.label.trim(), fontSize: 0.6 * k, bold: false, align: 'center', valign: 'middle', color: o.color === '#000000' ? '#ffffff' : o.color, wrap: false });
     return;
   }
+  const rack = page ? rackOf(page, o) : undefined;
+  const side = labelSideOf(rack, o);
   if (o.assetId) {
     // An imported picture of the front panel, stretched to the unit's space.
     if (o.fill) out.push({ t: 'rect', ...b, fill: o.fill, stroke: null });
     drawImage(out, project, { id: o.id, kind: 'image', assetId: o.assetId, x: b.x, y: b.y, w: b.w, h: b.h, border: null });
     out.push({ t: 'rect', ...b, fill: null, stroke: THIN });
-    return;
+  } else {
+    out.push({ t: 'rect', ...b, fill: o.fill ?? '#ffffff', stroke: LINE });
+    if (full) earScrews(out, b, sp.ru, k);
   }
-  out.push({ t: 'rect', ...b, fill: o.fill ?? '#ffffff', stroke: LINE });
-  if (full) earScrews(out, b, sp.ru, k);
-  const def = unitDef(project, o);
-  const name = project.devices[o.deviceId]?.name ?? '';
-  const text = [def?.manufacturer ?? '', def?.model ?? '', name].filter((t) => t.trim()).join('\n');
-  drawTextIn(out, { x: b.x + ear, y: b.y, w: b.w - ear * 2, h: b.h, text, fontSize: 0.9 * k, bold: false, align: 'center', valign: 'middle', color: o.color, wrap: false });
+  const lines = unitLabelLines(project, o);
+  if (side === 'face' && lines.length) {
+    // Manufacturer and model on separate lines on the face, then the friendly name.
+    const def = unitDef(project, o);
+    const name = project.devices[o.deviceId]?.name ?? '';
+    const text = def ? [def.manufacturer, def.model, name].filter((t) => t.trim()).join('\n') : lines.join('\n');
+    drawTextIn(out, { x: b.x + ear, y: b.y, w: b.w - ear * 2, h: b.h, text, fontSize: 0.9 * k, bold: false, align: 'center', valign: 'middle', color: o.color, wrap: false });
+  }
+  if ((side === 'left' || side === 'right') && lines.length && rack) drawSideLabel(out, rack, b, lines, side);
+}
+
+/** A label beside the rack with a leader line pointing at the unit. */
+function drawSideLabel(out: DLItem[], r: RackObj, b: { x: number; y: number; w: number; h: number }, lines: string[], side: 'left' | 'right') {
+  const L = rackLayout(r);
+  const k = L.k;
+  const size = SIDE_LABEL_IN * k;
+  const cy = b.y + b.h / 2;
+  const edge = side === 'right' ? L.frame.x + L.frame.w : r.x + L.labL;
+  const end = side === 'right' ? edge + LEADER * k * 0.85 : edge - LEADER * k * 0.85;
+  const start = side === 'right' ? b.x + b.w : side === 'left' && !L.side ? b.x : edge;
+  out.push({ t: 'path', d: [{ c: 'M', x: start, y: cy }, { c: 'L', x: end, y: cy }], fill: null, stroke: { color: '#000000', width: 0.4, dash: [] } });
+  out.push({ t: 'path', d: ellipsePath(start - 0.08 * k, cy - 0.08 * k, 0.16 * k, 0.16 * k), fill: '#000000', stroke: null });
+  const lh = size * 1.2;
+  const top = cy - (lines.length * lh) / 2;
+  lines.forEach((t, i) => {
+    const w = measureText(t, i === lines.length - 1 && lines.length > 1 ? 'narrowBold' : 'narrow', size);
+    const x = side === 'right' ? end + 0.15 * k : end - 0.15 * k - w;
+    out.push({ t: 'text', x, y: top + i * lh + size * 0.85, text: t, font: i === lines.length - 1 && lines.length > 1 ? 'narrowBold' : 'narrow', size, color: '#000000' });
+  });
 }

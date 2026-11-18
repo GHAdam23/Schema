@@ -104,66 +104,50 @@ kbd {
   display: flex;
   align-items: stretch;
   gap: 0;
-  padding: 3px 6px 2px;
+  padding: 6px 8px 7px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
-  row-gap: 4px;
+  row-gap: 6px;
 }
-/* Sections: buttons on top, caption underneath (Office-ribbon style). */
+/* Sections: caption with an icon on top, buttons below (a lighter Office ribbon). */
 .tsection {
   display: flex;
   flex-direction: column;
-  padding: 0 3px;
+  padding: 0 6px;
   border-right: 1px solid var(--border);
+  gap: 4px;
 }
 .tsection-body {
   display: flex;
-  gap: 2px;
+  gap: 3px;
   align-items: stretch;
   flex: 1;
 }
 .tsection-title {
-  text-align: center;
-  font-size: 10px;
-  color: var(--muted);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  margin-top: 1px;
-}
-.tsection-lines {
-  background: #eef4ff;
-  border-radius: 4px;
-}
-.tsub {
   display: flex;
-  gap: 2px;
-  align-items: stretch;
-  padding: 0 4px;
-  border-left: 1px dashed var(--border);
-}
-.tsub:first-child {
-  border-left: none;
-  padding-left: 0;
-}
-.tsub-title {
-  writing-mode: horizontal-tb;
-  font-size: 10px;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
   color: var(--muted);
-  max-width: 70px;
-  line-height: 1.15;
-  align-self: center;
-  margin-right: 2px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.ticon {
+  flex: none;
+  color: var(--accent);
 }
 .toolbar .tb {
   font-size: 12px;
-  padding: 2px 4px 1px;
-  min-width: 26px;
+  padding: 4px 6px 3px;
+  min-width: 30px;
+  min-height: 38px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  line-height: 1.15;
+  line-height: 1.2;
 }
 .toolbar .tb .tb-keys {
   font-size: 9.5px;
@@ -172,11 +156,56 @@ kbd {
 .toolbar .tb.active .tb-keys {
   color: #dbe7ff;
 }
+.tlabels {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  gap: 2px 6px;
+  align-items: center;
+  font-size: 11.5px;
+  margin-right: 4px;
+}
+.tlabels .tfield {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.tlabels .tfield span {
+  color: var(--muted);
+}
+.tlabels input {
+  padding: 1px 3px;
+  font-size: 11.5px;
+}
+.tcheck {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+}
+.tnext {
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 6px;
+}
+.tstack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tstack button {
+  font-size: 11px;
+  padding: 1px 6px;
+  flex: 1;
+}
 .tfile {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: 0 8px 0 2px;
+  gap: 4px;
+  padding: 0 10px 0 2px;
   border-right: 1px solid var(--border);
   max-width: 280px;
 }
@@ -1073,4 +1102,42 @@ details.rows summary {
   padding: 0;
   font-size: 11px;
   line-height: 1;
+}
+.libgroup {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 8px 8px 3px;
+}
+.rackusize input {
+  width: 48px;
+}
+.rackusize {
+  margin-right: 6px;
+}
+.devname {
+  cursor: text;
+}
+.devname:hover {
+  text-decoration: underline dotted;
+}
+.devname-edit {
+  width: 100%;
+  font-weight: 600;
+}
+/* Page panel: tips sit at the bottom of the pane. */
+.panel.props .section.page-section {
+  flex: 1;
+  border-bottom: none;
+}
+.page-section details.tips {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.arr-label {
+  width: 44px;
+  color: var(--muted);
 }
