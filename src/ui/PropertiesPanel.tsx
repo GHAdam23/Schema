@@ -28,7 +28,7 @@ import { devicePages, tagRowFit, tagTargetPage, tagText } from '../model/tags';
 import { nextLabel } from '../state/store';
 import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
-import { useEffect, useRef, useState } from 'react';
+import { ColorSwatch, Field, FillEditor, Group, NumberField, StrokeEditor } from './controls';
 import { calloutTip } from '../render/buildPage';
 import { getState } from '../state/store';
 import type { CalloutObj, LineObj } from '../model/types';
@@ -54,73 +54,6 @@ function detachCallout(o: CalloutObj) {
     t.tail = { x: Math.round(tip.x - t.x), y: Math.round(tip.y - t.y) };
     delete t.tailTo;
   });
-}
-
-function StrokeEditor({ value, onChange, allowNone }: { value: StrokeStyle | null; onChange: (s: Partial<StrokeStyle> | null) => void; allowNone?: boolean }) {
-  const v = value ?? { color: '#000000', width: 0, dash: 'solid' as const };
-  return (
-    <div className="fieldgroup">
-      <label>
-        Color <input type="color" value={v.color} onChange={(e) => onChange({ color: e.target.value })} />
-      </label>
-      <label>
-        Width{' '}
-        <input type="number" min={0} max={10} step={0.25} value={v.width} onChange={(e) => onChange({ width: Math.max(0, Number(e.target.value)) })} />
-      </label>
-      <label>
-        Style{' '}
-        <select value={v.dash} onChange={(e) => onChange({ dash: e.target.value as StrokeStyle['dash'] })}>
-          <option value="solid">Solid</option>
-          <option value="dashed">Dashed</option>
-          <option value="dotted">Dotted</option>
-        </select>
-      </label>
-      {allowNone && value && <button onClick={() => onChange(null)}>No border</button>}
-    </div>
-  );
-}
-
-/**
- * Number input that applies on Enter, when you leave it, or with the spinner / arrow keys — not
- * on every keystroke (typing "0" over "25" would otherwise apply "2" first).
- */
-function NumberField({ value, onCommit, min, max, step }: { value: number; onCommit: (v: number) => void; min?: number; max?: number; step?: number }) {
-  const [text, setText] = useState<string | null>(null);
-  const commit = (raw: string) => {
-    setText(null);
-    const v = Number(raw);
-    if (raw.trim() === '' || !isFinite(v)) return;
-    const c = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
-    if (c !== value) onCommit(c);
-  };
-  return (
-    <input
-      type="number"
-      min={min}
-      max={max}
-      step={step}
-      value={text ?? value}
-      onChange={(e) => {
-        // Spinner clicks / arrow keys have no inputType: apply right away. Typing waits.
-        if (!(e.nativeEvent as InputEvent).inputType) commit(e.target.value);
-        else setText(e.target.value);
-      }}
-      onBlur={(e) => text !== null && commit(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') commit((e.target as HTMLInputElement).value);
-        if (e.key === 'Escape') setText(null);
-      }}
-    />
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
 }
 
 export function PropertiesPanel() {
@@ -223,7 +156,9 @@ export function PropertiesPanel() {
               </div>
             </>
           )}
-          <StrokeEditor value={conns[0]?.style ?? (objs[0] && 'border' in objs[0] ? (objs[0].border as StrokeStyle) : null) ?? DEFAULT_LINE} onChange={(st) => st && setStroke(s.selection, st)} />
+          <Group title={conns.length + bundles.length && !objs.length ? 'Line style' : 'Border / line style'}>
+            <StrokeEditor value={conns[0]?.style ?? (objs[0] && 'border' in objs[0] ? (objs[0].border as StrokeStyle) : null) ?? DEFAULT_LINE} onChange={(st) => st && setStroke(s.selection, st)} />
+          </Group>
         </div>
       )}
     </div>
@@ -389,8 +324,9 @@ function LineSection({ o }: { o: LineObj }) {
           Angle <NumberField step={15} value={Math.round((o.rot ?? 0) * 10) / 10} onCommit={(v) => setRotation([o.id], v)} />°
         </label>
       </div>
-      <div className="sub">Line</div>
-      <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+      <Group title="Line style">
+        <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+      </Group>
       <div className="muted small">Drag the round handles at the ends to move them (Shift: 15° steps).</div>
     </div>
   );
@@ -402,54 +338,60 @@ function ShapeSection({ o }: { o: TextualObj }) {
     <div className="section">
       <div className="section-title">{kindName(o)}</div>
       <SharedNote o={o} />
-      <TextFields o={o} />
-      <Geometry o={o} />
-      {(o.kind === 'ellipse' || o.kind === 'rect') && o.w !== o.h && (
-        <button
-          title="Make the width and height equal (keeps the centre). Tip: hold Shift while dragging out a new shape."
-          onClick={() =>
-            patchObjects([o.id], (t) => {
-              if (t.kind !== 'ellipse' && t.kind !== 'rect') return;
-              const m = Math.max(t.w, t.h);
-              t.x -= (m - t.w) / 2;
-              t.y -= (m - t.h) / 2;
-              t.w = t.h = m;
-            })
-          }
-        >
-          {o.kind === 'ellipse' ? 'Make a circle' : 'Make a square'}
-        </button>
-      )}
-      <div className="sub">Border</div>
-      {o.kind === 'text' ? (
-        o.border ? (
-          <StrokeEditor value={o.border} allowNone onChange={(st) => (st ? setStroke([o.id], st) : patch((t) => ((t as TextObj).border = null)))} />
+      <Group title={o.kind === 'container' ? 'Label' : 'Text'}>
+        <TextFields o={o} />
+      </Group>
+      <Group title="Border">
+        {o.kind === 'text' ? (
+          <StrokeEditor value={o.border} allowNone onChange={(st) => (st ? (o.border ? setStroke([o.id], st) : patch((t) => ((t as TextObj).border = { color: '#000000', width: 0.75, dash: 'solid', ...st }))) : patch((t) => ((t as TextObj).border = null)))} />
         ) : (
-          <button onClick={() => patch((t) => ((t as TextObj).border = { color: '#000000', width: 0.75, dash: 'solid' }))}>Add border</button>
-        )
-      ) : (
-        <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
-      )}
-      <FillEditor value={o.fill} onChange={(f) => patch((t) => (t.fill = f))} />
-      {o.kind === 'container' && <FillEditor label="Label band" value={o.headerFill} onChange={(f) => patch((t) => t.kind === 'container' && (t.headerFill = f))} />}
-      {o.kind === 'callout' && o.tailTo && (
-        <div className="btnrow small">
-          <span className="muted">Pointer glued to {'connId' in o.tailTo ? describeLine(o.tailTo.connId) : describeTarget(o.tailTo.objId)}.</span>
-          <button onClick={() => detachCallout(o)}>Detach</button>
-        </div>
-      )}
-      {o.kind === 'callout' && !o.tailTo && <div className="muted small">Drop the yellow diamond on an object or a line to glue the pointer to it.</div>}
+          <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+        )}
+      </Group>
+      <Group title="Fill">
+        <FillEditor label={o.kind === 'container' ? 'Frame' : 'Colour'} value={o.fill} onChange={(f) => patch((t) => (t.fill = f))} />
+        {o.kind === 'container' && <FillEditor label="Label band" value={o.headerFill} onChange={(f) => patch((t) => t.kind === 'container' && (t.headerFill = f))} />}
+      </Group>
       {o.kind === 'callout' && (
-        <div className="fieldgroup">
-          <label>
-            Shape{' '}
-            <select value={o.shape ?? 'box'} onChange={(e) => patch((t) => t.kind === 'callout' && (t.shape = e.target.value === 'cloud' ? 'cloud' : undefined))}>
-              <option value="box">Callout (box)</option>
-              <option value="cloud">Thought bubble</option>
-            </select>
-          </label>
-        </div>
+        <Group title="Pointer">
+          <div className="fieldgroup">
+            <label>
+              Shape{' '}
+              <select value={o.shape ?? 'box'} onChange={(e) => patch((t) => t.kind === 'callout' && (t.shape = e.target.value === 'cloud' ? 'cloud' : undefined))}>
+                <option value="box">Callout (box)</option>
+                <option value="cloud">Thought bubble</option>
+              </select>
+            </label>
+          </div>
+          {o.tailTo ? (
+            <div className="btnrow small">
+              <span className="muted">Glued to {'connId' in o.tailTo ? describeLine(o.tailTo.connId) : describeTarget(o.tailTo.objId)}.</span>
+              <button onClick={() => detachCallout(o)}>Detach</button>
+            </div>
+          ) : (
+            <div className="muted small">Drop the yellow diamond on an object or a line to glue the pointer to it.</div>
+          )}
+        </Group>
       )}
+      <Group title="Position & size">
+        <Geometry o={o} />
+        {(o.kind === 'ellipse' || o.kind === 'rect') && o.w !== o.h && (
+          <button
+            title="Make the width and height equal (keeps the centre). Tip: hold Shift while dragging out a new shape."
+            onClick={() =>
+              patchObjects([o.id], (t) => {
+                if (t.kind !== 'ellipse' && t.kind !== 'rect') return;
+                const m = Math.max(t.w, t.h);
+                t.x -= (m - t.w) / 2;
+                t.y -= (m - t.h) / 2;
+                t.w = t.h = m;
+              })
+            }
+          >
+            {o.kind === 'ellipse' ? 'Make a circle' : 'Make a square'}
+          </button>
+        )}
+      </Group>
       {o.kind === 'container' && <div className="muted small">Moving the container moves everything inside it. Click inside it to select what's there.</div>}
     </div>
   );
@@ -472,12 +414,19 @@ function ImageSection({ s, o }: { s: AppState; o: ImageObj }) {
           Original proportions
         </button>
       )}
-      <div className="sub">Border</div>
-      {o.border ? (
-        <StrokeEditor value={o.border} allowNone onChange={(st) => (st ? setStroke([o.id], st) : patchObjects([o.id], (t) => void (t.kind === 'image' && (t.border = null))))} />
-      ) : (
-        <button onClick={() => patchObjects([o.id], (t) => void (t.kind === 'image' && (t.border = { color: '#000000', width: 0.75, dash: 'solid' })))}>Add border</button>
-      )}
+      <Group title="Border">
+        <StrokeEditor
+          value={o.border}
+          allowNone
+          onChange={(st) =>
+            st
+              ? o.border
+                ? setStroke([o.id], st)
+                : patchObjects([o.id], (t) => void (t.kind === 'image' && (t.border = { color: '#000000', width: 0.75, dash: 'solid', ...st })))
+              : patchObjects([o.id], (t) => void (t.kind === 'image' && (t.border = null)))
+          }
+        />
+      </Group>
       <div className="muted small">Corner handles keep the proportions (hold Shift to stretch).</div>
     </div>
   );
@@ -564,68 +513,12 @@ function TagSection({ s, o }: { s: AppState; o: TagObj }) {
       <button disabled={pi < 0} onClick={() => jumpToTag(o)} title="Double-clicking the tag does the same">
         {pi >= 0 ? `Go to page ${pi + 1}` : 'Go to device'}
       </button>
-      <div className="sub">Border</div>
-      <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
-      <FillEditor value={o.fill} onChange={(f) => patch((t) => (t.fill = f))} />
-    </div>
-  );
-}
-
-const SWATCHES = [
-  '#ffffff', '#f1f5f9', '#e2e8f0', '#cbd5e1', '#94a3b8', '#475569', '#1e293b', '#000000',
-  '#fee2e2', '#fecaca', '#fca5a5', '#ef4444', '#ffedd5', '#fed7aa', '#fb923c', '#ea580c',
-  '#fef9c3', '#fde68a', '#facc15', '#ca8a04', '#dcfce7', '#bbf7d0', '#4ade80', '#16a34a',
-  '#dbeafe', '#bfdbfe', '#60a5fa', '#2563eb', '#ede9fe', '#ddd6fe', '#a78bfa', '#7c3aed',
-];
-
-/** Colour swatch that is always visible; click for a palette with "No fill" and a custom colour. */
-function ColorSwatch({ value, onChange, noneLabel = 'No fill' }: { value: string | null; onChange: (v: string | null) => void; noneLabel?: string }) {
-  const [open, setOpen] = useState<{ left: number; top: number } | null>(null);
-  const ref = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(null);
-    window.addEventListener('mousedown', close);
-    return () => window.removeEventListener('mousedown', close);
-  }, [open]);
-  const pick = (v: string | null) => {
-    onChange(v);
-    setOpen(null);
-  };
-  return (
-    <span className="swatchwrap" ref={ref}>
-      <button className={'swatch' + (value ? '' : ' none')} style={value ? { background: value } : undefined} title={value ?? noneLabel}
-        onClick={(e) => {
-          // Fixed position so the palette isn't clipped by the scrolling panel.
-          const r = e.currentTarget.getBoundingClientRect();
-          setOpen(open ? null : { left: Math.max(4, Math.min(r.left, window.innerWidth - 236)), top: Math.min(r.bottom + 4, window.innerHeight - 200) });
-        }}
-      />
-      {open && (
-        <div className="swatchpop" style={open}>
-          <button className="swatchnone" onClick={() => pick(null)}>
-            <span className="swatch none" /> {noneLabel}
-          </button>
-          <div className="swatchgrid">
-            {SWATCHES.map((c) => (
-              <button key={c} className={'swatch' + (c === value ? ' cur' : '')} style={{ background: c }} title={c} onClick={() => pick(c)} />
-            ))}
-          </div>
-          <label className="swatchcustom">
-            Custom <input type="color" value={value ?? '#ffffff'} onChange={(e) => onChange(e.target.value)} />
-          </label>
-        </div>
-      )}
-    </span>
-  );
-}
-
-function FillEditor({ value, onChange, label = 'Fill' }: { value: string | null; onChange: (v: string | null) => void; label?: string }) {
-  return (
-    <div className="fieldgroup">
-      <label>
-        {label} <ColorSwatch value={value} onChange={onChange} />
-      </label>
+      <Group title="Border">
+        <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+      </Group>
+      <Group title="Fill">
+        <FillEditor value={o.fill} onChange={(f) => patch((t) => (t.fill = f))} />
+      </Group>
     </div>
   );
 }
@@ -721,8 +614,9 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
           </button>
         )}
       </div>
-      <div className="sub">Border</div>
-      <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+      <Group title="Border">
+        <StrokeEditor value={o.border} onChange={(st) => st && setStroke([o.id], st)} />
+      </Group>
       <div className="sub">Rows shown on this block</div>
       {signals.length > 1 && (
         <div className="btnrow small">
@@ -808,9 +702,11 @@ function TextFields({ o }: { o: TextualObj }) {
       />
       <div className="fieldgroup">
         <label>
-          Size <input type="number" min={4} max={72} step={0.5} value={o.fontSize} onChange={(e) => patch((t) => (t.fontSize = Number(e.target.value) || 9))} />
+          Colour <ColorSwatch value={o.color} defaultColor="#000000" onChange={(c) => patch((t) => (t.color = c ?? '#000000'))} />
         </label>
-        {fitted < o.fontSize && <span className="muted small">shrunk to {fitted}pt to fit</span>}
+        <label>
+          Size <NumberField min={2} max={72} step={0.5} width={52} value={o.fontSize} onCommit={(v) => patch((t) => (t.fontSize = v))} />
+        </label>
         <label>
           <input type="checkbox" checked={o.bold} onChange={(e) => patch((t) => (t.bold = e.target.checked))} /> Bold
         </label>
@@ -819,21 +715,37 @@ function TextFields({ o }: { o: TextualObj }) {
             <input type="checkbox" checked={o.wrap !== false} onChange={(e) => patch((t) => (t.wrap = e.target.checked))} /> Wrap
           </label>
         )}
-        <label>
-          Color <input type="color" value={o.color} onChange={(e) => patch((t) => (t.color = e.target.value))} />
-        </label>
       </div>
+      {fitted < o.fontSize && <div className="muted small">Shrunk to {fitted} pt to fit the box.</div>}
       <div className="fieldgroup">
-        {(['left', 'center', 'right'] as const).map((a) => (
-          <button key={a} className={o.align === a ? 'active' : ''} onClick={() => patch((t) => (t.align = a))}>
-            {a}
-          </button>
-        ))}
-        {!container && (['top', 'middle', 'bottom'] as const).map((a) => (
-          <button key={a} className={o.valign === a ? 'active' : ''} onClick={() => patch((t) => (t.valign = a))}>
-            {a}
-          </button>
-        ))}
+        <span className="seg">
+          {(
+            [
+              ['left', 'Left'],
+              ['center', 'Centre'],
+              ['right', 'Right'],
+            ] as const
+          ).map(([a, l]) => (
+            <button key={a} className={o.align === a ? 'active' : ''} title={'Align ' + a} onClick={() => patch((t) => (t.align = a))}>
+              {l}
+            </button>
+          ))}
+        </span>
+        {!container && (
+          <span className="seg">
+            {(
+              [
+                ['top', 'Top'],
+                ['middle', 'Middle'],
+                ['bottom', 'Bottom'],
+              ] as const
+            ).map(([a, l]) => (
+              <button key={a} className={o.valign === a ? 'active' : ''} title={'Vertical: ' + a} onClick={() => patch((t) => (t.valign = a))}>
+                {l}
+              </button>
+            ))}
+          </span>
+        )}
       </div>
     </>
   );
@@ -905,7 +817,9 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
       {!bundle && !c.labelEnds && c.labelT !== null && (
         <button onClick={() => patchConnections([c.id], (x) => void (x.labelT = null))}>Auto label position</button>
       )}
-      <StrokeEditor value={c.style} onChange={(st) => st && setStroke([c.id], st)} />
+      <Group title="Line style">
+        <StrokeEditor value={c.style} onChange={(st) => st && setStroke([c.id], st)} />
+      </Group>
       <div className="btnrow">
         <button disabled={!c.bends || !!c.curved || !!bundle} onClick={() => patchConnections([c.id], (x) => void (x.bends = null))}>
           Reset route
@@ -944,8 +858,9 @@ function BundleSection({ b }: { b: Bundle }) {
           </select>
         </label>
       </div>
-      <div className="sub">Trunk</div>
-      <StrokeEditor value={b.style} onChange={(st) => st && setStroke([b.id], st)} />
+      <Group title="Trunk style">
+        <StrokeEditor value={b.style} onChange={(st) => st && setStroke([b.id], st)} />
+      </Group>
       <div className="btnrow">
         <button disabled={!b.bends} onClick={() => patchBundles([b.id], (x) => void (x.bends = null))}>
           Reset route

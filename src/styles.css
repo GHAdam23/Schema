@@ -771,11 +771,11 @@ table.backups th {
   border-radius: 6px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
   padding: 8px;
-  width: 214px;
+  width: 172px;
 }
 .swatchgrid {
   display: grid;
-  grid-template-columns: repeat(8, 22px);
+  grid-template-columns: repeat(6, 22px);
   gap: 4px;
   margin: 6px 0;
 }
@@ -807,4 +807,81 @@ details.rows summary {
   display: block;
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* Phase 3: grouped properties (Text / Border / Fill …) */
+.pgroup {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pgroup-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.seg {
+  display: inline-flex;
+}
+.seg > button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+.seg > button:first-child {
+  border-radius: 4px 0 0 4px;
+  margin-left: 0;
+}
+.seg > button:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.ctxmenu {
+  position: absolute;
+  z-index: 400;
+  min-width: 190px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.ctxmenu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border: none;
+  text-align: left;
+  padding: 4px 8px;
+}
+.ctxmenu button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.ctxmenu kbd {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+}
+.ctxmenu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+.ctxnote {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 8px 4px;
 }

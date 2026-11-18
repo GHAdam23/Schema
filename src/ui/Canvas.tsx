@@ -49,6 +49,13 @@ import {
   renameDevice,
   routesToCarry,
   withContents,
+  copySelection,
+  cutSelection,
+  deleteSelection,
+  duplicateSelection,
+  hasClipboard,
+  paste,
+  zOrder,
   type Carry,
 } from '../state/actions';
 import { importMedia } from '../state/fileOps';
@@ -79,7 +86,8 @@ type Drag =
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl'; multi?: PortHit[] }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
   | { t: 'label'; connId: Id; idx: number; moved: boolean }
-  | { t: 'pan'; sx: number; sy: number; orig: View };
+  /** `menu`: a right-button press — released without moving, it opens the context menu instead. */
+  | { t: 'pan'; sx: number; sy: number; orig: View; menu?: boolean; moved?: boolean };
 
 interface Editing {
   kind: 'text' | 'device' | 'label';
@@ -128,6 +136,7 @@ export function Canvas() {
   const [tailHover, setTailHover] = useState<Id | null>(null);
   // Where a line/arrow end being dragged has snapped onto a shape.
   const [lineSnap, setLineSnap] = useState<Pt | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const spaceDown = useRef(false);
   const lastPortClick = useRef<PortHit | null>(null);
 
@@ -228,8 +237,9 @@ export function Canvas() {
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     // Pan: middle or right drag, Space+drag, the Hand tool, or dragging the grey area around the page.
     const offPage = p.x < 0 || p.y < 0 || p.x > size.w || p.y > size.h;
+    setMenu(null);
     if (e.button === 1 || e.button === 2 || (e.button === 0 && (spaceDown.current || getState().tool === 'pan' || offPage))) {
-      setDrag({ t: 'pan', sx: e.clientX, sy: e.clientY, orig: viewRef.current });
+      setDrag({ t: 'pan', sx: e.clientX, sy: e.clientY, orig: viewRef.current, menu: e.button === 2 });
       return;
     }
     if (e.button !== 0) return;
@@ -398,6 +408,8 @@ export function Canvas() {
     const z = viewRef.current.z;
     switch (d.t) {
       case 'pan': {
+        if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < DRAG_THRESHOLD) return;
+        d.moved = true;
         setView({ ...d.orig, px: d.orig.px + e.clientX - d.sx, py: d.orig.py + e.clientY - d.sy });
         return;
       }
@@ -637,6 +649,9 @@ export function Canvas() {
     const pg = currentPage(s);
     const p = toPage(e.clientX, e.clientY);
     switch (d.t) {
+      case 'pan':
+        if (d.menu && !d.moved) openMenu(e, p);
+        break;
       case 'move':
         setLineSnap(null);
         if (!d.moved && !d.additive && d.clickId) setState({ selection: [d.clickId] });
@@ -726,6 +741,17 @@ export function Canvas() {
         break;
       }
     }
+  };
+
+  /** Right-click without dragging: select what's under the pointer (unless it's already selected) and show the menu. */
+  const openMenu = (e: React.PointerEvent, p: Pt) => {
+    const s = getState();
+    const pg = currentPage(s);
+    const el = document.elementsFromPoint(e.clientX, e.clientY).find((x) => (x as HTMLElement).dataset?.hit === 'seg' || (x as HTMLElement).dataset?.hit === 'label') as HTMLElement | undefined;
+    const id = el?.dataset.id ?? hitObject(s.project, pg, p.x, p.y)?.id ?? null;
+    if (id && !s.selection.includes(id)) setState({ selection: [id], selectedPorts: [] });
+    const r = wrapRef.current!.getBoundingClientRect();
+    setMenu({ x: e.clientX - r.left, y: e.clientY - r.top });
   };
 
   const clickPort = (ph: PortHit, mode: 'none' | 'shift' | 'ctrl') => {
@@ -1050,7 +1076,60 @@ export function Canvas() {
         </g>
       </svg>
       {previewWarn.length > 0 && <div className="canvas-hint warn">{previewWarn.join(' ')}</div>}
+      {menu && <ContextMenu at={menu} onClose={() => setMenu(null)} />}
       {editing && <InlineEditor key={JSON.stringify(editing)} editing={editing} view={view} onDone={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function ContextMenu({ at, onClose }: { at: { x: number; y: number }; onClose: () => void }) {
+  const selection = useStore((s) => s.selection);
+  const page = useStore((s) => currentPage(s));
+  const ref = useRef<HTMLDivElement>(null);
+  const objCount = page.objects.filter((o) => selection.includes(o.id)).length;
+  const [pos, setPos] = useState(at);
+  useEffect(() => {
+    // Keep the menu inside the canvas.
+    const el = ref.current;
+    const box = el?.parentElement?.getBoundingClientRect();
+    if (el && box) setPos({ x: Math.min(at.x, box.width - el.offsetWidth - 4), y: Math.min(at.y, box.height - el.offsetHeight - 4) });
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', esc);
+    window.addEventListener('wheel', onClose);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', esc);
+      window.removeEventListener('wheel', onClose);
+    };
+  }, [at, onClose]);
+  const item = (label: string, keys: string, fn: () => void, disabled = false) => (
+    <button
+      disabled={disabled}
+      onClick={() => {
+        onClose();
+        fn();
+      }}
+    >
+      <span>{label}</span>
+      {keys && <kbd>{keys}</kbd>}
+    </button>
+  );
+  const none = selection.length === 0;
+  return (
+    <div className="ctxmenu" ref={ref} style={{ left: pos.x, top: pos.y }} onContextMenu={(e) => e.preventDefault()}>
+      {item('Cut', 'Ctrl+X', cutSelection, !objCount)}
+      {item('Copy', 'Ctrl+C', copySelection, !objCount)}
+      {item('Paste', 'Ctrl+V', () => paste(), !hasClipboard())}
+      {item('Duplicate', 'Ctrl+D', duplicateSelection, !objCount)}
+      {item('Delete', 'Del', deleteSelection, none)}
+      <hr />
+      {item('Bring to front', '', () => zOrder('front'), !objCount)}
+      {item('Bring forward', '', () => zOrder('forward'), !objCount)}
+      {item('Send backward', '', () => zOrder('backward'), !objCount)}
+      {item('Send to back', '', () => zOrder('back'), !objCount)}
+      {objCount === 0 && !none && <div className="ctxnote">Lines are always drawn above objects.</div>}
     </div>
   );
 }

@@ -1130,6 +1130,10 @@ export function copySelection() {
   pastedOn.clear();
 }
 
+export function hasClipboard() {
+  return !!clip;
+}
+
 export function cutSelection() {
   copySelection();
   deleteSelection();

@@ -1,5 +1,5 @@
 import { redo, setState, undo, useStore } from '../state/store';
-import { alignSelection, bundleSelection, distributeSelection, straighten, zOrder, type AlignMode } from '../state/actions';
+import { alignSelection, bundleSelection, distributeSelection, straighten, type AlignMode } from '../state/actions';
 import { exportEquipmentListCmd, importMedia, newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
 import { pickFile } from '../io/files';
 import { MEDIA_ACCEPT } from '../io/importMedia';
@@ -81,12 +81,6 @@ export function Toolbar() {
         <Btn label="Straighten" title="Move blocks so their lines run straight. Works on selected blocks or lines." disabled={!selCount} onClick={straighten} />
         <Btn label="⋯H" title="Distribute horizontally" disabled={selCount < 3} onClick={() => distributeSelection('h')} />
         <Btn label="⋮V" title="Distribute vertically" disabled={selCount < 3} onClick={() => distributeSelection('v')} />
-      </div>
-      <div className="group">
-        <Btn label="Front" title="Bring to front" disabled={!selCount} onClick={() => zOrder('front')} />
-        <Btn label="Fwd" title="Bring forward" disabled={!selCount} onClick={() => zOrder('forward')} />
-        <Btn label="Bwd" title="Send backward" disabled={!selCount} onClick={() => zOrder('backward')} />
-        <Btn label="Back" title="Send to back" disabled={!selCount} onClick={() => zOrder('back')} />
       </div>
       <div className="group">
         <Btn label="Grid" active={prefs.showGrid} onClick={() => togglePref('showGrid')} />
