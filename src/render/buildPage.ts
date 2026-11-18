@@ -34,7 +34,7 @@ import {
 } from '../model/routing';
 import { fromLocal, isBox, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
 import { pageOfObject, tagFontSize, tagText, TAG_PAD_Y } from '../model/tags';
-import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
+import { capHeightEm, fitText, measureText, onFontsChanged, wrapText } from '../text/fonts';
 import { drawRack, drawRackUnit } from './rackDraw';
 import { effectiveStyle } from '../model/signals';
 import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
@@ -397,6 +397,7 @@ interface Fit {
   padY: number;
 }
 const fitCache = new Map<string, Fit>();
+onFontsChanged(() => fitCache.clear());
 
 /**
  * Text layout for a box. The padding collapses first; the font size only shrinks (never grows)

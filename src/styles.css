@@ -926,3 +926,8 @@ details.rows summary {
   width: 80px;
   font-weight: 600;
 }
+.fontrow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}

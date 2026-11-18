@@ -32,6 +32,7 @@ import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describ
 import { blockFor } from '../model/blockGeometry';
 import { isBox } from '../model/geom';
 import { RackSection, RackUnitSection } from './RackProps';
+import { FontSettings } from './FontSettings';
 import { ColorSwatch, Field, FillEditor, Group, NumberField, StrokeEditor } from './controls';
 import { calloutTip } from '../render/buildPage';
 import { getState } from '../state/store';
@@ -181,6 +182,7 @@ function PageSection({ s }: { s: AppState }) {
         {page.objects.filter((o) => o.kind === 'block').length} blocks · {page.connections.length} lines
       </div>
       <LineSettings s={s} />
+      <FontSettings />
       <div className="help">
         <p>
           <b>Place blocks:</b> drag from the library, double-click a library entry,, or use <b>Insert…</b> to search.

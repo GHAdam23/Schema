@@ -680,6 +680,8 @@ export function gc(d: D) {
   // Imported images no longer used (the logo is kept).
   const usedAssets = new Set<string>(d.info.logoAssetId ? [d.info.logoAssetId] : []);
   for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'image') usedAssets.add(o.assetId);
+  // Uploaded fonts.
+  for (const f of [d.fonts?.narrow, d.fonts?.title]) if (f) [f.regular, f.bold].forEach((id) => id && usedAssets.add(id));
   for (const id of Object.keys(d.assets)) if (!usedAssets.has(id)) delete d.assets[id];
 }
 

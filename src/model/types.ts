@@ -333,6 +333,15 @@ export interface Project {
   signalColors?: boolean;
   /** Automatic numbering of new line labels. */
   autoLabel?: AutoLabel;
+  /** Uploaded fonts replacing the built-in ones (embedded in the project and in PDFs). */
+  fonts?: { narrow?: CustomFont; title?: CustomFont };
+}
+
+/** An uploaded font family: asset ids of its regular and (optional) bold TTF/OTF files. */
+export interface CustomFont {
+  name: string;
+  regular: Id;
+  bold?: Id;
 }
 
 export interface SignalStyle {

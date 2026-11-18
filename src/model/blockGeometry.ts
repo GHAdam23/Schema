@@ -1,5 +1,5 @@
 import type { BlockDef, BlockObj, PortDef, Project, Side } from './types';
-import { measureText } from '../text/fonts';
+import { measureText, onFontsChanged } from '../text/fonts';
 
 // Unscaled block layout constants (points).
 export const BLK = {
@@ -31,7 +31,8 @@ export interface BlockLayout {
   colW: number; // width of each column half
 }
 
-const layoutCache = new WeakMap<BlockDef, Map<string, BlockLayout>>();
+let layoutCache = new WeakMap<BlockDef, Map<string, BlockLayout>>();
+onFontsChanged(() => (layoutCache = new WeakMap()));
 
 export function blockLayout(def: BlockDef, name: string): BlockLayout {
   let m = layoutCache.get(def);

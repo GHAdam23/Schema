@@ -5,6 +5,7 @@ import type { BlockDef, Id, Project } from '../model/types';
 import { newProject } from '../model/project';
 import { syncGlue } from '../model/glue';
 import { syncRacks } from '../model/rack';
+import { syncProjectFonts } from '../text/fonts';
 import { loadPrefs, type Prefs } from './prefs';
 
 export interface PortRef {
@@ -102,6 +103,8 @@ export function getState() {
 export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
   const p = typeof patch === 'function' ? patch(state) : patch;
   state = { ...state, ...p };
+  // Uploaded project fonts take effect before anything measures text.
+  if (p.project) syncProjectFonts(state.project);
   listeners.forEach((l) => l());
 }
 

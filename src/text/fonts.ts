@@ -28,6 +28,11 @@ interface LoadedFont {
 }
 
 const loaded: Partial<Record<FontKey, LoadedFont>> = {};
+/** The built-in fonts (what `loaded` goes back to when a project has no custom fonts). */
+const builtin: Partial<Record<FontKey, LoadedFont>> = {};
+const BUILTIN_CSS: Record<FontKey, { family: string; weight: number }> = { ...FONT_CSS };
+/** Whether a key currently uses an uploaded font (embedded whole in PDFs). */
+const custom: Partial<Record<FontKey, boolean>> = {};
 
 export async function loadFonts(): Promise<void> {
   const keys = Object.keys(FONT_FILES) as FontKey[];
@@ -36,7 +41,7 @@ export async function loadFonts(): Promise<void> {
       const res = await fetch(new URL(FONT_FILES[k], document.baseURI));
       if (!res.ok) throw new Error(`Failed to load font ${FONT_FILES[k]}`);
       const bytes = new Uint8Array(await res.arrayBuffer());
-      loaded[k] = { bytes, font: fontkit.create(bytes), widths: new Map() };
+      loaded[k] = builtin[k] = { bytes, font: fontkit.create(bytes), widths: new Map() };
     }),
   );
   // Register the same files for the screen renderer.
@@ -48,6 +53,94 @@ export async function loadFonts(): Promise<void> {
     await f.load();
     document.fonts.add(f);
   }
+}
+
+export function isCustomFont(k: FontKey) {
+  return !!custom[k];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Project fonts: uploaded TTF / OTF files replace the built-in narrow (blocks, labels, shapes)
+// and/or title (title block, rack titles) fonts.
+
+const fontChangeListeners: (() => void)[] = [];
+/** Layout caches register here to be cleared when the fonts change. */
+export function onFontsChanged(fn: () => void) {
+  fontChangeListeners.push(fn);
+}
+
+const parsed = new Map<string, LoadedFont>();
+const registered = new Set<string>();
+let currentSig = '';
+
+function b64ToBytes(b64: string) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** Parse an uploaded font file; throws if it isn't a usable TrueType / OpenType font. */
+export function parseFontFile(bytes: Uint8Array): { family: string } {
+  const f = fontkit.create(bytes) as FkFont & { familyName?: string; fullName?: string };
+  if (!f.unitsPerEm || !f.glyphsForString) throw new Error('Not a TrueType / OpenType font');
+  return { family: f.familyName || f.fullName || 'Custom font' };
+}
+
+/**
+ * Use the project's uploaded fonts (or the built-in ones). Cheap when nothing changed; when
+ * something did, layout caches are cleared and the faces are registered for the screen.
+ */
+export function syncProjectFonts(project: { fonts?: { narrow?: { regular: string; bold?: string }; title?: { regular: string; bold?: string } }; assets: Record<string, { data: string }> }) {
+  if (!builtin.narrow) return;
+  const f = project.fonts ?? {};
+  const want: Record<FontKey, string | undefined> = {
+    narrow: f.narrow?.regular,
+    narrowBold: f.narrow ? f.narrow.bold ?? f.narrow.regular : undefined,
+    title: f.title?.regular,
+    titleBold: f.title ? f.title.bold ?? f.title.regular : undefined,
+  };
+  const sig = (Object.keys(want) as FontKey[]).map((k) => (want[k] && project.assets[want[k]!] ? want[k] : '')).join('|');
+  if (sig === currentSig) return;
+  currentSig = sig;
+  for (const k of Object.keys(want) as FontKey[]) {
+    const id = want[k];
+    const a = id ? project.assets[id] : undefined;
+    if (!id || !a) {
+      loaded[k] = builtin[k];
+      FONT_CSS[k] = BUILTIN_CSS[k];
+      custom[k] = false;
+      continue;
+    }
+    let lf = parsed.get(id);
+    if (!lf) {
+      try {
+        const bytes = b64ToBytes(a.data);
+        lf = { bytes, font: fontkit.create(bytes), widths: new Map() };
+        parsed.set(id, lf);
+      } catch {
+        loaded[k] = builtin[k];
+        FONT_CSS[k] = BUILTIN_CSS[k];
+        custom[k] = false;
+        continue;
+      }
+    }
+    loaded[k] = lf;
+    custom[k] = true;
+    // Each uploaded file is its own CSS family (weight 400), so bold = the bold file.
+    const family = 'SchemaFont_' + id;
+    FONT_CSS[k] = { family, weight: 400 };
+    if (!registered.has(family)) {
+      registered.add(family);
+      const face = new FontFace(family, lf.bytes.slice().buffer);
+      void face.load().then((ff) => {
+        document.fonts.add(ff);
+        // Re-render once the face is ready (measurements were already right).
+        window.dispatchEvent(new Event('schema:fontsloaded'));
+      });
+    }
+  }
+  for (const fn of fontChangeListeners) fn();
 }
 
 export function fontBytes(k: FontKey): Uint8Array {

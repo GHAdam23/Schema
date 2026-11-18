@@ -31,7 +31,7 @@ import {
 import fontkit from '@pdf-lib/fontkit';
 import type { Project } from '../model/types';
 import { PAGE_SIZES } from '../model/defaults';
-import { fontBytes, type FontKey } from '../text/fonts';
+import { fontBytes, isCustomFont, syncProjectFonts, type FontKey } from '../text/fonts';
 import type { DLItem, DLStroke } from './displayList';
 import { buildPage } from './buildPage';
 
@@ -52,6 +52,7 @@ function b64ToBytes(b64: string): Uint8Array {
 
 /** Export the given page indices (0-based) to a vector PDF. */
 export async function exportPdf(project: Project, pageIndices: number[]): Promise<Uint8Array> {
+  syncProjectFonts(project);
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
   doc.setTitle(project.info.name || 'Schema');
@@ -64,7 +65,8 @@ export async function exportPdf(project: Project, pageIndices: number[]): Promis
     if (!f) {
       // pdf-lib's subsetter drops glyphs from Carlito, so the title-block font is embedded whole.
       f = await doc.embedFont(fontBytes(k), {
-        subset: k === 'narrow' || k === 'narrowBold',
+        // Uploaded fonts are embedded whole too (subsetting can drop glyphs of unusual fonts).
+        subset: (k === 'narrow' || k === 'narrowBold') && !isCustomFont(k),
         // Layout must match measureText(): no kerning or ligatures.
         features: { liga: false, clig: false, dlig: false, calt: false, kern: false },
       });
