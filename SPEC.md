@@ -74,6 +74,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
   - Text boxes, rectangles (rectangles can hold text — double-click to type; text always shrinks to stay inside its box, optional word-wrap), circles/ellipses, containers (labeled grouping frames), callouts — all rotatable.
   - Imported images (JPG/PNG) and single-page PDFs — rotatable. PDFs stay embedded as the original and export as true vector (pdf-lib embedPage). SVG import also accepted.
   - **Reference tags** (see §7).
+  - **Racks** and **rack units** (rack elevations, Phase 3 — see §10).
 - **Quick insert**: hotkey opens search; Enter drops the block at the cursor. Drag from library panel also works.
 - Style properties for lines, blocks, shapes, text: border thickness, solid/dashed, color.
 
@@ -99,8 +100,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 ## 8. Exports
 
 - Vector PDF: all pages or a selected range, fonts embedded.
-- Equipment list (CSV): manufacturer, model, friendly name, page(s).
-- Cable list (CSV/PDF page): label, from device/port, to device/port, signal type — Phase 3.
+- Equipment list (CSV): manufacturer, model, friendly name, page(s), rack + RU (Phase 3).
+- Cable list (CSV): label, signal, from device/port/connector, to device/port/connector, page(s) — Phase 3 ✅. (A printable cable-list PDF page is still open.)
 
 ## 9. Phases
 
@@ -121,15 +122,20 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - [x] Multi-page device instances + reference tags
 - [x] Equipment list export
 
-**Phase 3**
-- Cable list, optional signal-type colors, auto-label numbering, quality-of-life polish (incl. z-order buttons → right-click menu; custom font upload in project settings, embedded in PDFs)
-- **Rack elevations** (details to be specified later):
-  - Equipment dimensions in the block definition / equipment properties: height, width, depth, and rack-unit (RU) count.
-  - A rack tool that generates a rack outline from a given RU count (numbered rack spaces).
-  - Drag equipment into the rack; it snaps to the nearest rack space (occupying its RU count).
-  - Front view shows manufacturer, model and friendly name on each unit's face.
-  - Generate a side view of the same rack using depth data.
-  - Rack units are the same project devices as on the schematics (one device, many views).
+**Phase 3** — in progress (first cut implemented, awaiting test feedback)
+- [x] Cable list (CSV)
+- [x] Optional signal-type colours (per project)
+- [x] Auto-label numbering (prefix + counter)
+- [x] Quality of life: z-order in a right-click menu; grouped Text / Border / Fill properties with print-friendly colour swatches for text, borders and fills
+- [x] Custom font upload (project setting, embedded in PDFs)
+- [x] **Rack elevations**:
+  - [x] Equipment dimensions in the block definition: RU count, width (full / half / third), depth. (Height = RU × 1.75″.)
+  - [x] Rack tool: rack outline from an RU count, numbered spaces.
+  - [x] Drag equipment into the rack; it snaps to the nearest free space (occupying its RU count).
+  - [x] Front view shows manufacturer, model and friendly name on each unit's face.
+  - [x] Side view of the same rack from the depth data.
+  - [x] Rack units are the same project devices as on the schematics.
+- [ ] Open: cable list as a printable PDF page; UI friction review with the designer (ongoing).
 
 ## 10. Implementation notes (decisions made while building)
 
@@ -198,9 +204,25 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - History: specific labels (e.g. "Edit text") are no longer overwritten by the generic "Change object".
 - Fill colours (shapes, container label band, tags) use a swatch that always shows the colour; its palette has "No fill" and a custom colour.
 - Keyboard shortcuts (after the round-5 trim): Ctrl+S / Ctrl+Shift+S / Ctrl+O, Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z), Ctrl+H history, Ctrl+C / X / V / D / A, Ctrl+Shift+V paste as new devices, Delete, arrows nudge (Shift = grid), Esc, tools V T R E F L H, type / Enter to label a selected line or snake, Shift+↑/↓ next line, Ctrl+0 fit, Ctrl+± zoom, Ctrl+wheel, Space/right/middle-drag pan, Ctrl+Enter finishes text.
-- Stacking: objects stack in creation order (Front/Fwd/Bwd/Back change it; containers start at the back); lines are always drawn above all objects so connections are never hidden.
+- Stacking: objects stack in creation order (the right-click menu changes it — Phase 3; containers and racks start at the back); lines are always drawn above all objects so connections are never hidden.
+
+### Phase 3 (decisions made while building)
+- **Properties panel** (designer request): settings are grouped in titled boxes — **Text** (content, colour, size, bold, wrap, alignment), **Border**, **Fill**, **Position & size**, plus Pointer for callouts and Line style for lines. One colour control everywhere (`ui/controls.tsx` `ColorSwatch`): a swatch that opens a small palette of print-friendly colours (black, three greys, white, brown, red, orange, yellow, green, blue, purple — no pale tints) and "Custom". The first entry is **Default (black)** for text and borders, **No fill** for fills, **No border** where a border is optional (text boxes, images — replaces the old Add/No border buttons). Number fields everywhere apply on Enter / leaving / spinner.
+- **Right-click menu** (designer request): stacking order (Bring to front / forward, Send backward / to back) moved out of the toolbar into a context menu on the canvas, with Cut / Copy / Paste / Duplicate / Delete. Right-click without moving opens it (selecting what's under the pointer first if it isn't selected); right-drag still pans.
+- **Rack elevations** (`model/rack.ts`, `render/rackDraw.ts`, `state/rackActions.ts`, `ui/RackProps.tsx`), modelled on the designer's rack sheet (racks.png, round 1 of Phase 3):
+  - `BlockDef.rack = { ru, width: 'full' | 'half' | 'third', depth (in) }` — edited in the block editor (library / every-model) or from a rack unit's properties (changes the project's copy of the model; "Save to library" when it differs). Library CSV/XLSX gained `Rack Units, Rack Width, Depth (in)` columns. A model with no size is placed as 1U full width (toast says so).
+  - `RackObj` (page object, not rotatable): RU count, title (name + tag shown in quotes, e.g. *Backstage 40U Rack* / *“AV1”*), look (grey **cabinet** or black **frame / wall rack**), casters, RU numbers (1 at the bottom, on the left rail), optional grey **blank panels** in empty spaces, optional **side view** (drawn on the left: rear rail left, front rail right, each unit a box of its depth from the front rail; unknown depth = dashed at 12″) with rail depth, and a scale in points per inch (default 8 pt/in = 100%; corner handles scale the whole rack). Placed with the **Rack** tool (12U by default; size in properties). Racks are created at the back, like containers.
+  - `RackUnitObj`: a device (same project device as its schematic blocks — renaming either renames both; Devices tab / equipment list show both) mounted at bottom RU `u` and `slot` (for half / third width) in `rackId`. Its x/y follow the rack (`syncRacks` runs after every change, next to `syncGlue`). Units are always drawn and hit on top of their rack. Face: white panel (colour selectable) with rack ears and screws on full-width units, manufacturer / model / friendly name centred and shrunk to fit; text colour selectable.
+  - Mounting: drop a library block on a rack = new device mounted; drop a device from the Devices tab = that device mounted (once per page). Dragging a unit lifts it out of its rack; on release over a rack it snaps to the nearest free space (6 sub-columns per RU so half and third widths share spaces), otherwise it stays free-standing on the page; if there's no room it goes back. Bottom RU / left-right can also be typed in properties. The rack's properties list its contents top to bottom (click to select) and warn about overlaps after a size change. Deleting / copying a rack takes its units along.
+- **Cable list** (`model/cableList.ts`, toolbar **Cables**): one row per cable — Label, Signal, From, From port, From connector, To, To port, To connector, Page(s). A line ending at a reference tag counts as going to the tag's device/port, so a cable drawn across two pages (paired tags) and lines repeated on several pages are listed once. Sorted by label (numeric aware), then source.
+- **Signal colours** (project setting, `Project.signalStyles` + `signalColors`): Page properties → Signal colours → Edit colours… (dialog lists the preference signal types plus any used in the project; "Suggest colours" fills print-friendly defaults; optional dash per type). A line that is still black is drawn in its signal type's colour (output port's signal first); a line given its own colour keeps it ("Use signal colour" resets it). Snake trunks follow their lines' signal.
+- **Auto-numbered labels** (`Project.autoLabel` = prefix, next number, digits): Page properties → Line labels. When on, every new line gets the next label (`C-001`, …; paired off-page lines share it). "Number these lines" (several lines selected) numbers unlabelled lines top to bottom (Shift-click renumbers labelled ones too).
+- **Custom fonts** (`Project.fonts`, Page properties → Fonts): upload a TTF/OTF (plus optional bold) to replace the narrow font (blocks, labels, tags, shapes, rack faces) and/or the title font (title block, rack titles). Stored as project assets, measured with fontkit like the built-in fonts (layout caches are cleared when fonts change), registered as their own CSS families on screen, and embedded whole in PDFs. "Use built-in" goes back.
+- Dev hook `window.__schema` also exposes `cableListCsv` and `rackActions` for smoke tests.
 
 ## 11. Feedback log
+
+**Phase 3 — kickoff** (all addressed): grouped Text / Border / Fill properties, the fill colour swatch reused for text and borders with a few print colours (default black) · z-order buttons moved to a right-click menu · rack elevations from the reference sheet (front + optional side view) · plus the planned Phase 3 items (cable list, signal colours, auto-numbering, font upload).
 
 **Phase 2 — round 6** (all addressed; last round of Phase 2): line up labels left / centre / right (top / middle / bottom on vertical runs), all relative to the first selected line's label · clearer selection (halo + outline set outside the object, corner markers when several are selected) · dragging an existing line near a shape / line glues its end there.
 

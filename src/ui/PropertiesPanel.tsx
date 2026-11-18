@@ -224,6 +224,14 @@ function PageSection({ s }: { s: AppState }) {
           to draw; set arrowheads in the line's properties; ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
+          <b>Racks:</b> the <b>Rack</b> tool places a numbered rack; drag blocks from the library, or devices from the <b>Devices</b> tab, onto it —
+          they snap to the nearest free space. Drag a unit to move it, or off the rack to take it out. Rack sizes (U, width, depth) are in the
+          unit's properties; the rack's properties add a side view, casters and blank panels.
+        </p>
+        <p>
+          <b>Right-click</b> an object for cut / copy / paste and stacking order (bring to front, send to back…).
+        </p>
+        <p>
           <b>Images:</b> drop PNG, JPG, PDF or SVG files on the page, paste an image, or use <b>Image…</b>. PDFs stay vector in the export; SVGs are
           converted to vector shapes.
         </p>
@@ -553,20 +561,12 @@ function TagSection({ s, o }: { s: AppState; o: TagObj }) {
       </Field>
       <div className="fieldgroup">
         <label>
-          Size <input type="number" min={4} max={24} step={0.5} value={o.fontSize} onChange={(e) => patch((t) => (t.fontSize = Math.max(4, Number(e.target.value) || 7)))} />
+          Size <NumberField min={4} max={24} step={0.5} width={52} value={o.fontSize} onCommit={(v) => patch((t) => (t.fontSize = v))} />
         </label>
-        <label title="Fixed height, e.g. a block's row height so tags at neighbouring ports line up. Empty = from the font size.">
-          Height{' '}
-          <input
-            type="number"
-            min={4}
-            max={72}
-            step={0.5}
-            placeholder="auto"
-            value={o.height ?? ''}
-            onChange={(e) => patch((t) => (t.height = e.target.value === '' ? undefined : Math.max(4, Number(e.target.value))))}
-          />
+        <label title="Fixed height, e.g. a block's row height so tags at neighbouring ports line up. Auto = from the font size.">
+          Height <NumberField min={4} max={72} step={0.5} width={52} placeholder="auto" value={o.height ?? ''} onCommit={(v) => patch((t) => (t.height = v))} />
         </label>
+        {o.height !== undefined && <button onClick={() => patch((t) => (t.height = undefined))}>Auto height</button>}
       </div>
       {portBlock && (
         <button title="As tall as the row of the port it's attached to, in that row's font size — tags at neighbouring ports then don't overlap" onClick={() => patch((t) => Object.assign(t, tagRowFit(portBlock.scale)), 'Fit tag to row')}>
@@ -660,16 +660,7 @@ function BlockSection({ s, o }: { s: AppState; o: BlockObj }) {
       )}
       <div className="fieldgroup">
         <label>
-          Scale{' '}
-          <input
-            type="number"
-            min={30}
-            max={400}
-            step={5}
-            value={Math.round(o.scale * 1000) / 10}
-            onChange={(e) => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = Math.min(4, Math.max(0.3, (Number(e.target.value) || 100) / 100)))))}
-          />
-          %
+          Scale <NumberField min={30} max={400} step={5} width={56} value={Math.round(o.scale * 1000) / 10} onCommit={(v) => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = Math.min(4, Math.max(0.3, v / 100)))))} /> %
         </label>
         {o.scale !== 1 && (
           <button title="Back to 100% (rows then line up with other 100% blocks)" onClick={() => patchObjects([o.id], (t) => void (t.kind === 'block' && (t.scale = 1)))}>
