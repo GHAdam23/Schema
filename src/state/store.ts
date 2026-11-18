@@ -4,6 +4,7 @@ import { produce, freeze, type Draft } from 'immer';
 import type { BlockDef, Id, Project } from '../model/types';
 import { newProject } from '../model/project';
 import { syncGlue } from '../model/glue';
+import { syncRacks } from '../model/rack';
 import { loadPrefs, type Prefs } from './prefs';
 
 export interface PortRef {
@@ -50,7 +51,7 @@ export interface HistoryEntry {
   at: number;
 }
 
-export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'cloud' | 'line' | 'arrow' | 'arrow2' | 'tag' | 'pan';
+export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'cloud' | 'line' | 'arrow' | 'arrow2' | 'tag' | 'rack' | 'pan';
 
 export type Modal =
   /** library: a library block; project: the ports shared by a model's devices; instance: one placed block only. */
@@ -139,6 +140,7 @@ export function updateProject(recipe: (d: Draft<Project>) => void, record: boole
   // Glued drawn lines keep in step with what they're glued to.
   const next = produce(prev, (d) => {
     recipe(d);
+    syncRacks(d as Project);
     syncGlue(d as Project);
   });
   if (next === prev) return;

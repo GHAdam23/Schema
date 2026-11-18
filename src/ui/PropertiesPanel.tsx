@@ -28,6 +28,8 @@ import { devicePages, tagRowFit, tagTargetPage, tagText } from '../model/tags';
 import { nextLabel } from '../state/store';
 import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
+import { isBox } from '../model/geom';
+import { RackSection, RackUnitSection } from './RackProps';
 import { ColorSwatch, Field, FillEditor, Group, NumberField, StrokeEditor } from './controls';
 import { calloutTip } from '../render/buildPage';
 import { getState } from '../state/store';
@@ -278,6 +280,8 @@ function ObjectSection({ s, o }: { s: AppState; o: PageObject }) {
   if (o.kind === 'tag') return <TagSection s={s} o={o} />;
   if (o.kind === 'image') return <ImageSection s={s} o={o} />;
   if (o.kind === 'line') return <LineSection o={o} />;
+  if (o.kind === 'rack') return <RackSection s={s} o={o} />;
+  if (o.kind === 'rackunit') return <RackUnitSection s={s} o={o} />;
   return <ShapeSection o={o} />;
 }
 
@@ -525,7 +529,7 @@ function TagSection({ s, o }: { s: AppState; o: TagObj }) {
 
 function Geometry({ o }: { o: BoxObj }) {
   const num = (k: 'x' | 'y' | 'w' | 'h') => (
-    <NumberField step={1} value={Math.round(o[k] * 100) / 100} onCommit={(v) => patchObjects([o.id], (t) => void (t.kind !== 'block' && t.kind !== 'tag' && (t[k] = v)))} />
+    <NumberField step={1} value={Math.round(o[k] * 100) / 100} onCommit={(v) => patchObjects([o.id], (t) => void (isBox(t) && (t[k] = v)))} />
   );
   return (
     <>
@@ -876,5 +880,6 @@ function BundleSection({ b }: { b: Bundle }) {
 
 function sameDef(a: BlockDef, b: BlockDef) {
   const ports = (d: BlockDef) => JSON.stringify([d.left, d.right].map((col) => col.map((p) => [p.name, p.signal, p.connector])));
-  return a.manufacturer === b.manufacturer && a.model === b.model && a.defaultName === b.defaultName && ports(a) === ports(b);
+  const rack = (d: BlockDef) => JSON.stringify(d.rack ? [d.rack.ru, d.rack.width ?? 'full', d.rack.depth ?? 0] : null);
+  return a.manufacturer === b.manufacturer && a.model === b.model && a.defaultName === b.defaultName && ports(a) === ports(b) && rack(a) === rack(b);
 }

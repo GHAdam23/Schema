@@ -18,6 +18,7 @@ import type {
   PageSizeId,
   Project,
   ProjectDevice,
+  RackUnitObj,
   RectObj,
   StrokeStyle,
   TagObj,
@@ -30,7 +31,7 @@ import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } 
 import { blockFor, findPort, portAnchor } from '../model/blockGeometry';
 import { LINE_H, lineBox, lineEnds } from '../model/glue';
 import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
-import { normDeg, rotOf } from '../model/geom';
+import { isBox, normDeg, rotOf } from '../model/geom';
 import { devicePages, tagRowFit, tagSize, tagTargetPage, tagText } from '../model/tags';
 import { calloutTip, labelBox, labelBoxes, labelTAt, withLabelT, type LabelBox } from '../render/buildPage';
 import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
@@ -587,7 +588,7 @@ export function setRotation(ids: Id[], deg: number | ((cur: number) => number), 
   patchObjects(
     ids,
     (o) => {
-      if (o.kind === 'block' || o.kind === 'tag') return;
+      if (!isBox(o)) return;
       const r = normDeg(typeof deg === 'function' ? deg(o.rot ?? 0) : deg);
       o.rot = Math.round(r * 100) / 100;
       // A line turned by hand lets go of what its ends are glued to (they would pull it back).
@@ -620,6 +621,8 @@ export function deleteSelection() {
     const others = page0.connections.filter((c) => c.from.objId === t.id || c.to.objId === t.id).map((c) => (c.from.objId === t.id ? c.to.objId : c.from.objId));
     if (others.length && others.every((id) => sel.has(id))) sel.add(t.id);
   }
+  // Units in a deleted rack go with it.
+  for (const o of page0.objects) if (o.kind === 'rackunit' && o.rackId && sel.has(o.rackId)) sel.add(o.id);
   // A tag's automatic partner at the far end goes too.
   const partners = new Set(page0.objects.filter((o): o is TagObj => o.kind === 'tag' && sel.has(o.id) && !!o.pairId).map((o) => o.pairId!));
   const page = page0;
@@ -655,7 +658,7 @@ export function deleteSelection() {
 /** Remove unreferenced devices/defs and dangling connections. */
 export function gc(d: D) {
   const usedDevices = new Set<string>();
-  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block') usedDevices.add(o.deviceId);
+  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block' || o.kind === 'rackunit') usedDevices.add(o.deviceId);
   for (const id of Object.keys(d.devices)) if (!usedDevices.has(id)) delete d.devices[id];
   const usedDefs = new Set(Object.values(d.devices).map((v) => v.defId));
   for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block' && o.defId) usedDefs.add(o.defId);
@@ -794,7 +797,7 @@ export function setStroke(ids: Id[], style: Partial<StrokeStyle>) {
   updateProject((d) => {
     const pg = pageDraft(d);
     for (const o of pg.objects) {
-      if (!set.has(o.id)) continue;
+      if (!set.has(o.id) || o.kind === 'rack' || o.kind === 'rackunit') continue;
       if (o.kind === 'text' || o.kind === 'image') o.border = { ...(o.border ?? { color: '#000000', width: 1, dash: 'solid' }), ...style } as StrokeStyle;
       else o.border = { ...o.border, ...style } as StrokeStyle;
     }
@@ -816,8 +819,8 @@ export function renameDevice(deviceId: Id, name: string) {
     const a = p.blockDefs[dev.defId];
     const b = p.blockDefs[other.defId];
     const sameModel = a && b && a.manufacturer === b.manufacturer && a.model === b.model;
-    const pagesA = devicePages(p, deviceId);
-    const pagesB = devicePages(p, other.id);
+    const pagesA = devicePages(p, deviceId, true);
+    const pagesB = devicePages(p, other.id, true);
     const clash = pagesA.some((i) => pagesB.includes(i));
     if (sameModel && !clash) {
       const where = pagesB.map((i) => i + 1).join(', ');
@@ -853,6 +856,7 @@ export function mergeDevices(from: Id, into: Id) {
   updateProject((d) => {
     for (const pg of d.pages) {
       const objs = new Set<Id>();
+      for (const o of pg.objects) if (o.kind === 'rackunit' && o.deviceId === from) o.deviceId = into;
       for (const o of pg.objects)
         if (o.kind === 'block' && o.deviceId === from) {
           o.deviceId = into;
@@ -1119,6 +1123,7 @@ export function copySelection() {
   const s = getState();
   const pg = currentPage();
   const sel = new Set(s.selection);
+  for (const o of pg.objects) if (o.kind === 'rackunit' && o.rackId && sel.has(o.rackId)) sel.add(o.id);
   const objects = pg.objects.filter((o) => sel.has(o.id));
   if (!objects.length) return;
   const ids = new Set(objects.map((o) => o.id));
@@ -1166,6 +1171,7 @@ function copyObjectsInto(
   const defs: Record<string, BlockDef> = {};
   const scratch = { ...project, devices: { ...project.devices } };
   const onPage = new Set(opts.onPage?.objects.filter((o) => o.kind === 'block').map((o) => (o as BlockObj).deviceId) ?? []);
+  const inRackOnPage = new Set(opts.onPage?.objects.filter((o): o is RackUnitObj => o.kind === 'rackunit').map((o) => o.deviceId) ?? []);
   const outObjs: PageObject[] = objects.map((o) => {
     const id = newId('ob');
     idMap.set(o.id, id);
@@ -1187,6 +1193,19 @@ function copyObjectsInto(
         defId = c.id;
       }
       return { ...o, id, deviceId, defId, hidden: o.hidden ? [...o.hidden] : undefined, x: o.x + dx, y: o.y + dy, border: { ...o.border } };
+    }
+    if (o.kind === 'rackunit') {
+      // Same rule as blocks: the same device on another page, a new one where it's already racked.
+      const dev = src.devices[o.deviceId];
+      let deviceId = o.deviceId;
+      if (opts.forceNew || !project.devices[o.deviceId] || inRackOnPage.has(o.deviceId)) {
+        const nd: ProjectDevice = { id: newId('dv'), defId: dev.defId, name: uniqueDeviceName(scratch, dev.name) };
+        devices[nd.id] = nd;
+        scratch.devices[nd.id] = nd;
+        deviceId = nd.id;
+      }
+      inRackOnPage.add(deviceId);
+      return { ...o, id, deviceId, x: o.x + dx, y: o.y + dy };
     }
     const copy = { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
     if (copy.kind === 'tag') {
@@ -1220,6 +1239,8 @@ function copyObjectsInto(
       delete o.tailTo;
     }
   });
+  // Rack units follow the copy of their rack, or stand on their own.
+  for (const o of outObjs) if (o.kind === 'rackunit' && o.rackId) o.rackId = idMap.get(o.rackId) ?? null;
   // Drawn lines glued to something: follow the copy of it, or let go.
   for (const o of outObjs) {
     if (o.kind !== 'line' || !o.ends) continue;
@@ -1256,7 +1277,7 @@ export function paste(newDevices = false) {
   // Bring over block defs if pasting from another project.
   const defs: Record<string, BlockDef> = {};
   for (const o of clip.objects) {
-    if (o.kind !== 'block') continue;
+    if (o.kind !== 'block' && o.kind !== 'rackunit') continue;
     const dev = clip.project.devices[o.deviceId];
     if (dev && !s.project.blockDefs[dev.defId]) defs[dev.defId] = clip.project.blockDefs[dev.defId];
   }
@@ -1454,6 +1475,8 @@ const KIND_NAMES: Record<PageObject['kind'], string> = {
   image: 'Image',
   tag: 'Tag',
   line: 'Line',
+  rack: 'Rack',
+  rackunit: 'Rack unit',
 };
 
 export function kindName(o: PageObject) {
@@ -1465,6 +1488,8 @@ export function describeObject(p: Project, o: PageObject) {
   if (o.kind === 'tag') return `Tag "${tagText(p, o)}"`;
   if (o.kind === 'image') return 'Image';
   if (o.kind === 'line') return o.arrows === 'none' ? 'Line' : o.arrows === 'both' ? 'Double arrow' : 'Arrow';
+  if (o.kind === 'rack') return 'Rack' + (o.tag.trim() || o.name.trim() ? ` "${(o.tag.trim() || o.name.trim()).slice(0, 24)}"` : '');
+  if (o.kind === 'rackunit') return 'Rack unit ' + (p.devices[o.deviceId]?.name ?? '');
   if (o.kind === 'callout' && o.shape === 'cloud') return 'Thought bubble' + (o.text.trim() ? ` "${o.text.trim().split('\n')[0].slice(0, 24)}"` : '');
   const t = o.text?.trim().split('\n')[0].slice(0, 24);
   return KIND_NAMES[o.kind] + (t ? ` "${t}"` : '');

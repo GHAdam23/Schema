@@ -54,6 +54,14 @@ export function hitsContainer(project: Project, o: PageObject, x: number, y: num
 export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0, frameTol = 4): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
+    // Units in a rack are found through their rack (they're always drawn on top of it).
+    if (o.kind === 'rackunit' && o.rackId && page.objects.some((r) => r.id === o.rackId)) continue;
+    if (o.kind === 'rack') {
+      if (!insideObj(project, o, { x, y }, pad)) continue;
+      const units = page.objects.filter((u) => u.kind === 'rackunit' && u.rackId === o.id);
+      for (let j = units.length - 1; j >= 0; j--) if (insideObj(project, units[j], { x, y }, pad)) return units[j];
+      return o;
+    }
     if (o.kind === 'container') {
       if (hitsContainer(project, o, x, y, frameTol + pad)) return o;
       continue;
@@ -99,7 +107,7 @@ export interface ShapeDot {
 export function hitShapeDot(project: Project, page: Page, x: number, y: number, tol: number): ShapeDot | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    if (o.kind === 'block' || o.kind === 'line') continue;
+    if (o.kind === 'block' || o.kind === 'line' || o.kind === 'rack' || o.kind === 'rackunit') continue;
     for (const c of SIDE_CENTRES) {
       const p = dotPos(project, o, c);
       if (Math.hypot(p.x - x, p.y - y) <= tol) return { objId: o.id, ...c };
@@ -118,7 +126,7 @@ export function dotPos(project: Project, o: PageObject, c: { fx: number; fy: num
 export function hitShape(project: Project, page: Page, x: number, y: number, pad: number): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    if (o.kind === 'block' || o.kind === 'line') continue;
+    if (o.kind === 'block' || o.kind === 'line' || o.kind === 'rack' || o.kind === 'rackunit') continue;
     if (o.kind === 'container' ? hitsContainer(project, o, x, y, pad + 4) : insideObj(project, o, { x, y }, pad)) return o;
   }
   return null;

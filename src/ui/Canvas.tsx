@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, TagObj, TextualObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, RackUnitObj, TagObj, TextualObj } from '../model/types';
 import type { Tool } from '../state/store';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
@@ -59,7 +59,9 @@ import {
   type Carry,
 } from '../state/actions';
 import { importMedia } from '../state/fileOps';
-import { centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
+import { addRack, mountDevice, mountFromLibrary, settleUnits } from '../state/rackActions';
+import { rackAt } from '../model/rack';
+import { isBox, centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
 import { tagRowFit, tagSize } from '../model/tags';
 import { isMediaFile } from '../io/importMedia';
 import { isPortEndpoint } from '../model/types';
@@ -75,7 +77,7 @@ type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
   | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean; enclose?: boolean }
-  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry }
+  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry; units?: Map<Id, { rackId: Id | null; u: number; slot: number; x: number; y: number }> }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
   | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
   | { t: 'tail'; id: Id }
@@ -268,6 +270,11 @@ export function Canvas() {
         setState({ tool: 'select', modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
         return;
       }
+      if (tool === 'rack') {
+        setState({ tool: 'select' });
+        addRack(x, y);
+        return;
+      }
       // Shapes: drag out to size (Shift = square / circle); a plain click gives the default size.
       setDrag({ t: 'draw', tool, start: { x, y }, id: null });
       return;
@@ -446,6 +453,14 @@ export function Canvas() {
           const movedObjs = pg.objects.filter((o) => d.ids.includes(o.id));
           checkpoint(movedObjs.length === 1 ? 'Move ' + describeObject(s.project, movedObjs[0]) : `Move ${movedObjs.length} objects`);
           d.moved = true;
+          // Rack units dragged without their rack come loose while dragging; they snap into a rack space on release.
+          const loose = movedObjs.filter((o): o is RackUnitObj => o.kind === 'rackunit' && !!o.rackId && !d.ids.includes(o.rackId));
+          if (loose.length) {
+            d.units = new Map(loose.map((o) => [o.id, { rackId: o.rackId, u: o.u, slot: o.slot, x: o.x, y: o.y }]));
+            updateProject((dr) => {
+              for (const o of dr.pages.find((x) => x.id === pg.id)!.objects) if (o.kind === 'rackunit' && d.units!.has(o.id)) o.rackId = null;
+            }, false);
+          }
         }
         if (e.shiftKey) {
           if (Math.abs(dx) > Math.abs(dy)) dy = 0;
@@ -505,7 +520,7 @@ export function Canvas() {
           if (Math.abs(r - sq) < 4) r = sq;
         }
         r = Math.round(normDeg(r) * 10) / 10;
-        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && (o.rot = r)), false);
+        patchObjects([d.id], (o) => void (isBox(o) && (o.rot = r)), false);
         return;
       }
       case 'lineEnd': {
@@ -558,7 +573,7 @@ export function Canvas() {
             : addCallout(r.x, r.y, t === 'cloud' ? 'cloud' : 'box', r.w, r.h);
           return;
         }
-        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && Object.assign(o, r)), false);
+        patchObjects([d.id], (o) => void (isBox(o) && Object.assign(o, r)), false);
         return;
       }
       case 'tail': {
@@ -654,6 +669,7 @@ export function Canvas() {
         break;
       case 'move':
         setLineSnap(null);
+        if (d.moved) settleUnits(d.ids, d.units ?? new Map());
         if (!d.moved && !d.additive && d.clickId) setState({ selection: [d.clickId] });
         if (!d.moved && d.additive && d.clickId && d.wasSelected) toggleSel(d.clickId);
         break;
@@ -823,6 +839,23 @@ export function Canvas() {
     if (h.includes('s')) y2 = sv(q.y);
     // Images keep their proportions on the corner handles (Shift frees them).
     if (o.kind === 'image' && h.length === 2) keepAspect = !keepAspect;
+    if (o.kind === 'rack') {
+      // A rack scales as a whole (points per inch), anchored at the opposite corner.
+      const f = Math.max((x2 - x1) / b.w, (y2 - y1) / b.h);
+      const scale = Math.min(30, Math.max(2, Math.round(o.scale * f * 4) / 4));
+      const k = scale / o.scale;
+      patchObjects(
+        [d.id],
+        (t) => {
+          if (t.kind !== 'rack') return;
+          t.scale = scale;
+          t.x = h.includes('w') ? b.x + b.w - b.w * k : b.x;
+          t.y = h.includes('n') ? b.y + b.h - b.h * k : b.y;
+        },
+        false,
+      );
+      return;
+    }
     if (o.kind === 'block') {
       // Uniform scale, anchored at the opposite corner.
       const sx = (x2 - x1) / b.w;
@@ -872,7 +905,7 @@ export function Canvas() {
     patchObjects(
       [d.id],
       (t) => {
-        if (t.kind === 'block' || t.kind === 'tag') return;
+        if (!isBox(t)) return;
         if (t.kind === 'callout' && o.kind === 'callout') {
           // The pointer's tip stays where it is.
           t.tail = { x: Math.round(o.x + o.tail.x - nx), y: Math.round(o.y + o.tail.y - ny) };
@@ -940,10 +973,13 @@ export function Canvas() {
       void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
       return;
     }
+    // Dropped on a rack: mount it there (the same device as on the schematics).
+    const rack = rackAt(currentPage(), p, 4);
     const dev = e.dataTransfer.getData('application/x-schema-device');
     if (dev) {
       e.preventDefault();
-      placeInstance(dev, snapV(p.x), snapV(p.y));
+      if (rack) mountDevice(dev, p);
+      else placeInstance(dev, snapV(p.x), snapV(p.y));
       return;
     }
     const id = e.dataTransfer.getData('application/x-schema-block');
@@ -951,7 +987,8 @@ export function Canvas() {
     e.preventDefault();
     const def = getState().library.find((l) => l.id === id);
     if (!def) return;
-    placeBlock(def, snapV(p.x), snapV(p.y));
+    if (rack) mountFromLibrary(def, p);
+    else placeBlock(def, snapV(p.x), snapV(p.y));
   };
 
   // ------------------------------------------------------------------------------------------
@@ -968,7 +1005,7 @@ export function Canvas() {
     }
     const o = hitObject(s.project, pg, p.x, p.y);
     if (!o) return;
-    if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
+    if (o.kind === 'block' || o.kind === 'rackunit') setEditing({ kind: 'device', id: o.id });
     else if (o.kind === 'tag') jumpToTag(o);
     else if ('text' in o) setEditing({ kind: 'text', id: o.id });
   };
@@ -1620,7 +1657,7 @@ function segCursor(r: ResolvedRoute, i: number) {
 const HANDLE_CURSORS = ['ns-resize', 'nesw-resize', 'ew-resize', 'nwse-resize'];
 
 function Handles({ project, o, z }: { project: Project; o: PageObject; z: number }) {
-  if (o.kind === 'tag') return null;
+  if (o.kind === 'tag' || o.kind === 'rackunit') return null;
   if (o.kind === 'line')
     return (
       <g>
@@ -1643,13 +1680,14 @@ function Handles({ project, o, z }: { project: Project; o: PageObject; z: number
     ['sw', b.x, b.y + b.h, 5],
     ['w', b.x, b.y + b.h / 2, 6],
   ];
-  const hs2 = o.kind === 'block' ? all.filter((h) => h[0].length === 2) : all;
+  const fixedShape = o.kind === 'block' || o.kind === 'rack';
+  const hs2 = fixedShape ? all.filter((h) => h[0].length === 2) : all;
   const at = (x: number, y: number) => fromLocal(project, o, { x, y });
   const rotH = at(b.x + b.w / 2, b.y - 20 / z);
   const topC = at(b.x + b.w / 2, b.y);
   return (
     <g>
-      {o.kind !== 'block' && (
+      {!fixedShape && (
         <>
           <line x1={topC.x} y1={topC.y} x2={rotH.x} y2={rotH.y} stroke="#2563eb" strokeWidth={1 / z} pointerEvents="none" />
           <circle data-hit="rotate" data-id={o.id} cx={rotH.x} cy={rotH.y} r={4 / z} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: 'grab' }}>
@@ -1746,14 +1784,20 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
       });
     };
   } else if (editing.kind === 'device') {
-    const o = pg.objects.find((x) => x.id === editing.id) as BlockObj | undefined;
-    if (!o) return null;
+    const o = pg.objects.find((x) => x.id === editing.id);
+    if (o?.kind !== 'block' && o?.kind !== 'rackunit') return null;
     const dev = s.project.devices[o.deviceId];
-    const sz = blockSize(s.project, o);
-    const fh = BLK.footerH * o.scale;
-    rect = tr({ x: o.x, y: o.y + sz.h - fh, w: sz.w, h: fh });
+    if (o.kind === 'block') {
+      const sz = blockSize(s.project, o);
+      const fh = BLK.footerH * o.scale;
+      rect = tr({ x: o.x, y: o.y + sz.h - fh, w: sz.w, h: fh });
+      fontSize = Math.max(10, BLK.footerSize * o.scale * view.z);
+    } else {
+      const b = localBox(s.project, o);
+      rect = tr({ x: b.x, y: b.y + b.h / 2 - Math.min(b.h, 14) / 2, w: b.w, h: Math.min(b.h, 14) });
+      fontSize = 11;
+    }
     initial = dev?.name ?? '';
-    fontSize = Math.max(10, BLK.footerSize * o.scale * view.z);
     commit = (v) => {
       const name = v.trim();
       if (name && dev && name !== dev.name) renameDevice(dev.id, name);

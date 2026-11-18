@@ -20,6 +20,7 @@ export function ColorSwatch({
   onChange,
   noneLabel = 'No fill',
   defaultColor,
+  defaultLabel = 'Default (black)',
   title,
 }: {
   value: string | null;
@@ -27,6 +28,7 @@ export function ColorSwatch({
   noneLabel?: string;
   /** Instead of a "none" entry: a "Default" entry with this colour. */
   defaultColor?: string;
+  defaultLabel?: string;
   title?: string;
 }) {
   const [open, setOpen] = useState<{ left: number; top: number } | null>(null);
@@ -63,7 +65,7 @@ export function ColorSwatch({
         <div className="swatchpop">
           {defaultColor ? (
             <button className="swatchnone" onClick={() => pick(defaultColor)}>
-              <span className="swatch" style={{ background: defaultColor }} /> Default (black)
+              <span className="swatch" style={{ background: defaultColor }} /> {defaultLabel}
             </button>
           ) : (
             <button className="swatchnone" onClick={() => pick(null)}>

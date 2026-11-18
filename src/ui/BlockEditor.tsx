@@ -333,6 +333,45 @@ export function BlockEditor({ target, defId, objId }: { target: 'library' | 'pro
                 <input value={def.defaultName} onChange={(e) => commit({ ...def, defaultName: e.target.value })} placeholder="e.g. CAM-1" />
               </label>
             </div>
+            {target !== 'instance' && (
+              <div className="be-header be-rack" title="Physical size for rack elevations">
+                <label>
+                  Rack units
+                  <input
+                    type="number"
+                    min={0}
+                    max={20}
+                    placeholder="—"
+                    value={def.rack?.ru ?? ''}
+                    onChange={(e) => {
+                      const ru = Math.round(Number(e.target.value));
+                      commit({ ...def, rack: e.target.value === '' || ru <= 0 ? undefined : { ...def.rack, ru } });
+                    }}
+                  />
+                </label>
+                <label>
+                  Width
+                  <select disabled={!def.rack} value={def.rack?.width ?? 'full'} onChange={(e) => def.rack && commit({ ...def, rack: { ...def.rack, width: e.target.value as 'full' } })}>
+                    <option value="full">Full (19″)</option>
+                    <option value="half">Half</option>
+                    <option value="third">Third</option>
+                  </select>
+                </label>
+                <label>
+                  Depth (in)
+                  <input
+                    type="number"
+                    min={0}
+                    max={48}
+                    step={0.25}
+                    disabled={!def.rack}
+                    placeholder="—"
+                    value={def.rack?.depth ?? ''}
+                    onChange={(e) => def.rack && commit({ ...def, rack: { ...def.rack, depth: Number(e.target.value) || undefined } })}
+                  />
+                </label>
+              </div>
+            )}
             <div className="be-tools">
               <button onClick={() => addRow(activeCol)}>+ Row</button>
               <button disabled={!sel.size} onClick={deleteRows}>

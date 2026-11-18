@@ -56,6 +56,7 @@ export function Toolbar() {
         <Btn label="Container" title="Container: a labelled frame that moves what's inside it (F)" active={tool === 'container'} onClick={() => setState({ tool: 'container' })} />
         <Btn label="Callout" title="Callout: text with a pointer (L)" active={tool === 'callout'} onClick={() => setState({ tool: 'callout' })} />
         <Btn label="Thought" title="Thought bubble: a cloud with trailing bubbles — drag the yellow diamond to point it" active={tool === 'cloud'} onClick={() => setState({ tool: 'cloud' })} />
+        <Btn label="Rack" title="Rack elevation: click to place a rack, then drag blocks from the library (or devices from the Devices tab) into it" active={tool === 'rack'} onClick={() => setState({ tool: 'rack' })} />
         <Btn label="Line" title="Draw a line or arrow (drag; Shift = 15° steps). Arrowheads are set in its properties." active={tool === 'line'} onClick={() => setState({ tool: 'line' })} />
         <Btn
           label="Image…"

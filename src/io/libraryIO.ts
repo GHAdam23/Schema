@@ -6,15 +6,17 @@ import * as XLSX from 'xlsx';
 import type { BlockDef, PortDef } from '../model/types';
 import { newId } from '../model/ids';
 
-export const LIB_HEADERS = ['Manufacturer', 'Model', 'Default Name', 'Column', 'Port', 'Signal', 'Connector'];
+export const LIB_HEADERS = ['Manufacturer', 'Model', 'Default Name', 'Column', 'Port', 'Signal', 'Connector', 'Rack Units', 'Rack Width', 'Depth (in)'];
 
 export function libraryToRows(lib: BlockDef[]): string[][] {
   const rows: string[][] = [LIB_HEADERS];
   for (const d of lib) {
     const base = [d.manufacturer, d.model, d.defaultName];
-    if (!d.left.length && !d.right.length) rows.push([...base, '', '', '', '']);
-    for (const p of d.left) rows.push([...base, 'IN', p.name, p.signal, p.connector]);
-    for (const p of d.right) rows.push([...base, 'OUT', p.name, p.signal, p.connector]);
+    // Rack size repeats on every row of the block (so filtering in Excel keeps it).
+    const rack = d.rack ? [String(d.rack.ru), d.rack.width && d.rack.width !== 'full' ? d.rack.width : 'full', d.rack.depth ? String(d.rack.depth) : ''] : ['', '', ''];
+    if (!d.left.length && !d.right.length) rows.push([...base, '', '', '', '', ...rack]);
+    for (const p of d.left) rows.push([...base, 'IN', p.name, p.signal, p.connector, ...rack]);
+    for (const p of d.right) rows.push([...base, 'OUT', p.name, p.signal, p.connector, ...rack]);
   }
   return rows;
 }
@@ -34,7 +36,10 @@ export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
   const iPort = col(['port', 'port name'], 4);
   const iSig = col(['signal', 'signal type'], 5);
   const iCon = col(['connector', 'connector type'], 6);
-  const iDir = col(['direction', 'dir'], 7);
+  const iDir = col(['direction', 'dir'], -1);
+  const iRu = col(['rack units', 'ru', 'rack unit'], -1);
+  const iRw = col(['rack width', 'width'], -1);
+  const iDepth = col(['depth (in)', 'depth', 'depth in'], -1);
   const byKey = new Map<string, BlockDef>();
   const out: BlockDef[] = [];
   for (const r of rows.slice(hasHeader ? 1 : 0)) {
@@ -48,6 +53,13 @@ export function rowsToLibrary(rows: unknown[][]): BlockDef[] {
       def = { id: newId('bd'), manufacturer: man, model, defaultName: g(iName), left: [], right: [] };
       byKey.set(key, def);
       out.push(def);
+    }
+    const ru = Math.round(Number(g(iRu)));
+    if (!def.rack && ru > 0) {
+      const w = g(iRw).toLowerCase();
+      const depth = Number(g(iDepth));
+      def.rack = { ru, width: w.startsWith('h') || w === '1/2' ? 'half' : w.startsWith('t') || w === '1/3' ? 'third' : 'full', depth: depth > 0 ? depth : undefined };
+      if (!def.rack.depth) delete def.rack.depth;
     }
     const portName = g(iPort);
     if (!portName && !g(iSig) && !g(iCon)) continue;

@@ -32,9 +32,10 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { fromLocal, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
+import { fromLocal, isBox, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
 import { pageOfObject, tagFontSize, tagText, TAG_PAD_Y } from '../model/tags';
 import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
+import { drawRack, drawRackUnit } from './rackDraw';
 import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
 
 export { LABEL_SIZE };
@@ -54,7 +55,11 @@ export interface BuildOptions {
 export function buildPage(project: Project, page: Page, opts: BuildOptions): DLItem[] {
   const out: DLItem[] = [];
   drawFrame(out, project, page, opts);
-  for (const o of page.objects) drawObject(out, project, o);
+  for (const o of page.objects) {
+    // Units in a rack are drawn with their rack (always on top of it).
+    if (o.kind === 'rackunit' && o.rackId) continue;
+    drawObject(out, project, o, page);
+  }
   drawConnections(out, project, page);
   return out;
 }
@@ -62,8 +67,10 @@ export function buildPage(project: Project, page: Page, opts: BuildOptions): DLI
 // ---------------------------------------------------------------------------------------------
 // Objects
 
-export function drawObject(out: DLItem[], project: Project, o: PageObject) {
+export function drawObject(out: DLItem[], project: Project, o: PageObject, page: Page | null = null) {
   if (o.kind === 'block') return drawBlock(out, project, o);
+  if (o.kind === 'rack') return drawRack(out, project, o, page);
+  if (o.kind === 'rackunit') return drawRackUnit(out, project, o, page);
   if (o.kind === 'tag') return drawTag(out, project, o);
   const rot = rotOf(o);
   const dst: DLItem[] = rot ? [] : out;
@@ -449,7 +456,7 @@ export function textTop(o: TextBox) {
   return o.y + padY - lead;
 }
 
-function drawTextIn(out: DLItem[], o: TextBox) {
+export function drawTextIn(out: DLItem[], o: TextBox) {
   if (!o.text) return;
   const font = o.bold ? 'narrowBold' : 'narrow';
   const { size, lines, padX } = fitTextBox(o);
@@ -848,7 +855,7 @@ export function titleBlockObjects(project: Project): BoxObj[] {
   if (!first) return [];
   const r = titleBlockRect(first.size);
   return first.objects.filter((o): o is BoxObj => {
-    if (o.kind === 'block' || o.kind === 'tag') return false;
+    if (!isBox(o)) return false;
     const b = objBounds(project, o);
     return b.x >= r.x - 0.5 && b.y >= r.y - 0.5 && b.x + b.w <= r.x + r.w + 0.5 && b.y + b.h <= r.y + r.h + 0.5;
   });

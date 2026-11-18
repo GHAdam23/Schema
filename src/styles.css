@@ -306,7 +306,8 @@ kbd {
 .canvas-wrap.tool-line,
 .canvas-wrap.tool-arrow,
 .canvas-wrap.tool-arrow2,
-.canvas-wrap.tool-tag {
+.canvas-wrap.tool-tag,
+.canvas-wrap.tool-rack {
   cursor: crosshair;
 }
 .canvas {
@@ -884,4 +885,27 @@ details.rows summary {
   color: var(--muted);
   font-size: 11px;
   padding: 2px 8px 4px;
+}
+.racklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow: auto;
+}
+.racklist button.linkish {
+  border: none;
+  background: none;
+  padding: 2px 0;
+  text-align: left;
+  width: 100%;
+}
+.racklist button.linkish:hover {
+  background: var(--accent-soft);
+}
+.racklist .ru {
+  display: inline-block;
+  min-width: 38px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }

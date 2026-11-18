@@ -20,11 +20,11 @@ export function pageOfObject(project: Project, objId: Id): Page | undefined {
   return m.get(objId);
 }
 
-/** Pages (indices) on which a device has an instance. */
-export function devicePages(project: Project, deviceId: Id): number[] {
+/** Pages (indices) on which a device has an instance (a block, or a rack unit unless `blocksOnly`). */
+export function devicePages(project: Project, deviceId: Id, blocksOnly = false): number[] {
   const out: number[] = [];
   project.pages.forEach((pg, i) => {
-    if (pg.objects.some((o) => o.kind === 'block' && o.deviceId === deviceId)) out.push(i);
+    if (pg.objects.some((o) => (o.kind === 'block' || (!blocksOnly && o.kind === 'rackunit')) && o.deviceId === deviceId)) out.push(i);
   });
   return out;
 }
@@ -51,7 +51,7 @@ export function tagTargetPage(project: Project, tag: TagObj): number {
     const p = pick(portPages(project, tag.target.deviceId, tag.target.portId));
     if (p !== undefined) return p;
   }
-  return pick(devicePages(project, tag.target.deviceId)) ?? -1;
+  return pick(devicePages(project, tag.target.deviceId, true)) ?? pick(devicePages(project, tag.target.deviceId)) ?? -1;
 }
 
 /** TO / FROM: explicit, or from the line attached to the tag (tag at the line's end = TO). */

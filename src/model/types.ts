@@ -24,6 +24,18 @@ export interface BlockDef {
   right: PortDef[];
   /** For project-local copies: the library definition this was copied from. */
   libraryId?: Id;
+  /** Physical size for rack elevations (none = not set; placed as 1RU full width). */
+  rack?: RackSpec;
+}
+
+/** Rack-mount size of a model. Height comes from the RU count (1RU = 1.75"). */
+export interface RackSpec {
+  /** Rack units tall. */
+  ru: number;
+  /** Fraction of the 19" rack width: full, half (2 per space) or a third (3 per space). */
+  width?: 'full' | 'half' | 'third';
+  /** Depth behind the front rail, inches (used by the side view). */
+  depth?: number;
 }
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
@@ -169,9 +181,54 @@ export interface TagObj extends ObjBase {
   auto?: boolean;
 }
 
-export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj | LineObj;
+/**
+ * Rack elevation: a numbered rack outline (front view, optionally a side view on its left) with a
+ * title above. x/y is the top-left of the whole drawing; its size follows from the settings.
+ */
+export interface RackObj extends ObjBase {
+  kind: 'rack';
+  /** Rack units of mounting space. */
+  ru: number;
+  /** Title (e.g. "Backstage 40U Rack") and tag (e.g. AV1, shown in quotes) above the rack. */
+  name: string;
+  tag: string;
+  /** Cabinet: grey side panels; frame: black open frame / wall rack. */
+  frame: 'cabinet' | 'frame';
+  casters?: boolean;
+  /** Rack-unit numbers on the left rail. */
+  numbers: boolean;
+  /** Also draw the side view (depth) on the left. */
+  side?: boolean;
+  /** Depth between the front and rear rails, inches (side view). */
+  depth: number;
+  /** Drawing scale: points per inch. */
+  scale: number;
+  /** Empty spaces drawn as grey blank panels. */
+  blanks?: boolean;
+}
+
+/**
+ * A device mounted in a rack (the same project device as its schematic blocks). In a rack, x/y
+ * are kept in step with the rack (see syncRacks); a unit outside any rack is drawn on its own.
+ */
+export interface RackUnitObj extends ObjBase {
+  kind: 'rackunit';
+  deviceId: Id;
+  rackId: Id | null;
+  /** Lowest rack unit it occupies (1 = bottom space). */
+  u: number;
+  /** Position across the rack for half / third-width units (0-based from the left). */
+  slot: number;
+  /** Face colour (null = white) and text colour. */
+  fill: string | null;
+  color: string;
+  /** Points per inch when outside a rack (in a rack the rack's scale applies). */
+  scale: number;
+}
+
+export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj | LineObj | RackObj | RackUnitObj;
 /** Objects that have a free box (x, y, w, h, rot). */
-export type BoxObj = Exclude<PageObject, BlockObj | TagObj>;
+export type BoxObj = Exclude<PageObject, BlockObj | TagObj | RackObj | RackUnitObj>;
 /** Objects that hold editable text in their box. */
 export type TextualObj = TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj;
 
