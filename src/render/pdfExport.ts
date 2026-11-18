@@ -5,6 +5,10 @@ import {
   type PDFFont,
   type PDFImage,
   type PDFPage,
+  type PDFEmbeddedPage,
+  PDFOperator,
+  PDFOperatorNames,
+  concatTransformationMatrix,
   pushGraphicsState,
   popGraphicsState,
   setLineWidth,
@@ -68,14 +72,17 @@ export async function exportPdf(project: Project, pageIndices: number[]): Promis
     }
     return f;
   };
-  const images = new Map<string, PDFImage>();
+  const images = new Map<string, PDFImage | PDFEmbeddedPage>();
   const getImage = async (id: string) => {
     let im = images.get(id);
     if (!im) {
       const a = project.assets[id];
       if (!a) return null;
       const bytes = b64ToBytes(a.data);
-      im = a.mime === 'image/png' ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
+      if (a.mime === 'application/pdf') {
+        // Imported PDFs stay vector: the original page is embedded as a form XObject.
+        [im] = await doc.embedPdf(bytes, [a.page ?? 0]);
+      } else im = a.mime === 'image/png' ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
       images.set(id, im);
     }
     return im;
@@ -96,10 +103,18 @@ async function drawItem(
   it: DLItem,
   H: number,
   getFont: (k: FontKey) => Promise<PDFFont>,
-  getImage: (id: string) => Promise<PDFImage | null>,
+  getImage: (id: string) => Promise<PDFImage | PDFEmbeddedPage | null>,
 ) {
   const Y = (y: number) => H - y;
   switch (it.t) {
+    case 'group': {
+      // Page matrix (y down) → PDF space (y up): conjugate by the flip (x, y) → (x, H - y).
+      const [a, b, c, d, e, f] = it.m;
+      pg.pushOperators(pushGraphicsState(), concatTransformationMatrix(a, -b, -c, d, c * H + e, H - d * H - f));
+      for (const sub of it.items) await drawItem(pg, sub, H, getFont, getImage);
+      pg.pushOperators(popGraphicsState());
+      return;
+    }
     case 'rect': {
       const ops = [pushGraphicsState()];
       applyPaint(ops, it.fill, it.stroke);
@@ -119,7 +134,7 @@ async function drawItem(
         else if (p.c === 'C') ops.push(appendBezierCurve(p.x1, Y(p.y1), p.x2, Y(p.y2), p.x, Y(p.y)));
         else ops.push(closePath());
       }
-      ops.push(paintOp(it.fill, it.stroke));
+      ops.push(paintOp(it.fill, it.stroke, it.evenOdd));
       ops.push(popGraphicsState());
       pg.pushOperators(...ops);
       return;
@@ -132,7 +147,9 @@ async function drawItem(
     }
     case 'image': {
       const im = await getImage(it.assetId);
-      if (im) pg.drawImage(im, { x: it.x, y: Y(it.y + it.h), width: it.w, height: it.h });
+      if (!im) return;
+      if (isEmbeddedPage(im)) pg.drawPage(im, { x: it.x, y: Y(it.y + it.h), width: it.w, height: it.h });
+      else pg.drawImage(im, { x: it.x, y: Y(it.y + it.h), width: it.w, height: it.h });
       return;
     }
   }
@@ -149,8 +166,12 @@ function applyPaint(ops: ReturnType<typeof pushGraphicsState>[], fillC: string |
   }
 }
 
-function paintOp(fillC: string | null, s: DLStroke | null) {
-  if (fillC && s) return fillAndStroke();
-  if (fillC) return fill();
+function isEmbeddedPage(x: PDFImage | PDFEmbeddedPage): x is PDFEmbeddedPage {
+  return typeof (x as PDFImage).scaleToFit !== 'function';
+}
+
+function paintOp(fillC: string | null, s: DLStroke | null, evenOdd = false) {
+  if (fillC && s) return evenOdd ? PDFOperator.of(PDFOperatorNames.FillEvenOddAndStroke) : fillAndStroke();
+  if (fillC) return evenOdd ? PDFOperator.of(PDFOperatorNames.FillEvenOdd) : fill();
   return stroke();
 }

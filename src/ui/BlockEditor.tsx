@@ -7,7 +7,8 @@ import { drawObject } from '../render/buildPage';
 import type { DLItem } from '../render/displayList';
 import { SvgItems } from '../render/SvgRender';
 import { setState, toast, useStore } from '../state/store';
-import { saveProjectDef, upsertLibraryDef } from '../state/actions';
+import { saveInstanceDef, saveProjectDef, upsertLibraryDef } from '../state/actions';
+import { blockFor } from '../model/blockGeometry';
 
 type Col = 'left' | 'right';
 const COLS: Col[] = ['left', 'right'];
@@ -41,7 +42,7 @@ function incrementName(name: string, by: number): string {
   return m[1] + n + m[3];
 }
 
-export function BlockEditor({ target, defId }: { target: 'library' | 'project'; defId: string | null }) {
+export function BlockEditor({ target, defId, objId }: { target: 'library' | 'project' | 'instance'; defId: string | null; objId?: string }) {
   const library = useStore((s) => s.library);
   const project = useStore((s) => s.project);
   const signalTypes = useStore((s) => s.prefs.signalTypes);
@@ -50,12 +51,20 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
       const d = library.find((l) => l.id === defId);
       return d ? cloneDef(d, d.id) : emptyBlockDef();
     }
+    if (target === 'instance') {
+      // This block's own ports, or (first time) a copy of the device's — port ids kept so lines stay.
+      const o = project.pages.flatMap((p) => p.objects).find((x) => x.id === objId);
+      const base = o?.kind === 'block' ? blockFor(project, o).base : undefined;
+      return base ? { ...cloneDef(base, base.id), libraryId: base.libraryId } : emptyBlockDef();
+    }
     const d = defId ? project.blockDefs[defId] : null;
     return d ? { ...cloneDef(d, d.id), libraryId: d.libraryId } : emptyBlockDef();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const [def, setDef] = useState<BlockDef>(initial);
+  const instObj = target === 'instance' ? project.pages.flatMap((p) => p.objects).find((x) => x.id === objId) : undefined;
+  const instName = instObj?.kind === 'block' ? project.devices[instObj.deviceId]?.name : '';
   const [past, setPast] = useState<BlockDef[]>([]);
   const [future, setFuture] = useState<BlockDef[]>([]);
   const [activeCol, setActiveCol] = useState<Col>('left');
@@ -99,7 +108,10 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
       right: def.right.filter((p) => p.name || p.signal || p.connector).map((p) => ({ ...p, dir: colDir('right') })),
     };
     if (target === 'library') upsertLibraryDef(clean);
-    else {
+    else if (target === 'instance') {
+      const lost = saveInstanceDef(objId!, clean);
+      if (lost.length) toast(`${lost.length} connection(s) removed because their ports were deleted — see History for details.`, 'warn', 8000);
+    } else {
       const lost = saveProjectDef(clean);
       if (lost.length) toast(`${lost.length} connection(s) removed because their ports were deleted — see History for details.`, 'warn', 8000);
     }
@@ -301,8 +313,9 @@ export function BlockEditor({ target, defId }: { target: 'library' | 'project'; 
     <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="modal block-editor" ref={rootRef} onPaste={onRootPaste}>
         <div className="modal-title">
-          {target === 'library' ? 'Library block' : 'Project block definition'}
-          {target === 'project' && <span className="muted"> — changes apply to every device in this project using it</span>}
+          {target === 'library' ? 'Library block' : target === 'instance' ? `Ports of ${instName} — this block only` : `Ports of every ${def.manufacturer} ${def.model} in this project`}
+          {target === 'project' && <span className="muted"> — all blocks of this model in this project (not your library)</span>}
+          {target === 'instance' && <span className="muted"> — other pages, other devices and your library don't change</span>}
         </div>
         <div className="be-body">
           <div className="be-left">

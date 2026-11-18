@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
 import type { BlockDef } from '../model/types';
 import { currentPage, getState, setState, toast, useStore } from '../state/store';
-import { deleteLibraryDef, placeBlock, setLibrary, upsertLibraryDef } from '../state/actions';
+import { deleteLibraryDef, placeBlock, placeInstance, setLibrary, setPage, upsertLibraryDef } from '../state/actions';
+import { devicePages } from '../model/tags';
 import { cloneDef } from '../model/project';
 import { exportLibraryCsv, exportLibraryXlsx, importLibraryFile, mergeLibrary } from '../io/libraryIO';
 import { download, pickFile } from '../io/files';
@@ -30,7 +31,89 @@ export function placeAtPointerOrCenter(def: BlockDef) {
   placeBlock(def, Math.round(p.x / g) * g, Math.round(p.y / g) * g);
 }
 
+function pointOrCentre() {
+  const s = getState();
+  const area = drawingArea(currentPage(s).size);
+  const g = s.prefs.gridSize;
+  const p = s.pointer && s.pointer.x > area.x && s.pointer.x < area.x + area.w && s.pointer.y > area.y && s.pointer.y < area.y + area.h ? s.pointer : { x: area.x + area.w / 2 - 50, y: area.y + area.h / 2 - 30 };
+  return { x: Math.round(p.x / g) * g, y: Math.round(p.y / g) * g };
+}
+
 export function LibraryPanel() {
+  const [tab, setTab] = useState<'library' | 'devices'>('library');
+  return (
+    <div className="panel library">
+      <div className="panel-tabs">
+        <button className={tab === 'library' ? 'active' : ''} onClick={() => setTab('library')}>
+          Block library
+        </button>
+        <button className={tab === 'devices' ? 'active' : ''} onClick={() => setTab('devices')} title="Devices in this project — place one on more pages">
+          Devices
+        </button>
+      </div>
+      {tab === 'library' ? <LibraryTab /> : <DevicesTab />}
+    </div>
+  );
+}
+
+/** Project devices: drag (or double-click) one to place another instance of it on this page. */
+function DevicesTab() {
+  const project = useStore((s) => s.project);
+  const pageId = useStore((s) => s.pageId);
+  const [q, setQ] = useState('');
+  const here = project.pages.findIndex((p) => p.id === pageId);
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = Object.values(project.devices)
+    .map((d) => ({ d, def: project.blockDefs[d.defId], pages: devicePages(project, d.id) }))
+    .filter(({ d, def }) => terms.every((t) => `${d.name} ${def?.manufacturer} ${def?.model}`.toLowerCase().includes(t)))
+    .sort((a, b) => a.d.name.localeCompare(b.d.name, undefined, { numeric: true }));
+  return (
+    <>
+      <input className="search" placeholder="Search devices…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="liblist">
+        {list.map(({ d, def, pages }) => (
+          <div
+            key={d.id}
+            className={'libitem' + (pages.includes(here) ? ' here' : '')}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData('application/x-schema-device', d.id);
+              e.dataTransfer.effectAllowed = 'copy';
+            }}
+            onDoubleClick={() => {
+              const p = pointOrCentre();
+              placeInstance(d.id, p.x, p.y);
+            }}
+            title="Drag onto the page (or double-click) to show this same device here too"
+          >
+            <div className="model">{d.name}</div>
+            <div className="man">{def ? `${def.manufacturer} ${def.model}` : '(missing definition)'}</div>
+            <div className="meta">
+              page{' '}
+              {pages.map((i) => (
+                <button
+                  key={i}
+                  className={'pagelink' + (i === here ? ' cur' : '')}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPage(project.pages[i].id);
+                  }}
+                  title={project.pages[i].name}
+                >
+                  {i + 1}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {!list.length && <div className="empty">{q ? 'No devices match.' : 'No devices yet — place blocks from the library.'}</div>}
+      </div>
+      <div className="muted small pad">Renaming or editing a device changes it on every page. Ctrl+C a block, then Ctrl+Shift+V on another page also places the same device.</div>
+    </>
+  );
+}
+
+function LibraryTab() {
   const library = useStore((s) => s.library);
   const [q, setQ] = useState('');
   const [man, setMan] = useState('');
@@ -85,8 +168,7 @@ export function LibraryPanel() {
   };
 
   return (
-    <div className="panel library">
-      <div className="panel-title">Block library</div>
+    <>
       <input className="search" placeholder="Search manufacturer / model…" value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="row">
         <select value={man} onChange={(e) => setMan(e.target.value)}>
@@ -172,6 +254,6 @@ export function LibraryPanel() {
         </button>
         <span className="muted">{exportCount ? `${exportCount} selected` : 'Ctrl/Shift-click to multi-select'}</span>
       </div>
-    </div>
+    </>
   );
 }

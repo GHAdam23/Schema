@@ -7,15 +7,16 @@
 // the end segments always stretch to the anchors, lines stay attached when objects move while
 // keeping the user's adjusted middle segments.
 
-import type { BlockObj, Connection, Endpoint, Page, PageObject, Project } from './types';
+import type { BlockObj, Bundle, Connection, Endpoint, Page, Project } from './types';
 import { isPortEndpoint } from './types';
-import { blockSize, portAnchor } from './blockGeometry';
+import { portAnchor } from './blockGeometry';
+import { fromLocal, localBox, objBounds, rotatePt, rotOf, type Pt, type Rect } from './geom';
+import { measureText } from '../text/fonts';
 
-export interface Pt {
-  x: number;
-  y: number;
-}
+export { objBounds };
+export type { Pt, Rect };
 export type Axis = 'h' | 'v';
+export const LABEL_SIZE = 6.5;
 
 export interface Anchor extends Pt {
   /** Outward direction from the object. */
@@ -24,14 +25,6 @@ export interface Anchor extends Pt {
 }
 
 export const STUB = 12;
-
-export function objBounds(project: Project, o: PageObject) {
-  if (o.kind === 'block') {
-    const s = blockSize(project, o);
-    return { x: o.x, y: o.y, w: s.w, h: s.h };
-  }
-  return { x: o.x, y: o.y, w: o.w, h: o.h };
-}
 
 export function resolveEndpoint(project: Project, page: Page, e: Endpoint): Anchor | null {
   const obj = page.objects.find((o) => o.id === e.objId);
@@ -42,17 +35,18 @@ export function resolveEndpoint(project: Project, page: Page, e: Endpoint): Anch
     if (!a) return null;
     return { x: a.x, y: a.y, dx: a.dir[0], dy: a.dir[1] };
   }
-  const b = objBounds(project, obj);
-  const x = b.x + e.fx * b.w;
-  const y = b.y + e.fy * b.h;
-  // Outward direction: nearest side.
+  const b = localBox(project, obj);
+  const p = fromLocal(project, obj, { x: b.x + e.fx * b.w, y: b.y + e.fy * b.h });
+  // Outward direction: nearest side, rotated with the shape and snapped to the nearest axis.
   const d = [
     { d: e.fx, dx: -1, dy: 0 },
     { d: 1 - e.fx, dx: 1, dy: 0 },
     { d: e.fy, dx: 0, dy: -1 },
     { d: 1 - e.fy, dx: 0, dy: 1 },
   ].sort((a, b) => a.d - b.d)[0];
-  return { x, y, dx: d.dx, dy: d.dy };
+  const n = rotatePt({ x: d.dx, y: d.dy }, { x: 0, y: 0 }, rotOf(obj));
+  const horiz = Math.abs(n.x) >= Math.abs(n.y);
+  return { x: p.x, y: p.y, dx: horiz ? Math.sign(n.x) : 0, dy: horiz ? 0 : Math.sign(n.y) };
 }
 
 export function axisOf(a: Anchor): Axis {
@@ -143,6 +137,8 @@ export function simplify(pts: Pt[]): Pt[] {
   return out;
 }
 
+export type Bezier = [Pt, Pt, Pt, Pt];
+
 export interface ResolvedRoute {
   conn: Connection;
   s: Anchor;
@@ -151,6 +147,88 @@ export interface ResolvedRoute {
   /** Raw points including possibly zero-length segments (index-aligned with bends for editing). */
   raw: Pt[];
   pts: Pt[];
+  /**
+   * Curved line: the right-angle route smoothed into Bézier pieces through the middle of every
+   * segment. `raw`/`bends` stay the right-angle route (its segments are what the handles drag);
+   * `pts` is the flattened curve (hit-testing, labels); `ortho` the simplified right-angle points.
+   */
+  curve?: Bezier[];
+  ortho?: Pt[];
+  /** Line in a snake: the two short legs actually drawn (each starts at its block's port). */
+  legs?: [Pt, Pt][];
+  /** Snake trunk (keyed by the bundle id): the bars joining the legs, and the member lines. */
+  trunk?: { bundle: Bundle; bars: [Pt, Pt][]; members: string[] };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Curved lines
+
+/**
+ * Smooth a right-angle polyline: straight from the start to the middle of the first segment, then
+ * at every corner a curve (control point at the corner) from one segment's middle to the next.
+ * The curve follows the route — so it goes around what the route goes around — and passes
+ * through the middle of every segment, where the segment handles sit.
+ */
+export function smoothRoute(pts: Pt[]): Bezier[] {
+  const line = (a: Pt, b: Pt): Bezier => [a, { x: a.x + (b.x - a.x) / 3, y: a.y + (b.y - a.y) / 3 }, { x: a.x + ((b.x - a.x) * 2) / 3, y: a.y + ((b.y - a.y) * 2) / 3 }, b];
+  if (pts.length < 3) return [line(pts[0], pts[pts.length - 1] ?? pts[0])];
+  const mid = (a: Pt, b: Pt) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const ms = pts.slice(1).map((p, i) => mid(pts[i], p));
+  const out: Bezier[] = [line(pts[0], ms[0])];
+  for (let k = 1; k < pts.length - 1; k++) {
+    const a = ms[k - 1];
+    const c = pts[k];
+    const b = ms[k];
+    // Quadratic (a, c, b) as a cubic.
+    out.push([a, { x: a.x + ((c.x - a.x) * 2) / 3, y: a.y + ((c.y - a.y) * 2) / 3 }, { x: b.x + ((c.x - b.x) * 2) / 3, y: b.y + ((c.y - b.y) * 2) / 3 }, b]);
+  }
+  out.push(line(ms[ms.length - 1], pts[pts.length - 1]));
+  return out;
+}
+
+export function bezierAt(c: Bezier, t: number): Pt {
+  const u = 1 - t;
+  const a = u * u * u;
+  const b = 3 * u * u * t;
+  const d = 3 * u * t * t;
+  const e = t * t * t;
+  return { x: a * c[0].x + b * c[1].x + d * c[2].x + e * c[3].x, y: a * c[0].y + b * c[1].y + d * c[2].y + e * c[3].y };
+}
+
+/** Samples per Bézier piece. */
+export const CURVE_SAMPLES = 16;
+
+/** Flatten curve pieces: sample k (k ≥ 1) lies on piece ceil(k / N) - 1. */
+export function sampleCurves(cs: Bezier[], n = CURVE_SAMPLES): Pt[] {
+  const out: Pt[] = [cs[0][0]];
+  for (const c of cs) for (let i = 1; i <= n; i++) out.push(bezierAt(c, i / n));
+  return out;
+}
+
+/** Make a resolved right-angle route curved. */
+function curveOf(r: ResolvedRoute): ResolvedRoute {
+  const curve = smoothRoute(r.pts);
+  return { ...r, ortho: r.pts, curve, pts: sampleCurves(curve) };
+}
+
+/** The part of a Bézier between parameters t0 and t1 (de Casteljau). */
+export function subCurve(c: Bezier, t0: number, t1: number): Bezier {
+  const split = (b: Bezier, t: number): [Bezier, Bezier] => {
+    const l = (p: Pt, q: Pt) => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+    const p01 = l(b[0], b[1]);
+    const p12 = l(b[1], b[2]);
+    const p23 = l(b[2], b[3]);
+    const p012 = l(p01, p12);
+    const p123 = l(p12, p23);
+    const m = l(p012, p123);
+    return [
+      [b[0], p01, p012, m],
+      [m, p123, p23, b[3]],
+    ];
+  };
+  const right = split(c, t0)[1];
+  const t = t0 >= 1 ? 0 : (t1 - t0) / (1 - t0);
+  return split(right, Math.min(1, Math.max(0, t)))[0];
 }
 
 /** Raw (unsimplified) points: index i..i+1 is segment i; segment k (1..bends.length) is controlled by bends[k-1]. */
@@ -174,22 +252,17 @@ export function resolveRoute(project: Project, page: Page, conn: Connection, obs
   if (!s || !e) return null;
   const bends = conn.bends && bendsValid(conn.bends, s, e) ? conn.bends : autoRoute(s, e, obstacles);
   const raw = rawPoints(s, e, bends);
-  return { conn, s, e, bends, raw, pts: simplify(raw) };
+  const r: ResolvedRoute = { conn, s, e, bends, raw, pts: simplify(raw) };
+  return conn.curved ? curveOf(r) : r;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Automatic routing around blocks
 
-export interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/** Everything on the page is an obstacle for automatic routing: blocks, rectangles, text boxes. */
+/** Objects on the page are obstacles for automatic routing (not drawn lines/arrows). */
 export function pageObstacles(project: Project, page: Page): Rect[] {
-  return page.objects.map((o) => objBounds(project, o));
+  // Drawn lines/arrows are annotations, not obstacles (a diagonal arrow's bounds would block a lot).
+  return page.objects.filter((o) => o.kind !== 'line').map((o) => objBounds(project, o));
 }
 
 /**
@@ -371,19 +444,21 @@ function searchRoute(s: Anchor, e: Anchor, obstacles: Rect[]): number[] | null {
   return bendsValid(bends, s, e) ? bends : null;
 }
 
+const segLen = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
+
 export function pathLength(pts: Pt[]): number {
   let L = 0;
-  for (let i = 1; i < pts.length; i++) L += Math.abs(pts[i].x - pts[i - 1].x) + Math.abs(pts[i].y - pts[i - 1].y);
+  for (let i = 1; i < pts.length; i++) L += segLen(pts[i - 1], pts[i]);
   return L;
 }
 
-/** Point at distance d along an orthogonal polyline, with the segment index. */
+/** Point at distance d along a polyline, with the segment index. */
 export function pointAt(pts: Pt[], d: number): { p: Pt; seg: number } {
   let acc = 0;
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1];
     const b = pts[i];
-    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    const len = segLen(a, b);
     if (acc + len >= d || i === pts.length - 1) {
       const t = len === 0 ? 0 : Math.min(1, Math.max(0, (d - acc) / len));
       return { p: { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }, seg: i - 1 };
@@ -401,10 +476,10 @@ export function projectOnPath(pts: Pt[], q: Pt): number {
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1];
     const b = pts[i];
-    const len = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    const len = segLen(a, b);
     let t = 0;
     if (len > 0) {
-      t = a.x === b.x ? (q.y - a.y) / (b.y - a.y) : (q.x - a.x) / (b.x - a.x);
+      t = ((q.x - a.x) * (b.x - a.x) + (q.y - a.y) * (b.y - a.y)) / (len * len);
       t = Math.min(1, Math.max(0, t));
     }
     const px = a.x + (b.x - a.x) * t;
@@ -426,11 +501,25 @@ export const LANE_SPACING = 6;
  * overlap are spread into parallel lanes, ordered so that they don't cross each other.
  * Lines leaving the same port share a lane (fan-out trunk).
  */
+const pageRouteCache = new WeakMap<Page, { project: Project; routes: Map<string, ResolvedRoute> }>();
+
 export function resolvePageRoutes(project: Project, page: Page): Map<string, ResolvedRoute> {
+  // Pages are immutable (immer), so a page + project pair always resolves the same way.
+  const hit = pageRouteCache.get(page);
+  if (hit && hit.project === project) return hit.routes;
+  const routes = computePageRoutes(project, page);
+  pageRouteCache.set(page, { project, routes });
+  return routes;
+}
+
+function computePageRoutes(project: Project, page: Page): Map<string, ResolvedRoute> {
   const out = new Map<string, ResolvedRoute>();
   const autoZ: ResolvedRoute[] = [];
   const obstacles = pageObstacles(project, page);
+  const bundled = new Set<string>();
+  for (const b of page.bundles ?? []) if (resolveBundle(project, page, b, out, obstacles)) b.connIds.forEach((id) => bundled.add(id));
   for (const c of page.connections) {
+    if (bundled.has(c.id)) continue;
     const r = resolveRoute(project, page, c, obstacles);
     if (!r) continue;
     out.set(c.id, r);
@@ -440,14 +529,26 @@ export function resolvePageRoutes(project: Project, page: Page): Map<string, Res
   // Group by the middle coordinate.
   const groups = new Map<number, ResolvedRoute[]>();
   for (const r of autoZ) {
-    const k = Math.round(r.bends[0] * 2) / 2;
+    // U-shaped routes (jumpers: both ends face the same way) are laned separately from Z routes.
+    const k = Math.round(r.bends[0] * 2) / 2 + (r.s.dx === r.e.dx && r.s.dy === r.e.dy ? 0.25 : 0);
     const g = groups.get(k);
     if (g) g.push(r);
     else groups.set(k, [r]);
   }
-  for (const [mid, rs] of groups) {
+  const setBends = (r: ResolvedRoute, v: number) => {
+    const bends = [v];
+    const raw = rawPoints(r.s, r.e, bends);
+    const nr: ResolvedRoute = { ...r, bends, raw, pts: simplify(raw), curve: undefined, ortho: undefined };
+    out.set(r.conn.id, r.conn.curved ? curveOf(nr) : nr);
+  };
+  for (const [key, rs] of groups) {
     if (rs.length < 2) continue;
+    const mid = Math.round(rs[0].bends[0] * 2) / 2;
     const horiz = axisOf(rs[0].s) === 'h';
+    if (key !== mid) {
+      laneUTurns(rs, horiz, setBends);
+      continue;
+    }
     const along = (p: Pt) => (horiz ? p.y : p.x);
     // Units: lines sharing a start endpoint move together.
     const units = new Map<string, ResolvedRoute[]>();
@@ -487,13 +588,109 @@ export function resolvePageRoutes(project: Project, page: Page): Map<string, Res
       const sgn = horiz ? rs[0].s.dx || 1 : rs[0].s.dy || 1;
       ordered.forEach((it, k) => {
         const v = mid + sgn * ((n - 1) / 2 - k) * LANE_SPACING;
-        for (const r of it.u) {
-          const bends = [v];
-          const raw = rawPoints(r.s, r.e, bends);
-          out.set(r.conn.id, { ...r, bends, raw, pts: simplify(raw) });
-        }
+        for (const r of it.u) setBends(r, v);
       });
     }
   }
   return out;
+}
+
+/**
+ * Jumpers and other U-shaped routes that would share a lane: nest them, the shortest span nearest
+ * the block (at the normal stub distance) and each enclosing one a lane further out, so none
+ * ends up flat against the block.
+ */
+function laneUTurns(rs: ResolvedRoute[], horiz: boolean, setBends: (r: ResolvedRoute, v: number) => void) {
+  const along = (p: Pt) => (horiz ? p.y : p.x);
+  const across = (p: Pt) => (horiz ? p.x : p.y);
+  const dir = horiz ? rs[0].s.dx : rs[0].s.dy;
+  // The innermost lane sits a stub beyond the furthest anchor of the group.
+  const base = dir > 0 ? Math.max(...rs.flatMap((r) => [across(r.s), across(r.e)])) + STUB : Math.min(...rs.flatMap((r) => [across(r.s), across(r.e)])) - STUB;
+  const items = rs.map((r) => ({ r, lo: Math.min(along(r.s), along(r.e)), hi: Math.max(along(r.s), along(r.e)), k: 0 }));
+  items.sort((a, b) => a.hi - a.lo - (b.hi - b.lo));
+  const placed: typeof items = [];
+  for (const it of items) {
+    // One lane further out than anything already placed that it overlaps (or shares an end with).
+    const over = placed.filter((p) => p.lo <= it.hi + 0.5 && p.hi >= it.lo - 0.5 && !(p.lo === it.lo && p.hi === it.hi && JSON.stringify(p.r.conn.from) === JSON.stringify(it.r.conn.from)));
+    it.k = over.length ? Math.max(...over.map((p) => p.k)) + 1 : 0;
+    placed.push(it);
+  }
+  for (const it of items) setBends(it.r, base + dir * it.k * LANE_SPACING);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Snakes (bundles)
+
+export const LEG_MIN = 18;
+
+/** Width of a line label's gap. */
+export function labelGapWidth(label: string) {
+  return measureText(label, 'narrow', LABEL_SIZE) + 4;
+}
+
+/**
+ * Resolve a bundle: a trunk route (stored in `out` under the bundle id) plus each member line as
+ * leg → bar → trunk → bar → leg. Returns false (members then draw as normal lines) if the
+ * geometry doesn't allow a bundle, e.g. an end isn't a block port.
+ */
+function resolveBundle(project: Project, page: Page, b: Bundle, out: Map<string, ResolvedRoute>, obstacles: Rect[]): boolean {
+  const members = b.connIds.map((id) => page.connections.find((c) => c.id === id)).filter((c): c is Connection => !!c);
+  if (members.length < 2) return false;
+  const objA = members[0].from.objId;
+  const ends = [];
+  for (const c of members) {
+    const s = resolveEndpoint(project, page, c.from);
+    const e = resolveEndpoint(project, page, c.to);
+    if (!s || !e) return false;
+    const aIsFrom = c.from.objId === objA;
+    ends.push({ c, a: aIsFrom ? s : e, b: aIsFrom ? e : s, aIsFrom, pa: isPortEndpoint(aIsFrom ? c.from : c.to), pb: isPortEndpoint(aIsFrom ? c.to : c.from) });
+  }
+  // A block end gets legs + a bar; a shape end (e.g. owner-furnished equipment drawn as a
+  // rectangle) takes the trunk directly at the first line's attachment point.
+  const portA = ends.every((x) => x.pa);
+  const portB = ends.every((x) => x.pb);
+  const labelW = Math.max(0, ...members.map((c) => (c.label ? labelGapWidth(c.label) : 0)));
+  const leg = Math.max(LEG_MIN, labelW + 12);
+  const side = (anchors: Anchor[], isPort: boolean) => {
+    if (!isPort) return { anchor: { ...anchors[0] }, bar: null as [Pt, Pt] | null };
+    const dx = anchors[0].dx;
+    if (anchors.some((a) => axisOf(a) !== 'h' || a.dx !== dx)) return null;
+    const xs = anchors.map((a) => a.x);
+    const ys = anchors.map((a) => a.y);
+    const x = dx > 0 ? Math.max(...xs) + leg : Math.min(...xs) - leg;
+    const y0 = Math.min(...ys);
+    const y1 = Math.max(...ys);
+    return { anchor: { x, y: (y0 + y1) / 2, dx, dy: 0 } as Anchor, bar: [{ x, y: y0 }, { x, y: y1 }] as [Pt, Pt] };
+  };
+  const A = side(ends.map((x) => x.a), portA);
+  const B = side(ends.map((x) => x.b), portB);
+  if (!A || !B) return false;
+  const sT = A.anchor;
+  const eT = B.anchor;
+  const bends = b.bends && bendsValid(b.bends, sT, eT) ? b.bends : autoRoute(sT, eT, obstacles);
+  const raw = rawPoints(sT, eT, bends);
+  const pseudo: Connection = { id: b.id, from: members[0].from, to: members[0].to, bends: b.bends, label: b.label, labelT: null, style: b.style, curved: b.curved };
+  let trunk: ResolvedRoute = {
+    conn: pseudo,
+    s: sT,
+    e: eT,
+    bends,
+    raw,
+    pts: simplify(raw),
+    trunk: { bundle: b, bars: [A.bar, B.bar].filter((x): x is [Pt, Pt] => !!x), members: members.map((c) => c.id) },
+  };
+  if (b.curved) trunk = curveOf(trunk);
+  out.set(b.id, trunk);
+  const pts = trunk.pts;
+  for (const x of ends) {
+    const pre: Pt[] = portA ? [x.a, { x: sT.x, y: x.a.y }, sT] : [sT];
+    const post: Pt[] = portB ? [eT, { x: eT.x, y: x.b.y }, x.b] : [eT];
+    let full = simplify([...pre, ...pts.slice(1, -1), ...post]);
+    if (!x.aIsFrom) full = full.reverse();
+    const legA: [Pt, Pt] | null = portA ? [{ x: x.a.x, y: x.a.y }, { x: sT.x, y: x.a.y }] : null;
+    const legB: [Pt, Pt] | null = portB ? [{ x: x.b.x, y: x.b.y }, { x: eT.x, y: x.b.y }] : null;
+    const legs = (x.aIsFrom ? [legA, legB] : [legB, legA]).filter((l): l is [Pt, Pt] => !!l);
+    out.set(x.c.id, { conn: x.c, s: x.aIsFrom ? x.a : x.b, e: x.aIsFrom ? x.b : x.a, bends: [], raw: full, pts: full, legs });
+  }
+  return true;
 }

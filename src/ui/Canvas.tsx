@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, Page, PageObject, Project, RectObj, TextObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, TagObj, TextualObj } from '../model/types';
+import type { Tool } from '../state/store';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
 import {
@@ -17,11 +18,45 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { buildPage, fitTextBox, labelBox, labelTAt, naturalTextSize, TEXT_PAD } from '../render/buildPage';
+import { buildPage, calloutTip, withLabelT, fitTextBox, labelBox, labelBoxes, labelTAt, naturalTextSize, TEXT_PAD, textBoxOf } from '../render/buildPage';
 import { SvgItems } from '../render/SvgRender';
-import { checkpoint, currentPage, nextLabel, dropCheckpointIfUnchanged, getState, setState, toast, updateProject, useStore } from '../state/store';
-import { addRect, addText, autoStraighten, connect, describeObject, connectionWarnings, patchConnections, patchObjects, placeBlock, renameDevice } from '../state/actions';
-import { hitObject, hitPort, hitShape, hitShapeDot, outlinePoint, portZones, SIDE_CENTRES, type PortHit, type ShapeDot } from './hitTest';
+import { checkpoint, currentPage, labelLast, nextLabel, dropCheckpointIfUnchanged, getState, setState, updateProject, useStore } from '../state/store';
+import {
+  addCallout,
+  addContainer,
+  addEllipse,
+  addRect,
+  addLine,
+  defaultTail,
+  addTag,
+  addText,
+  lineBox,
+  lineEnds,
+  tagsFromElsewhere,
+  applyCarry,
+  unglueMoved,
+  autoStraighten,
+  connect,
+  connectPairs,
+  describeObject,
+  connectionWarnings,
+  jumpToTag,
+  patchBundles,
+  patchConnections,
+  patchObjects,
+  placeBlock,
+  placeInstance,
+  renameDevice,
+  routesToCarry,
+  withContents,
+  type Carry,
+} from '../state/actions';
+import { importMedia } from '../state/fileOps';
+import { centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
+import { tagRowFit, tagSize } from '../model/tags';
+import { isMediaFile } from '../io/importMedia';
+import { isPortEndpoint } from '../model/types';
+import { dotPos, hitObject, hitPort, hitShape, hitShapeDot, outlinePointOf, portZones, SIDE_CENTRES, type PortHit, type ShapeDot } from './hitTest';
 
 interface View {
   z: number;
@@ -33,11 +68,17 @@ type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
   | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean; enclose?: boolean }
-  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean }
+  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
-  | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl' }
+  | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
+  | { t: 'tail'; id: Id }
+  /** Dragging one end of a drawn line/arrow; `fixed` is the other end. `fresh`: being drawn now. */
+  | { t: 'lineEnd'; id: Id; fixed: Pt; fresh: boolean; end: 0 | 1 }
+  /** Dragging out a new shape with a drawing tool (created once the drag starts). */
+  | { t: 'draw'; tool: Tool; start: Pt; id: Id | null }
+  | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl'; multi?: PortHit[] }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
-  | { t: 'label'; connId: Id; moved: boolean }
+  | { t: 'label'; connId: Id; idx: number; moved: boolean }
   | { t: 'pan'; sx: number; sy: number; orig: View };
 
 interface Editing {
@@ -83,11 +124,16 @@ export function Canvas() {
   const [hoverPort, setHoverPort] = useState<PortHit | null>(null);
   // Shape under the pointer (shows its connection dots) and the dot that would be used.
   const [hoverShape, setHoverShape] = useState<{ id: Id; dot: ShapeDot | null } | null>(null);
+  // Object a callout's pointer would glue to while it's being dragged.
+  const [tailHover, setTailHover] = useState<Id | null>(null);
+  // Where a line/arrow end being dragged has snapped onto a shape.
+  const [lineSnap, setLineSnap] = useState<Pt | null>(null);
   const spaceDown = useRef(false);
   const lastPortClick = useRef<PortHit | null>(null);
 
   const items = useMemo(() => buildPage(project, page, { pageIndex: pageIndex + 1, pageCount: project.pages.length }), [project, page, pageIndex]);
   const routes = useMemo(() => resolvePageRoutes(project, page), [project, page]);
+  const elsewhere = useMemo(() => portsUsedElsewhere(project, pageIndex), [project, pageIndex]);
 
   // ------------------------------------------------------------------------------------------
   // View
@@ -115,7 +161,7 @@ export function Canvas() {
       }
     };
     window.addEventListener('schema:view', onView);
-    // Start inline editing from the keyboard (type on a selected line to label it, Enter/F2 to edit).
+    // Start inline editing from the keyboard (type on a selected line to label it, Enter to edit).
     const onEdit = (e: Event) => {
       const d = (e as CustomEvent).detail as Editing;
       setEditing(d);
@@ -193,26 +239,70 @@ export function Canvas() {
     const hit = (target.closest('[data-hit]') as HTMLElement | null)?.dataset ?? {};
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
 
-    if (s.tool === 'text' || s.tool === 'rect') {
-      const id = s.tool === 'text' ? addText(snapV(p.x), snapV(p.y)) : addRect(snapV(p.x), snapV(p.y));
-      setState({ tool: 'select' });
-      if (s.tool === 'text') setEditing({ kind: 'text', id });
+    if (s.tool !== 'select' && s.tool !== 'pan') {
+      const x = snapV(p.x);
+      const y = snapV(p.y);
+      // A drawing tool is used once, then it's back to Select.
+      const tool = s.tool;
+      if (tool === 'line' || tool === 'arrow' || tool === 'arrow2') {
+        // Drag to draw; a plain click makes a 1-inch horizontal one. Ends snap (and stay glued) to shapes and lines (Alt = off).
+        const sn = e.altKey ? null : snapTarget(s.project, pg, routes, p, 8 / viewRef.current.z, null);
+        const at = sn?.q ?? { x, y };
+        const id = addLine(at.x, at.y, at.x, at.y, tool === 'line' ? 'none' : tool === 'arrow' ? 'end' : 'both');
+        if (sn) patchObjects([id], (t) => void (t.kind === 'line' && (t.ends = [sn.glue, null])), false);
+        setState({ tool: 'select' });
+        setDrag({ t: 'lineEnd', id, fixed: at, fresh: true, end: 1 });
+        return;
+      }
+      if (tool === 'tag') {
+        setState({ tool: 'select', modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
+        return;
+      }
+      // Shapes: drag out to size (Shift = square / circle); a plain click gives the default size.
+      setDrag({ t: 'draw', tool, start: { x, y }, id: null });
       return;
     }
 
+    if (hit.hit === 'rotate') {
+      const o = pg.objects.find((x) => x.id === hit.id);
+      if (!o) return;
+      checkpoint('Rotate ' + describeObject(s.project, o));
+      const c = centre(localBox(s.project, o));
+      setDrag({ t: 'rotate', id: o.id, c, start: angleDeg(c, p), orig: rotOf(o) });
+      return;
+    }
+    if (hit.hit === 'elsewhere') {
+      tagsFromElsewhere(hit.id!, hit.port!);
+      return;
+    }
+    if (hit.hit === 'lineEnd') {
+      const o = pg.objects.find((x) => x.id === hit.id);
+      if (!o || o.kind !== 'line') return;
+      checkpoint('Move end of ' + describeObject(s.project, o).toLowerCase());
+      const end = hit.end === '0' ? 0 : 1;
+      setDrag({ t: 'lineEnd', id: o.id, fixed: lineEnds(o)[1 - end], fresh: false, end });
+      return;
+    }
+    if (hit.hit === 'tail') {
+      checkpoint('Move callout pointer');
+      setDrag({ t: 'tail', id: hit.id! });
+      return;
+    }
     if (hit.hit === 'handle') {
       const id = s.selection[0];
       const o = pg.objects.find((x) => x.id === id);
       if (!o) return;
       checkpoint('Resize ' + describeObject(s.project, o));
-      const b = objBounds(s.project, o);
+      const b = localBox(s.project, o);
       setDrag({ t: 'resize', id, handle: hit.handle as Handle, start: p, orig: o, origSize: { w: b.w, h: b.h } });
       return;
     }
     if (hit.hit === 'label') {
-      checkpoint('Move line label');
       setState({ selection: [hit.id!], selectedPorts: [] });
-      setDrag({ t: 'label', connId: hit.id!, moved: false });
+      // Labels in a snake sit in the middle of their legs.
+      if (routes.get(hit.id!)?.legs) return;
+      checkpoint('Move line label');
+      setDrag({ t: 'label', connId: hit.id!, idx: Number(hit.idx ?? 0), moved: false });
       return;
     }
     if (hit.hit === 'seg') {
@@ -223,7 +313,9 @@ export function Canvas() {
         return;
       }
       if (!s.selection.includes(hit.id!)) setState({ selection: [hit.id!], selectedPorts: [] });
-      checkpoint('Reroute line');
+      // Curves, snake legs and bars aren't rerouted by dragging.
+      if (hit.fixed) return;
+      checkpoint(r.trunk ? 'Reroute snake' : 'Reroute line');
       setDrag({ t: 'segment', connId: hit.id!, seg: Number(hit.seg), start: p, bends: [...r.bends], moved: false });
       return;
     }
@@ -235,6 +327,13 @@ export function Canvas() {
     }
     const port = hitPort(s.project, pg, p.x, p.y);
     if (port) {
+      // Dragging one of several selected ports on a block takes them all along (Q-SYS style).
+      const sel = s.selectedPorts;
+      const blockObj = pg.objects.find((o) => o.id === port.objId);
+      const multi =
+        !e.shiftKey && !e.ctrlKey && !e.metaKey && sel.length > 1 && sel.every((x) => x.objId === port.objId) && sel.some((x) => x.portId === port.portId) && blockObj?.kind === 'block'
+          ? portZones(s.project, blockObj).map((zz) => zz.hit).filter((h) => sel.some((x) => x.portId === h.portId))
+          : undefined;
       setDrag({
         t: 'connect',
         from: { objId: port.objId, portId: port.portId },
@@ -243,6 +342,7 @@ export function Canvas() {
         moved: false,
         port,
         additive: e.shiftKey ? 'shift' : e.ctrlKey || e.metaKey ? 'ctrl' : 'none',
+        multi,
       });
       return;
     }
@@ -261,10 +361,11 @@ export function Canvas() {
         if (!sel.includes(obj.id)) sel = [...sel, obj.id];
       } else if (!sel.includes(obj.id)) sel = [obj.id];
       setState({ selection: sel, selectedPorts: [] });
-      const ids = sel.filter((id) => pg.objects.some((o) => o.id === id));
+      // Containers carry what's inside them; manual routes between moving objects move along.
+      const ids = withContents(s.project, pg, sel.filter((id) => pg.objects.some((o) => o.id === id)));
       const orig = new Map<Id, Pt>();
       for (const o of pg.objects) if (ids.includes(o.id)) orig.set(o.id, { x: o.x, y: o.y });
-      setDrag({ t: 'move', start: p, ids, orig, moved: false, clickId: obj.id, additive, wasSelected });
+      setDrag({ t: 'move', start: p, ids, orig, moved: false, clickId: obj.id, additive, wasSelected, carry: routesToCarry(s.project, pg, ids) });
       return;
     }
     // Empty space: marquee
@@ -340,6 +441,31 @@ export function Canvas() {
         }
         const snapped = snapMove(s.project, pg, d.ids, d.orig, dx, dy, z);
         setGuides(snapped.guides);
+        // Dragging a single drawn line: its ends snap onto shapes / lines nearby and glue there (Alt = free).
+        const lone = d.ids.length === 1 ? pg.objects.find((o) => o.id === d.ids[0]) : undefined;
+        let glue: [LineGlue | null, LineGlue | null] | null = null;
+        if (lone?.kind === 'line') {
+          const op = d.orig.get(lone.id)!;
+          const ends0 = lineEnds({ ...lone, x: op.x + snapped.dx, y: op.y + snapped.dy });
+          const tol = 8 / z;
+          const hits = e.altKey ? [] : ends0.map((q) => snapTarget(s.project, pg, routes, q, tol, lone.id));
+          const best = hits
+            .map((h, i) => (h ? { h, i, d: Math.hypot(h.q.x - ends0[i].x, h.q.y - ends0[i].y) } : null))
+            .filter((x): x is { h: NonNullable<(typeof hits)[number]>; i: number; d: number } => !!x)
+            .sort((a, b) => a.d - b.d)[0];
+          glue = [null, null];
+          if (best) {
+            snapped.dx += best.h.q.x - ends0[best.i].x;
+            snapped.dy += best.h.q.y - ends0[best.i].y;
+            glue[best.i] = best.h.glue;
+            // The other end also glues if it now sits on something.
+            const o2 = 1 - best.i;
+            const q2 = { x: ends0[o2].x + best.h.q.x - ends0[best.i].x, y: ends0[o2].y + best.h.q.y - ends0[best.i].y };
+            const h2 = snapTarget(s.project, pg, routes, q2, 1, lone.id);
+            if (h2) glue[o2] = h2.glue;
+          }
+          setLineSnap(best?.h.q ?? null);
+        }
         updateProject((dr) => {
           const pgd = dr.pages.find((x) => x.id === pg.id)!;
           for (const o of pgd.objects) {
@@ -349,11 +475,99 @@ export function Canvas() {
               o.y = op.y + snapped.dy;
             }
           }
+          applyCarry(pgd, d.carry, snapped.dx, snapped.dy);
+          unglueMoved(pgd, new Set(d.ids));
+          if (glue) {
+            const t = pgd.objects.find((o) => o.id === d.ids[0]);
+            if (t?.kind === 'line') t.ends = glue[0] || glue[1] ? glue : undefined;
+          }
         }, false);
         return;
       }
+      case 'rotate': {
+        let r = d.orig + angleDeg(d.c, p) - d.start;
+        if (e.shiftKey) r = Math.round(r / 15) * 15;
+        else {
+          // Gentle pull to square angles.
+          const sq = Math.round(r / 90) * 90;
+          if (Math.abs(r - sq) < 4) r = sq;
+        }
+        r = Math.round(normDeg(r) * 10) / 10;
+        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && (o.rot = r)), false);
+        return;
+      }
+      case 'lineEnd': {
+        let q = e.shiftKey ? p : { x: snapV(p.x), y: snapV(p.y) };
+        if (e.shiftKey) {
+          // 15° steps around the fixed end.
+          const len = Math.hypot(p.x - d.fixed.x, p.y - d.fixed.y);
+          const a = (Math.round((Math.atan2(p.y - d.fixed.y, p.x - d.fixed.x) * 180) / Math.PI / 15) * 15 * Math.PI) / 180;
+          q = { x: d.fixed.x + Math.cos(a) * len, y: d.fixed.y + Math.sin(a) * len };
+        }
+        // Snap the end onto a shape (corner, side centre, outline) or a line, and glue it there (Alt = free).
+        const sn = e.altKey ? null : snapTarget(s.project, pg, routes, p, 8 / z, d.id);
+        setLineSnap(sn?.q ?? null);
+        if (sn) q = sn.q;
+        const box = d.end === 0 ? lineBox(q.x, q.y, d.fixed.x, d.fixed.y) : lineBox(d.fixed.x, d.fixed.y, q.x, q.y);
+        patchObjects(
+          [d.id],
+          (t) => {
+            if (t.kind !== 'line') return;
+            Object.assign(t, box);
+            const ends: [LineGlue | null, LineGlue | null] = [...(t.ends ?? [null, null])] as [LineGlue | null, LineGlue | null];
+            ends[d.end] = sn?.glue ?? null;
+            t.ends = ends[0] || ends[1] ? ends : undefined;
+          },
+          false,
+        );
+        return;
+      }
+      case 'draw': {
+        const z0 = viewRef.current.z;
+        if (!d.id && Math.hypot(p.x - d.start.x, p.y - d.start.y) * z0 < DRAG_THRESHOLD * 2) return;
+        // Shift: equal sides (circle / square).
+        let w = snapV(p.x) - d.start.x;
+        let h = snapV(p.y) - d.start.y;
+        if (e.shiftKey) {
+          const m = Math.max(Math.abs(w), Math.abs(h));
+          w = Math.sign(w || 1) * m;
+          h = Math.sign(h || 1) * m;
+        }
+        const r = normRect(d.start, { x: d.start.x + w, y: d.start.y + h });
+        r.w = Math.max(6, r.w);
+        r.h = Math.max(6, r.h);
+        if (!d.id) {
+          const t = d.tool;
+          d.id =
+            t === 'text' ? addText(r.x, r.y, 'Text', r.w, r.h)
+            : t === 'rect' ? addRect(r.x, r.y, r.w, r.h)
+            : t === 'ellipse' ? addEllipse(r.x, r.y, r.w, r.h)
+            : t === 'container' ? addContainer(r.x, r.y, r.w, r.h)
+            : addCallout(r.x, r.y, t === 'cloud' ? 'cloud' : 'box', r.w, r.h);
+          return;
+        }
+        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && Object.assign(o, r)), false);
+        return;
+      }
+      case 'tail': {
+        const o = pg.objects.find((x) => x.id === d.id);
+        if (!o || o.kind !== 'callout') return;
+        // The tip follows the pointer; over another object (or a line) it will glue to it on release.
+        const target = hitObjectExcept(s.project, pg, p, o.id)?.id ?? nearestLine(routes, p, 6 / z)?.id ?? null;
+        setTailHover(target);
+        patchObjects(
+          [d.id],
+          (t) => {
+            if (t.kind !== 'callout') return;
+            t.tail = { x: Math.round(p.x - t.x), y: Math.round(p.y - t.y) };
+            delete t.tailTo;
+          },
+          false,
+        );
+        return;
+      }
       case 'resize': {
-        resizeTo(d, p, e.shiftKey);
+        resizeTo(d, p, e.shiftKey, e.altKey);
         return;
       }
       case 'connect': {
@@ -365,7 +579,7 @@ export function Canvas() {
         setHoverPort(okPort);
         // Over a rectangle / text box: show its dots and the side the line will attach to.
         const sh = okPort ? null : hitShape(s.project, pg, p.x, p.y, 6 / z);
-        if (sh && sh.id !== d.from.objId) setHoverShape({ id: sh.id, dot: { objId: sh.id, ...outlinePoint(objBounds(s.project, sh), p.x, p.y) } });
+        if (sh && sh.id !== d.from.objId) setHoverShape({ id: sh.id, dot: { objId: sh.id, ...outlinePointOf(s.project, sh, p.x, p.y) } });
         else setHoverShape(null);
         return;
       }
@@ -383,18 +597,19 @@ export function Canvas() {
         const L = pathLength(r.pts);
         let t = L > 0 ? projectOnPath(r.pts, p) / L : 0.5;
         // Snap the label centre in line with other labels (same x on horizontal runs, same y on vertical runs).
-        const me = labelBox({ ...r, conn: { ...r.conn, labelT: t } });
+        const me = labelBoxes({ ...r, conn: withLabelT(r.conn, d.idx, t) })[d.idx];
         const gs: Guide[] = [];
         if (me && s.prefs.smartGuides) {
           const tol = 6 / z;
           let best: { d: number; v: number } | null = null;
           for (const [id, other] of routes) {
             if (id === d.connId) continue;
-            const ob = labelBox(other);
-            if (!ob || ob.horiz !== me.horiz) continue;
-            const v = me.horiz ? ob.p.x : ob.p.y;
-            const dd = Math.abs((me.horiz ? me.p.x : me.p.y) - v);
-            if (dd < tol && (!best || dd < best.d)) best = { d: dd, v };
+            for (const ob of labelBoxes(other)) {
+              if (ob.horiz !== me.horiz) continue;
+              const v = me.horiz ? ob.p.x : ob.p.y;
+              const dd = Math.abs((me.horiz ? me.p.x : me.p.y) - v);
+              if (dd < tol && (!best || dd < best.d)) best = { d: dd, v };
+            }
           }
           if (best) {
             const st = labelTAt(r, me.horiz ? 'x' : 'y', best.v, me.p);
@@ -405,7 +620,8 @@ export function Canvas() {
           }
         }
         setGuides(gs);
-        patchConnections([d.connId], (c) => void (c.labelT = Math.min(0.99, Math.max(0.01, t))), false);
+        const tt = Math.min(0.99, Math.max(0.01, t));
+        patchConnections([d.connId], (c) => void Object.assign(c, withLabelT(c, d.idx, tt)), false);
         return;
       }
     }
@@ -422,12 +638,61 @@ export function Canvas() {
     const p = toPage(e.clientX, e.clientY);
     switch (d.t) {
       case 'move':
+        setLineSnap(null);
         if (!d.moved && !d.additive && d.clickId) setState({ selection: [d.clickId] });
         if (!d.moved && d.additive && d.clickId && d.wasSelected) toggleSel(d.clickId);
         break;
+      case 'tail': {
+        setTailHover(null);
+        const o = pg.objects.find((x) => x.id === d.id);
+        const target = o && hitObjectExcept(s.project, pg, p, o.id);
+        const line = o && !target ? nearestLine(routes, p, 6 / viewRef.current.z) : null;
+        if (target) {
+          const b = localBox(s.project, target);
+          const q = toLocal(s.project, target, p);
+          patchObjects([d.id], (t) => void (t.kind === 'callout' && (t.tailTo = { objId: target.id, fx: (q.x - b.x) / b.w, fy: (q.y - b.y) / b.h })), false);
+          labelLast('Point callout at ' + describeObject(s.project, target));
+        } else if (line && !line.trunk) {
+          patchObjects([d.id], (t) => void (t.kind === 'callout' && (t.tailTo = { connId: line.id, t: line.t })), false);
+          labelLast('Point callout at a line');
+        }
+        dropCheckpointIfUnchanged();
+        break;
+      }
+      case 'draw': {
+        setState({ tool: 'select' });
+        let id = d.id;
+        const t = d.tool;
+        if (!id) {
+          // A click: the default size at that point.
+          const { x, y } = d.start;
+          id =
+            t === 'text' ? addText(x, y)
+            : t === 'rect' ? addRect(x, y)
+            : t === 'ellipse' ? addEllipse(x, y)
+            : t === 'container' ? addContainer(x, y)
+            : addCallout(x, y, t === 'cloud' ? 'cloud' : 'box');
+        } else if (t === 'callout' || t === 'cloud') {
+          // Point the new callout from its final size.
+          patchObjects([id], (o) => void (o.kind === 'callout' && (o.tail = defaultTail(t === 'cloud', o.w, o.h))), false);
+        }
+        if (t === 'text' || t === 'callout' || t === 'cloud') setEditing({ kind: 'text', id });
+        break;
+      }
+      case 'lineEnd': {
+        setLineSnap(null);
+        const o = pg.objects.find((x) => x.id === d.id);
+        if (d.fresh && o?.kind === 'line' && o.w < 4) {
+          const box = lineBox(d.fixed.x, d.fixed.y, d.fixed.x + 72, d.fixed.y);
+          patchObjects([d.id], (t) => void (t.kind === 'line' && Object.assign(t, box)), false);
+        }
+        if (!d.fresh) dropCheckpointIfUnchanged();
+        break;
+      }
       case 'resize':
       case 'segment':
       case 'label':
+      case 'rotate':
         dropCheckpointIfUnchanged();
         break;
       case 'connect': {
@@ -441,7 +706,12 @@ export function Canvas() {
         if (hp && !(hp.objId === d.from.objId && hp.portId === fromPort)) to = { objId: hp.objId, portId: hp.portId };
         else {
           const o = hitShape(s.project, pg, p.x, p.y, 6 / viewRef.current.z);
-          if (o && o.id !== d.from.objId) to = { objId: o.id, ...outlinePoint(objBounds(s.project, o), p.x, p.y) };
+          if (o && o.id !== d.from.objId) to = { objId: o.id, ...outlinePointOf(s.project, o, p.x, p.y) };
+        }
+        if (d.multi && hp && d.port) {
+          const pairs = multiPairs(s.project, pg, d.multi, d.port, hp);
+          connectPairs(pairs.pairs, pairs.skipped);
+          break;
         }
         if (to) {
           const id = connect(d.from, to);
@@ -449,6 +719,9 @@ export function Canvas() {
             autoStraighten(id);
             setState({ selection: [id], selectedPorts: [] });
           }
+        } else if (isPortEndpoint(d.from) && !hitObject(s.project, pg, p.x, p.y) && Math.hypot(p.x - d.start.x, p.y - d.start.y) * viewRef.current.z > 30) {
+          // Released on empty space: end the line in a reference tag and ask where it goes.
+          tagAtLineEnd(d.from, p);
         }
         break;
       }
@@ -481,24 +754,60 @@ export function Canvas() {
     setState({ selectedPorts: ports, selection: objIds });
   };
 
-  const resizeTo = (d: Extract<Drag, { t: 'resize' }>, p: Pt, keepAspect: boolean) => {
+  const tagAtLineEnd = (from: Endpoint, p: Pt) => {
+    const s = getState();
+    const pg = currentPage(s);
+    const a = resolveEndpoint(s.project, pg, from);
+    if (!a) return;
+    // Level with the port when close, so the line runs straight.
+    const y = Math.abs(p.y - a.y) < 24 ? a.y : p.y;
+    const leftOfPort = p.x < a.x;
+    const id = addTag(snapV(p.x), y, null);
+    // From a port: as tall as its row (in the row's font size), so tags on neighbouring rows don't overlap.
+    const blk = pg.objects.find((o) => o.id === from.objId);
+    if (blk?.kind === 'block' && Math.abs(p.y - a.y) < 24) updateProject((dr) => void Object.assign(dr.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id)!, tagRowFit(blk.scale)), false);
+    const tag = getState().project.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id) as TagObj;
+    const sz = tagSize(getState().project, tag);
+    updateProject((dr) => {
+      const t = dr.pages.find((x) => x.id === pg.id)!.objects.find((o) => o.id === id)!;
+      t.y = y - sz.h / 2;
+      if (leftOfPort) t.x = snapV(p.x) - sz.w;
+    }, false);
+    const cid = connect(from, { objId: id, fx: leftOfPort ? 1 : 0, fy: 0.5 }, { record: false, quiet: true });
+    if (cid) setState({ selection: [id] });
+    setState({ modal: { kind: 'tagTarget', objId: id, isNew: true } });
+  };
+
+  const resizeTo = (d: Extract<Drag, { t: 'resize' }>, p: Pt, keepAspect: boolean, altKey = false) => {
     const o = d.orig;
     const b = { x: o.x, y: o.y, w: d.origSize.w, h: d.origSize.h };
+    const rot = rotOf(o);
+    const c0 = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+    // Rotated shapes resize in their own frame; snapping only applies when upright.
+    const q = rotatePt(p, c0, -rot);
+    const sv = (v: number) => (rot ? v : snapV(v));
     let x1 = b.x;
     let y1 = b.y;
     let x2 = b.x + b.w;
     let y2 = b.y + b.h;
     const h = d.handle;
-    if (h.includes('w')) x1 = snapV(p.x);
-    if (h.includes('e')) x2 = snapV(p.x);
-    if (h.includes('n')) y1 = snapV(p.y);
-    if (h.includes('s')) y2 = snapV(p.y);
+    if (h.includes('w')) x1 = sv(q.x);
+    if (h.includes('e')) x2 = sv(q.x);
+    if (h.includes('n')) y1 = sv(q.y);
+    if (h.includes('s')) y2 = sv(q.y);
+    // Images keep their proportions on the corner handles (Shift frees them).
+    if (o.kind === 'image' && h.length === 2) keepAspect = !keepAspect;
     if (o.kind === 'block') {
       // Uniform scale, anchored at the opposite corner.
       const sx = (x2 - x1) / b.w;
       const sy = (y2 - y1) / b.h;
       const f = h === 'e' || h === 'w' ? sx : h === 'n' || h === 's' ? sy : Math.max(sx, sy);
-      const scale = Math.min(4, Math.max(0.3, Math.round(o.scale * f * 100) / 100));
+      // Snap to other blocks' scales (so rows stay level with them), else to 5% steps; Alt = free.
+      let scale = Math.min(4, Math.max(0.3, o.scale * f));
+      if (!altKey) {
+        const near = currentPage().objects.filter((x): x is BlockObj => x.kind === 'block' && x.id !== o.id).map((x) => x.scale).find((v) => Math.abs(v - scale) < 0.03);
+        scale = near ?? Math.round(scale * 20) / 20;
+      } else scale = Math.round(scale * 100) / 100;
       const nw = (b.w / o.scale) * scale;
       const nh = (b.h / o.scale) * scale;
       patchObjects(
@@ -528,14 +837,24 @@ export function Canvas() {
       }
     }
     const r = normRect({ x: x1, y: y1 }, { x: x2, y: y2 });
+    r.w = Math.max(6, r.w);
+    r.h = Math.max(6, r.h);
+    // Keep the opposite side fixed on the page: place the new centre through the rotation.
+    const cp = rotatePt({ x: r.x + r.w / 2, y: r.y + r.h / 2 }, c0, rot);
+    const nx = cp.x - r.w / 2;
+    const ny = cp.y - r.h / 2;
     patchObjects(
       [d.id],
       (t) => {
-        if (t.kind === 'block') return;
-        t.x = r.x;
-        t.y = r.y;
-        t.w = Math.max(6, r.w);
-        t.h = Math.max(6, r.h);
+        if (t.kind === 'block' || t.kind === 'tag') return;
+        if (t.kind === 'callout' && o.kind === 'callout') {
+          // The pointer's tip stays where it is.
+          t.tail = { x: Math.round(o.x + o.tail.x - nx), y: Math.round(o.y + o.tail.y - ny) };
+        }
+        t.x = nx;
+        t.y = ny;
+        t.w = r.w;
+        t.h = r.h;
       },
       false,
     );
@@ -544,11 +863,11 @@ export function Canvas() {
   const dragSegment = (d: Extract<Drag, { t: 'segment' }>, p: Pt) => {
     const s = getState();
     const pg = currentPage(s);
-    const c = pg.connections.find((x) => x.id === d.connId);
-    if (!c) return;
-    const sA = resolveEndpoint(s.project, pg, c.from);
-    const eA = resolveEndpoint(s.project, pg, c.to);
-    if (!sA || !eA) return;
+    // Lines and snake trunks share the route model; the anchors come from the resolved route.
+    const rr = resolvePageRoutes(s.project, pg).get(d.connId);
+    if (!rr) return;
+    const sA = rr.s;
+    const eA = rr.e;
     let bends = [...d.bends];
     let seg = d.seg;
     const n = bends.length;
@@ -573,25 +892,39 @@ export function Canvas() {
     } else {
       bends[seg - 1] = coord;
     }
-    patchConnections([d.connId], (cc) => void (cc.bends = bends), false);
+    if (rr.trunk) patchBundles([d.connId], (b) => void (b.bends = bends), false);
+    else patchConnections([d.connId], (cc) => void (cc.bends = bends), false);
   };
 
   // ------------------------------------------------------------------------------------------
   // Drop from library panel
 
   const onDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/x-schema-block')) {
+    const t = e.dataTransfer.types;
+    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('Files')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   };
   const onDrop = (e: React.DragEvent) => {
+    const p = toPage(e.clientX, e.clientY);
+    const files = [...e.dataTransfer.files].filter(isMediaFile);
+    if (files.length) {
+      e.preventDefault();
+      void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
+      return;
+    }
+    const dev = e.dataTransfer.getData('application/x-schema-device');
+    if (dev) {
+      e.preventDefault();
+      placeInstance(dev, snapV(p.x), snapV(p.y));
+      return;
+    }
     const id = e.dataTransfer.getData('application/x-schema-block');
     if (!id) return;
     e.preventDefault();
     const def = getState().library.find((l) => l.id === id);
     if (!def) return;
-    const p = toPage(e.clientX, e.clientY);
     placeBlock(def, snapV(p.x), snapV(p.y));
   };
 
@@ -609,8 +942,9 @@ export function Canvas() {
     }
     const o = hitObject(s.project, pg, p.x, p.y);
     if (!o) return;
-    if (o.kind === 'text' || o.kind === 'rect') setEditing({ kind: 'text', id: o.id });
-    else if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
+    if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
+    else if (o.kind === 'tag') jumpToTag(o);
+    else if ('text' in o) setEditing({ kind: 'text', id: o.id });
   };
 
   // ------------------------------------------------------------------------------------------
@@ -622,7 +956,16 @@ export function Canvas() {
   const area = drawingArea(page.size);
 
   let preview: string | null = null;
-  if (drag?.t === 'connect' && drag.moved) {
+  if (drag?.t === 'connect' && drag.moved && drag.multi && drag.port && hoverPort) {
+    // Every selected port's line, to consecutive rows from the one under the pointer.
+    preview = multiPairs(project, page, drag.multi, drag.port, hoverPort)
+      .pairs.map(([a, b]) => {
+        const sA = resolveEndpoint(project, page, a);
+        const eA = resolveEndpoint(project, page, b);
+        return sA && eA ? polyD(simplify(rawPoints(sA, eA, autoBends(sA, eA)))) : '';
+      })
+      .join('');
+  } else if (drag?.t === 'connect' && drag.moved) {
     const sA = resolveEndpoint(project, page, drag.from);
     if (sA) {
       const hp = hoverPort;
@@ -683,6 +1026,8 @@ export function Canvas() {
             hoverPort={hoverPort}
             hoverShape={hoverShape}
             connecting={drag?.t === 'connect'}
+            elsewhere={elsewhere}
+            tailHover={tailHover}
           />
           {preview && <path d={preview} fill="none" stroke={previewWarn.length ? '#d97706' : '#2563eb'} strokeWidth={1 / z} strokeDasharray={`${4 / z} ${3 / z}`} pointerEvents="none" />}
           {drag?.t === 'marquee' && (
@@ -698,6 +1043,7 @@ export function Canvas() {
               pointerEvents="none"
             />
           )}
+          {lineSnap && <circle cx={lineSnap.x} cy={lineSnap.y} r={4 / z} fill="none" stroke="#16a34a" strokeWidth={1.5 / z} pointerEvents="none" />}
           {guides.map((g, i) => (
             <line key={i} x1={g.x1} y1={g.y1} x2={g.x2} y2={g.y2} stroke="#e11d48" strokeWidth={0.75 / z} strokeDasharray={`${3 / z} ${2 / z}`} pointerEvents="none" />
           ))}
@@ -734,7 +1080,8 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
   const bounds = moving.map((o) => {
     const op = orig.get(o.id)!;
     const b = objBounds(project, o);
-    return { ...b, x: op.x, y: op.y, o };
+    // Bounds can be offset from x/y (rotated shapes).
+    return { ...b, x: b.x - o.x + op.x, y: b.y - o.y + op.y, o };
   });
   const bx = Math.min(...bounds.map((b) => b.x));
   const by = Math.min(...bounds.map((b) => b.y));
@@ -788,7 +1135,7 @@ function snapMove(project: Project, page: Page, ids: Id[], orig: Map<Id, Pt>, dx
     const myX = [bx, (bx + bx2) / 2, bx2];
     const myY = [by, (by + by2) / 2, by2];
     const myPortY: number[] = [];
-    for (const b of bounds) if (b.o.kind === 'block') myPortY.push(...blockPortYs(project, { ...b.o, x: b.x, y: b.y } as BlockObj));
+    for (const b of bounds) if (b.o.kind === 'block') myPortY.push(...blockPortYs(project, { ...b.o, ...orig.get(b.o.id)! } as BlockObj));
 
     let best = { d: tol, v: 0, at: 0 };
     for (const mx of myX) for (const ox of xs) {
@@ -835,7 +1182,166 @@ function blockPortYs(project: Project, o: BlockObj): number[] {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Ports connected on other pages (shown with a small marker; screen only)
+
+type Elsewhere = Map<Id, Map<Id, number[]>>; // deviceId → portId → page numbers (1-based)
+
+function portsUsedElsewhere(project: Project, pageIndex: number): Elsewhere {
+  const out: Elsewhere = new Map();
+  // Device-level key of a line end ("device:port", or the object for shapes/tags).
+  const endKey = (pg: Page, e: Endpoint) => {
+    const o = pg.objects.find((x) => x.id === e.objId);
+    return o?.kind === 'block' && isPortEndpoint(e) ? `${o.deviceId}:${e.portId}` : e.objId;
+  };
+  // Connections drawn on this page too (e.g. a copied jumper) aren't "elsewhere".
+  const here = new Set<string>();
+  const cur = project.pages[pageIndex];
+  for (const c of cur?.connections ?? []) {
+    const a = endKey(cur, c.from);
+    const b = endKey(cur, c.to);
+    here.add(a + '|' + b).add(b + '|' + a);
+  }
+  project.pages.forEach((pg, i) => {
+    if (i === pageIndex) return;
+    const dev = new Map<Id, Id>();
+    for (const o of pg.objects) if (o.kind === 'block') dev.set(o.id, o.deviceId);
+    for (const c of pg.connections) {
+      if (here.has(endKey(pg, c.from) + '|' + endKey(pg, c.to))) continue;
+      for (const e of [c.from, c.to]) {
+        if (!isPortEndpoint(e)) continue;
+        const d = dev.get(e.objId);
+        if (!d) continue;
+        if (!out.has(d)) out.set(d, new Map());
+        const m = out.get(d)!;
+        const list = m.get(e.portId) ?? [];
+        if (!list.includes(i + 1)) list.push(i + 1);
+        m.set(e.portId, list);
+      }
+    }
+  });
+  return out;
+}
+
+/** The line (or snake trunk) nearest to a point within `tol`, with the fraction of its length there. */
+function nearestLine(routes: Map<Id, ResolvedRoute>, p: Pt, tol: number): { id: Id; t: number; trunk: boolean } | null {
+  let best: { id: Id; t: number; trunk: boolean; d: number } | null = null;
+  for (const [id, r] of routes) {
+    const L = pathLength(r.pts);
+    if (!L) continue;
+    const dd = projectOnPath(r.pts, p);
+    const q = pointAtDist(r.pts, dd);
+    const dist = Math.hypot(q.x - p.x, q.y - p.y);
+    if (dist <= tol && (!best || dist < best.d)) best = { id, t: dd / L, trunk: !!r.trunk, d: dist };
+  }
+  return best;
+}
+
+function pointAtDist(pts: Pt[], d: number): Pt {
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const len = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    if (acc + len >= d) {
+      const f = len ? (d - acc) / len : 0;
+      return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * f, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * f };
+    }
+    acc += len;
+  }
+  return pts[pts.length - 1];
+}
+
+/** Topmost object under a point other than `except` (blocks, shapes, container frames). */
+function hitObjectExcept(project: Project, page: Page, p: Pt, except: Id): PageObject | null {
+  const others = { ...page, objects: page.objects.filter((o) => o.id !== except) };
+  return hitObject(project, others, p.x, p.y, 2);
+}
+
+/**
+ * Lines for a multi-port drag: the selected ports in row order go to consecutive rows of the
+ * target column, lined up so the dragged port lands on the port under the pointer.
+ */
+function multiPairs(project: Project, page: Page, multi: PortHit[], dragged: PortHit, target: PortHit) {
+  const src = [...multi].sort((a, b) => (a.side === b.side ? a.index - b.index : a.side === 'L' ? -1 : 1));
+  const k = src.findIndex((x) => x.portId === dragged.portId);
+  const tObj = page.objects.find((o) => o.id === target.objId);
+  const def = tObj?.kind === 'block' ? blockFor(project, tObj).def : undefined;
+  const col = def ? (target.side === 'L' ? def.left : def.right) : [];
+  const pairs: [Endpoint, Endpoint][] = [];
+  let skipped = 0;
+  src.forEach((x, i) => {
+    const p = col[target.index + i - k];
+    if (!p) skipped++;
+    else pairs.push([{ objId: x.objId, portId: x.portId }, { objId: target.objId, portId: p.id }]);
+  });
+  return { pairs, skipped };
+}
+
+/**
+ * Snap target for a drawn line's end, and how it stays glued there: a corner or side centre of a
+ * shape / container / block / image, or a drawn line's end (within `tol`); else the nearest point
+ * of a shape's outline (ellipses: along the ray from the centre), a drawn line or a connector.
+ */
+function snapTarget(project: Project, page: Page, routes: Map<Id, ResolvedRoute>, p: Pt, tol: number, except: Id | null): { q: Pt; glue: LineGlue } | null {
+  let best: { q: Pt; glue: LineGlue; d: number; prio: number } | null = null;
+  const consider = (q: Pt, glue: LineGlue, prio: number) => {
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d <= tol && (!best || prio < best.prio || (prio === best.prio && d < best.d))) best = { q, glue, d, prio };
+  };
+  for (const o of page.objects) {
+    if (o.id === except) continue;
+    const b = localBox(project, o);
+    const at = (fx: number, fy: number) => fromLocal(project, o, { x: b.x + fx * b.w, y: b.y + fy * b.h });
+    if (o.kind === 'line') {
+      // Its two ends, else anywhere along it.
+      consider(at(0, 0.5), { objId: o.id, fx: 0, fy: 0.5 }, 0);
+      consider(at(1, 0.5), { objId: o.id, fx: 1, fy: 0.5 }, 0);
+      const l = toLocal(project, o, p);
+      const fx = Math.min(1, Math.max(0, (l.x - b.x) / b.w));
+      consider(at(fx, 0.5), { objId: o.id, fx, fy: 0.5 }, 1);
+      continue;
+    }
+    const round = o.kind === 'ellipse';
+    for (const [fx, fy] of [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]) {
+      if (round && fx !== 0.5 && fy !== 0.5) continue; // an ellipse has no corners
+      consider(at(fx, fy), { objId: o.id, fx, fy }, 0);
+    }
+    // Outline.
+    const l = toLocal(project, o, p);
+    let on: Pt;
+    if (round) {
+      const cx = b.x + b.w / 2;
+      const cy = b.y + b.h / 2;
+      const f = 1 / Math.hypot((l.x - cx) / (b.w / 2), (l.y - cy) / (b.h / 2) || 1e-9);
+      on = { x: cx + (l.x - cx) * f, y: cy + (l.y - cy) * f };
+    } else {
+      const inside = l.x > b.x && l.x < b.x + b.w && l.y > b.y && l.y < b.y + b.h;
+      if (inside) {
+        const dl = l.x - b.x;
+        const dr = b.x + b.w - l.x;
+        const dt = l.y - b.y;
+        const db = b.y + b.h - l.y;
+        const m = Math.min(dl, dr, dt, db);
+        on = m === dl ? { x: b.x, y: l.y } : m === dr ? { x: b.x + b.w, y: l.y } : m === dt ? { x: l.x, y: b.y } : { x: l.x, y: b.y + b.h };
+      } else on = { x: Math.min(b.x + b.w, Math.max(b.x, l.x)), y: Math.min(b.y + b.h, Math.max(b.y, l.y)) };
+    }
+    consider(fromLocal(project, o, on), { objId: o.id, fx: (on.x - b.x) / b.w, fy: (on.y - b.y) / b.h }, 1);
+  }
+  // Connectors (and snake trunks).
+  const nl = nearestLine(routes, p, tol);
+  if (nl) {
+    const r = routes.get(nl.id)!;
+    consider(pointAtDist(r.pts, nl.t * pathLength(r.pts)), { connId: nl.id, t: nl.t }, 1);
+  }
+  return best ? { q: (best as { q: Pt }).q, glue: (best as { glue: LineGlue }).glue } : null;
+}
+
+function angleDeg(c: Pt, p: Pt) {
+  return (Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Overlay: hit targets + selection visuals
+
+const polyD = (pts: Pt[]) => pts.map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join('');
 
 function Overlay(props: {
   project: Project;
@@ -848,53 +1354,97 @@ function Overlay(props: {
   hoverPort: PortHit | null;
   hoverShape: { id: Id; dot: ShapeDot | null } | null;
   connecting: boolean;
+  elsewhere: Elsewhere;
+  tailHover: Id | null;
 }) {
-  const { project, page, z, selection, selectedObjs, routes, selectedPorts, hoverPort, hoverShape, connecting } = props;
+  const { project, page, z, selection, selectedObjs, routes, selectedPorts, hoverPort, hoverShape, connecting, elsewhere, tailHover } = props;
   const hs = 6 / z;
   const sw = 1 / z;
+  const segHit = (id: Id, a: Pt, b: Pt, i: number, fixed: boolean, cursor?: string) =>
+    Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 1e-6 ? null : (
+      <line
+        key={id + ':' + i}
+        data-hit="seg"
+        data-id={id}
+        data-seg={i}
+        data-fixed={fixed ? '1' : undefined}
+        x1={a.x}
+        y1={a.y}
+        x2={b.x}
+        y2={b.y}
+        stroke="transparent"
+        strokeWidth={8 / z}
+        style={{ cursor: cursor ?? 'pointer' }}
+      />
+    );
   return (
     <g>
       {/* Connection hit targets */}
-      {page.connections.map((c) => {
-        const r = routes.get(c.id);
-        if (!r) return null;
+      {[...routes.values()].map((r) => {
+        const id = r.conn.id;
+        if (r.legs) return <g key={id}>{r.legs.map((leg, i) => segHit(id, leg[0], leg[1], i, true))}</g>;
+        if (r.curve)
+          return (
+            <g key={id}>
+              {r.pts.slice(1).map((b, i) => segHit(id, r.pts[i], b, i, true))}
+              {r.trunk?.bars.map((bar, i) => segHit(id, bar[0], bar[1], 1000 + i, true))}
+            </g>
+          );
         return (
-          <g key={c.id}>
-            {r.raw.slice(1).map((b, i) => {
-              const a = r.raw[i];
-              if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 1e-6) return null;
-              return <line key={i} data-hit="seg" data-id={c.id} data-seg={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="transparent" strokeWidth={8 / z} style={{ cursor: segCursor(r, i) }} />;
-            })}
+          <g key={id}>
+            {r.raw.slice(1).map((b, i) => segHit(id, r.raw[i], b, i, false, segCursor(r, i)))}
+            {r.trunk?.bars.map((bar, i) => segHit(id, bar[0], bar[1], 1000 + i, true))}
           </g>
         );
       })}
-      {/* Selected connections */}
-      {page.connections
-        .filter((c) => selection.has(c.id))
-        .map((c) => {
-          const r = routes.get(c.id);
-          if (!r) return null;
-          const lb = labelBox(r);
+      {/* Selected connections / snakes */}
+      {[...routes.values()]
+        .filter((r) => selection.has(r.conn.id))
+        .map((r) => {
+          const lbs = labelBoxes(r);
+          const editable = !r.legs;
           return (
-            <g key={c.id} pointerEvents="none">
-              <path d={r.pts.map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join('')} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={3 / z} />
-              {r.raw.slice(1).map((b, i) => {
-                const a = r.raw[i];
-                if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 4 / z) return null;
-                return <rect key={i} x={(a.x + b.x) / 2 - hs / 2} y={(a.y + b.y) / 2 - hs / 2} width={hs} height={hs} fill="#fff" stroke="#2563eb" strokeWidth={sw} />;
-              })}
-              <circle cx={r.s.x} cy={r.s.y} r={2.5 / z} fill="#2563eb" />
-              <circle cx={r.e.x} cy={r.e.y} r={2.5 / z} fill="#2563eb" />
-              {lb && <rect x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="none" stroke="#2563eb" strokeWidth={sw} strokeDasharray={`${2 / z} ${2 / z}`} />}
+            <g key={r.conn.id} pointerEvents="none">
+              <path d={polyD(r.pts)} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={(r.trunk ? 5 : 3) / z} />
+              {r.trunk?.bars.map((bar, i) => <path key={i} d={polyD(bar)} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={5 / z} />)}
+              {editable &&
+                r.raw.slice(1).map((b, i) => {
+                  const a = r.raw[i];
+                  if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 4 / z) return null;
+                  // On a curve the handles (which sit on the curve) are what you drag to reshape it.
+                  const drag = r.curve ? { 'data-hit': 'seg', 'data-id': r.conn.id, 'data-seg': i, pointerEvents: 'all', style: { cursor: segCursor(r, i) } } : {};
+                  return <rect key={i} x={(a.x + b.x) / 2 - hs / 2} y={(a.y + b.y) / 2 - hs / 2} width={hs} height={hs} fill="#fff" stroke="#2563eb" strokeWidth={sw} {...drag} />;
+                })}
+              {!r.trunk && <circle cx={r.s.x} cy={r.s.y} r={2.5 / z} fill="#2563eb" />}
+              {!r.trunk && <circle cx={r.e.x} cy={r.e.y} r={2.5 / z} fill="#2563eb" />}
+              {lbs.map((lb, i) => (
+                <rect key={'l' + i} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="none" stroke="#2563eb" strokeWidth={sw} strokeDasharray={`${2 / z} ${2 / z}`} />
+              ))}
             </g>
           );
         })}
       {/* Label hit targets (above segments) */}
-      {page.connections.map((c) => {
-        const r = routes.get(c.id);
-        const lb = r && labelBox(r);
-        if (!lb) return null;
-        return <rect key={c.id} data-hit="label" data-id={c.id} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: 'move' }} />;
+      {[...routes.values()].map((r) =>
+        labelBoxes(r).map((lb, i) => (
+          <rect key={r.conn.id + ':' + i} data-hit="label" data-id={r.conn.id} data-idx={i} x={lb.box.x} y={lb.box.y} width={lb.box.w} height={lb.box.h} fill="transparent" style={{ cursor: r.legs ? 'pointer' : 'move' }} />
+        )),
+      )}
+      {/* (above the line hit targets so they stay clickable) "Used elsewhere": a port of this device is connected on another page */}
+      {page.objects.map((o) => {
+        if (o.kind !== 'block') return null;
+        const m = elsewhere.get(o.deviceId);
+        if (!m) return null;
+        return [...m.entries()].map(([portId, pages]) => {
+          const a = portAnchor(project, o, portId);
+          if (!a) return null;
+          const r = 1.8 * o.scale;
+          const x = a.x + a.dir[0] * (r + 0.8 * o.scale);
+          return (
+            <circle key={o.id + portId} data-hit="elsewhere" data-id={o.id} data-port={portId} cx={x} cy={a.y} r={Math.max(r, 2.2 / z)} fill="#0ea5e9" stroke="#fff" strokeWidth={0.4 * o.scale} style={{ cursor: 'pointer' }}>
+              <title>{`${a.port.name}: also connected on page ${pages.join(', ')} — click to add an off-page reference tag here`}</title>
+            </circle>
+          );
+        });
       })}
       {/* Port hover / selection */}
       {selectedPorts.map((sp) => {
@@ -909,16 +1459,16 @@ function Overlay(props: {
         (() => {
           const o = page.objects.find((x) => x.id === hoverShape.id);
           if (!o) return null;
-          const b = objBounds(project, o);
           return (
             <g pointerEvents="none">
               {SIDE_CENTRES.map((c, i) => {
                 const on = hoverShape.dot && hoverShape.dot.fx === c.fx && hoverShape.dot.fy === c.fy;
+                const q = dotPos(project, o, c);
                 return (
                   <circle
                     key={i}
-                    cx={b.x + c.fx * b.w}
-                    cy={b.y + c.fy * b.h}
+                    cx={q.x}
+                    cy={q.y}
                     r={(on ? 3.5 : 2.5) / z}
                     fill={on ? (connecting ? '#16a34a' : '#2563eb') : '#fff'}
                     stroke={connecting ? '#16a34a' : '#2563eb'}
@@ -942,14 +1492,44 @@ function Overlay(props: {
             </g>
           );
         })()}
-      {/* Selected objects */}
+      {tailHover &&
+        (() => {
+          const o = page.objects.find((x) => x.id === tailHover);
+          const r = !o && routes.get(tailHover);
+          if (r) return <path d={polyD(r.pts)} fill="none" stroke="#ca8a04" strokeOpacity={0.6} strokeWidth={4 / z} pointerEvents="none" />;
+          return o ? <path d={polyD(objCorners(project, o)) + 'Z'} fill="rgba(250,204,21,0.12)" stroke="#ca8a04" strokeWidth={1.5 / z} strokeDasharray={`${4 / z} ${2 / z}`} pointerEvents="none" /> : null;
+        })()}
+      {/* Selected objects (outline follows rotation) */}
+      {/* A soft halo plus a crisp outline set a few pixels outside the object, so it reads clearly
+          against the object's own border; with several selected, each gets corner markers too. */}
       {selectedObjs.map((o) => {
-        const b = objBounds(project, o);
-        return <rect key={o.id} x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />;
+        if (o.kind === 'line') return <path key={o.id} d={polyD(lineEnds(o))} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={5 / z} strokeLinecap="round" pointerEvents="none" />;
+        const cs = paddedCorners(project, o, 3 / z);
+        const d = polyD(cs) + 'Z';
+        const m = 5 / z;
+        return (
+          <g key={o.id} pointerEvents="none">
+            <path d={d} fill="none" stroke="#3b82f6" strokeOpacity={0.25} strokeWidth={5 / z} />
+            <path d={d} fill="none" stroke="#2563eb" strokeWidth={1.5 / z} />
+            {selectedObjs.length > 1 && cs.map((c, i) => <rect key={i} x={c.x - m / 2} y={c.y - m / 2} width={m} height={m} fill="#2563eb" />)}
+          </g>
+        );
       })}
       {selectedObjs.length === 1 && <Handles project={project} o={selectedObjs[0]} z={z} />}
     </g>
   );
+}
+
+/** Corners of an object's (rotated) box grown outward by `pad`. */
+function paddedCorners(project: Project, o: PageObject, pad: number): Pt[] {
+  const b = localBox(project, o);
+  const g = { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+  return [
+    { x: g.x, y: g.y },
+    { x: g.x + g.w, y: g.y },
+    { x: g.x + g.w, y: g.y + g.h },
+    { x: g.x, y: g.y + g.h },
+  ].map((q) => fromLocal(project, o, q));
 }
 
 function segCursor(r: ResolvedRoute, i: number) {
@@ -958,31 +1538,90 @@ function segCursor(r: ResolvedRoute, i: number) {
   return Math.abs(a.y - b.y) < 1e-6 ? 'ns-resize' : 'ew-resize';
 }
 
+const HANDLE_CURSORS = ['ns-resize', 'nesw-resize', 'ew-resize', 'nwse-resize'];
+
 function Handles({ project, o, z }: { project: Project; o: PageObject; z: number }) {
-  const b = objBounds(project, o);
+  if (o.kind === 'tag') return null;
+  if (o.kind === 'line')
+    return (
+      <g>
+        {lineEnds(o).map((q, i) => (
+          <circle key={i} data-hit="lineEnd" data-id={o.id} data-end={i} cx={q.x} cy={q.y} r={4 / z} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: 'crosshair' }} />
+        ))}
+      </g>
+    );
+  const b = localBox(project, o);
+  const rot = rotOf(o);
   const hs = 7 / z;
-  const all: [Handle, number, number, string][] = [
-    ['nw', b.x, b.y, 'nwse-resize'],
-    ['n', b.x + b.w / 2, b.y, 'ns-resize'],
-    ['ne', b.x + b.w, b.y, 'nesw-resize'],
-    ['e', b.x + b.w, b.y + b.h / 2, 'ew-resize'],
-    ['se', b.x + b.w, b.y + b.h, 'nwse-resize'],
-    ['s', b.x + b.w / 2, b.y + b.h, 'ns-resize'],
-    ['sw', b.x, b.y + b.h, 'nesw-resize'],
-    ['w', b.x, b.y + b.h / 2, 'ew-resize'],
+  const all: [Handle, number, number, number][] = [
+    // handle, local x, local y, compass direction (0 = n, 45° steps)
+    ['nw', b.x, b.y, 7],
+    ['n', b.x + b.w / 2, b.y, 0],
+    ['ne', b.x + b.w, b.y, 1],
+    ['e', b.x + b.w, b.y + b.h / 2, 2],
+    ['se', b.x + b.w, b.y + b.h, 3],
+    ['s', b.x + b.w / 2, b.y + b.h, 4],
+    ['sw', b.x, b.y + b.h, 5],
+    ['w', b.x, b.y + b.h / 2, 6],
   ];
   const hs2 = o.kind === 'block' ? all.filter((h) => h[0].length === 2) : all;
+  const at = (x: number, y: number) => fromLocal(project, o, { x, y });
+  const rotH = at(b.x + b.w / 2, b.y - 20 / z);
+  const topC = at(b.x + b.w / 2, b.y);
   return (
     <g>
-      {hs2.map(([h, x, y, cur]) => (
-        <rect key={h} data-hit="handle" data-handle={h} x={x - hs / 2} y={y - hs / 2} width={hs} height={hs} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: cur }} />
-      ))}
+      {o.kind !== 'block' && (
+        <>
+          <line x1={topC.x} y1={topC.y} x2={rotH.x} y2={rotH.y} stroke="#2563eb" strokeWidth={1 / z} pointerEvents="none" />
+          <circle data-hit="rotate" data-id={o.id} cx={rotH.x} cy={rotH.y} r={4 / z} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: 'grab' }}>
+            <title>Rotate (Shift: 15° steps)</title>
+          </circle>
+        </>
+      )}
+      {hs2.map(([h, x, y, dir]) => {
+        const q = at(x, y);
+        const cur = HANDLE_CURSORS[(dir + Math.round(rot / 45)) % 4];
+        return (
+          <rect
+            key={h}
+            data-hit="handle"
+            data-handle={h}
+            x={q.x - hs / 2}
+            y={q.y - hs / 2}
+            width={hs}
+            height={hs}
+            fill="#fff"
+            stroke="#2563eb"
+            strokeWidth={1 / z}
+            transform={rot ? `rotate(${rot} ${q.x} ${q.y})` : undefined}
+            style={{ cursor: cur }}
+          />
+        );
+      })}
+      {o.kind === 'callout' &&
+        (() => {
+          const q = calloutTip(project, o);
+          const r = 4.5 / z;
+          return (
+            <path
+              data-hit="tail"
+              data-id={o.id}
+              d={`M${q.x} ${q.y - r}L${q.x + r} ${q.y}L${q.x} ${q.y + r}L${q.x - r} ${q.y}Z`}
+              fill="#facc15"
+              stroke="#a16207"
+              strokeWidth={1 / z}
+              style={{ cursor: 'move' }}
+            >
+              <title>{o.tailTo ? 'Glued to an object — drag to move' : 'Drag to point the callout; drop on an object to glue it there'}</title>
+            </path>
+          );
+        })()}
     </g>
   );
 }
 
 // ---------------------------------------------------------------------------------------------
-// Inline editor (text boxes, device names, line labels)
+// Inline editor (text in shapes, device names, line labels)
 
 function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View; onDone: () => void }) {
   const s = getState();
@@ -998,22 +1637,29 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
   let rect = { x: 0, y: 0, w: 120, h: 20 };
   let initial = '';
   let fontSize = 9;
+  let rotate: { deg: number; origin: string } | null = null;
   let commit: (v: string) => void = () => {};
   const tr = (r: { x: number; y: number; w: number; h: number }) => ({ x: r.x * view.z + view.px, y: r.y * view.z + view.py, w: r.w * view.z, h: r.h * view.z });
 
   if (editing.kind === 'text') {
-    const o = pg.objects.find((x) => x.id === editing.id) as TextObj | RectObj | undefined;
-    if (!o) return null;
-    rect = tr({ x: o.x, y: o.y, w: o.w, h: Math.max(o.h, 20) });
+    const o = pg.objects.find((x) => x.id === editing.id) as TextualObj | undefined;
+    if (!o || !('text' in o)) return null;
+    const tb = o.kind === 'container' ? { ...textBoxOf(o), h: Math.max(textBoxOf(o).h, o.fontSize * 1.2 + TEXT_PAD * 2) } : o;
+    rect = tr({ x: tb.x, y: tb.y, w: tb.w, h: Math.max(tb.h, 20) });
+    const rot = rotOf(o);
+    if (rot) {
+      const c = centre(localBox(s.project, o));
+      rotate = { deg: rot, origin: `${(c.x - tb.x) * view.z}px ${(c.y - tb.y) * view.z}px` };
+    }
     initial = o.text;
-    fontSize = fitTextBox(o).size * view.z;
+    fontSize = fitTextBox(textBoxOf(o)).size * view.z;
     commit = (v) => {
       nextLabel('Edit text');
       patchObjects([o.id], (t) => {
-        if (t.kind !== 'text' && t.kind !== 'rect') return;
+        if (!('text' in t)) return;
         t.text = v;
         // Text boxes grow to fit what was typed (like PowerPoint); shrinking the box later scales the text.
-        if (t.kind === 'text') {
+        if (t.kind === 'text' && o.kind === 'text') {
           const n = naturalTextSize({ ...o, text: v });
           if (t.wrap === false && n.w > t.w) t.w = Math.ceil(n.w);
           if (n.h > t.h) t.h = Math.ceil(n.h);
@@ -1031,23 +1677,26 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
     fontSize = Math.max(10, BLK.footerSize * o.scale * view.z);
     commit = (v) => {
       const name = v.trim();
-      if (name && dev && name !== dev.name) {
-        if (Object.values(getState().project.devices).some((d) => d.name === name && d.id !== dev.id)) toast(`Another device is already named "${name}".`, 'warn');
-        renameDevice(dev.id, name);
-      }
+      if (name && dev && name !== dev.name) renameDevice(dev.id, name);
     };
   } else {
-    const c = pg.connections.find((x) => x.id === editing.id) as Connection | undefined;
-    const r = c && resolvePageRoutes(s.project, pg).get(c.id);
-    if (!c || !r) return null;
+    // A line, or a snake (its trunk route carries the snake's label).
+    const r = resolvePageRoutes(s.project, pg).get(editing.id);
+    if (!r) return null;
+    const c = r.conn as Connection;
     const lb = labelBox({ ...r, conn: { ...c, label: c.label || 'X' } });
-    const at = lb?.p ?? r.pts[0];
+    const at = lb?.p ?? r.pts[Math.floor(r.pts.length / 2)];
     rect = tr({ x: at.x - 40, y: at.y - 7, w: 80, h: 14 });
     initial = editing.typed ?? c.label;
     fontSize = Math.max(11, 7 * view.z);
     commit = (v) => {
-      nextLabel(v.trim() ? `Label line "${v.trim()}"` : 'Clear line label');
-      patchConnections([c.id], (cc) => void (cc.label = v.trim()));
+      if (r.trunk) {
+        nextLabel(v.trim() ? `Label snake "${v.trim()}"` : 'Clear snake label');
+        patchBundles([c.id], (b) => void (b.label = v.trim()));
+      } else {
+        nextLabel(v.trim() ? `Label line "${v.trim()}"` : 'Clear line label');
+        patchConnections([c.id], (cc) => void (cc.label = v.trim()));
+      }
     };
   }
 
@@ -1063,6 +1712,8 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
     height: editing.kind === 'text' ? Math.max(rect.h, 24) : undefined,
     fontSize,
     padding: editing.kind === 'text' ? TEXT_PAD * view.z : 2,
+    transform: rotate ? `rotate(${rotate.deg}deg)` : undefined,
+    transformOrigin: rotate?.origin,
   };
   if (editing.kind === 'text')
     return (
@@ -1091,6 +1742,12 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
         e.stopPropagation();
         if (e.key === 'Escape') finish(false);
         if (e.key === 'Enter') finish(true);
+        if (editing.kind === 'label' && e.shiftKey && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+          e.preventDefault();
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          finish(true);
+          window.dispatchEvent(new CustomEvent('schema:nextline', { detail: dir }));
+        }
       }}
     />
   );

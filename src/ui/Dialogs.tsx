@@ -5,18 +5,20 @@ import { fileToImageAsset, pickFile, download } from '../io/files';
 import { newId } from '../model/ids';
 import { exportPdfCmd, listBackups, restoreBackup, downloadBackup, type BackupRecord } from '../state/fileOps';
 import { DEFAULT_SIGNAL_TYPES, PAGE_SIZES } from '../model/defaults';
-import type { PageSizeId } from '../model/types';
+import type { PageSizeId, TagObj } from '../model/types';
+import { setTagTarget } from '../state/actions';
+import { devicePages } from '../model/tags';
 
 const close = () => setState({ modal: null });
 
-function Modal({ title, children, buttons, wide }: { title: string; children: React.ReactNode; buttons: React.ReactNode; wide?: boolean }) {
+function Modal({ title, children, buttons, wide, onClose = close }: { title: string; children: React.ReactNode; buttons: React.ReactNode; wide?: boolean; onClose?: () => void }) {
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
-  }, []);
+  }, [onClose]);
   return (
-    <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+    <div className="modal-bg" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className={'modal' + (wide ? '' : ' small')}>
         <div className="modal-title">{title}</div>
         {children}
@@ -413,5 +415,82 @@ function Details({ details }: { details: string[] }) {
       ))}
       {details.length > 40 && <li>…and {details.length - 40} more</li>}
     </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/** Pick the device (and optionally the port) a reference tag points to. */
+export function TagTargetDialog({ objId, isNew }: { objId: string; isNew: boolean }) {
+  const project = useStore((s) => s.project);
+  const tag = project.pages.flatMap((p) => p.objects).find((o) => o.id === objId) as TagObj | undefined;
+  const [q, setQ] = useState('');
+  const [devId, setDevId] = useState(tag?.target?.deviceId ?? '');
+  const [portId, setPortId] = useState(tag?.target?.portId ?? '');
+  const cancel = () => {
+    close();
+    if (isNew) undo(); // removes the new tag (and its line) again
+  };
+  const ok = (dev = devId, port = portId) => {
+    close();
+    if (dev) setTagTarget(objId, { deviceId: dev, portId: port || undefined });
+  };
+  if (!tag) return null;
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const devices = Object.values(project.devices)
+    .map((d) => ({ d, def: project.blockDefs[d.defId], pages: devicePages(project, d.id) }))
+    .filter(({ d, def }) => terms.every((t) => `${d.name} ${def?.manufacturer} ${def?.model}`.toLowerCase().includes(t)))
+    .sort((a, b) => a.d.name.localeCompare(b.d.name, undefined, { numeric: true }));
+  const sel = devId ? project.devices[devId] : undefined;
+  const def = sel && project.blockDefs[sel.defId];
+  return (
+    <Modal
+      title="Reference tag — where does this line go?"
+      onClose={cancel}
+      buttons={
+        <>
+          <div className="spacer" />
+          <button onClick={cancel}>{isNew ? 'Cancel (remove tag)' : 'Cancel'}</button>
+          <button className="primary" disabled={!devId} onClick={() => ok()}>
+            OK
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <input
+          autoFocus
+          className="search"
+          placeholder="Search devices…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && devices.length) ok(devices[0].d.id, '');
+          }}
+        />
+        <div className="quicklist devpick">
+          {devices.map(({ d, def: df, pages }) => (
+            <div key={d.id} className={'quickitem' + (d.id === devId ? ' sel' : '')} onClick={() => (setDevId(d.id), setPortId(''))} onDoubleClick={() => ok(d.id, '')}>
+              <b>{d.name}</b> <span className="muted">{df ? `${df.manufacturer} ${df.model}` : ''} · page {pages.map((i) => i + 1).join(', ')}</span>
+            </div>
+          ))}
+          {!devices.length && <div className="empty">No devices{q ? ' match' : ' in this project yet'}.</div>}
+        </div>
+        {def && (
+          <label>
+            Port (optional){' '}
+            <select value={portId} onChange={(e) => setPortId(e.target.value)}>
+              <option value="">(whole device)</option>
+              {[...def.left, ...def.right].map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.dir} · {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="muted small">The tag reads TO/FROM (page) NAME and keeps itself up to date when pages move or devices are renamed.</div>
+      </div>
+    </Modal>
   );
 }

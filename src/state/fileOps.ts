@@ -4,7 +4,10 @@ import { deserializeProject, serializeProject } from '../io/projectFile';
 import { download, fsaSupported, saveAs, SCHEMA_TYPES, writeHandle } from '../io/files';
 import { idbGet, idbSet } from '../io/idb';
 import { exportPdf } from '../render/pdfExport';
-import { getState, replaceProject, setState, subscribe, toast, updateProject } from './store';
+import { currentPage, getState, replaceProject, setState, subscribe, toast, updateProject } from './store';
+import { importMediaFile } from '../io/importMedia';
+import { addImage, equipmentListCsv } from './actions';
+import { drawingArea } from '../model/defaults';
 
 // ---------------------------------------------------------------------------------------------
 // New / open / save
@@ -91,6 +94,39 @@ export async function exportPdfCmd(pageIndices: number[]) {
       console.error(e);
       toast('PDF export failed: ' + (e as Error).message, 'error', 6000);
     }
+  }
+}
+
+/** Import images / PDF pages / SVGs onto the current page (at a point, else the pointer or the centre). */
+export async function importMedia(files: File[], at?: { x: number; y: number }) {
+  const s = getState();
+  const area = drawingArea(currentPage(s).size);
+  const p = s.pointer;
+  let pos = at ?? (p && p.x > area.x && p.x < area.x + area.w && p.y > area.y && p.y < area.y + area.h ? p : { x: area.x + area.w / 3, y: area.y + area.h / 3 });
+  for (const f of files) {
+    try {
+      const r = await importMediaFile(f);
+      addImage(r.asset, Math.round(pos.x), Math.round(pos.y), r.name);
+      pos = { x: pos.x + 18, y: pos.y + 18 };
+      if (r.warnings.length) toast(`${r.name}: ${r.warnings.join(' ')}`, 'warn', 8000);
+    } catch (e) {
+      if ((e as DOMException).name !== 'AbortError') toast(`Could not import ${f.name}: ${(e as Error).message}`, 'error', 7000);
+    }
+  }
+}
+
+export async function exportEquipmentListCmd() {
+  const s = getState();
+  if (!Object.keys(s.project.devices).length) {
+    toast('No devices in this project yet.', 'warn');
+    return;
+  }
+  const blob = new Blob(['\ufeff' + equipmentListCsv(s.project)], { type: 'text/csv' });
+  const name = (s.project.info.name || 'Schema').replace(/[\\/:*?"<>|]+/g, '_') + ' - Equipment list.csv';
+  try {
+    await saveAs(blob, name, [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]);
+  } catch (e) {
+    if ((e as DOMException).name !== 'AbortError') toast('Export failed: ' + (e as Error).message, 'error', 6000);
   }
 }
 

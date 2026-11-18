@@ -6,7 +6,8 @@ import { LibraryPanel } from './LibraryPanel';
 import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
 import { QuickInsert } from './QuickInsert';
-import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog } from './Dialogs';
+import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog, TagTargetDialog } from './Dialogs';
+import { isMediaFile } from '../io/importMedia';
 import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
   copySelection,
@@ -15,13 +16,14 @@ import {
   duplicateSelection,
   moveObjects,
   paste,
-  rangeConnect,
   selectAll,
-  straighten,
+  selectNextLine,
 } from '../state/actions';
-import { openProjectCmd, saveCmd } from '../state/fileOps';
+import { importMedia, openProjectCmd, saveCmd } from '../state/fileOps';
 
 let pendingTyped: { id: string; text: string; at: number } | null = null;
+/** Ctrl+V waits a moment for the paste event: an image on the clipboard is imported instead. */
+let pendingPaste: number | undefined;
 
 export function App() {
   const modal = useStore((s) => s.modal);
@@ -58,11 +60,12 @@ export function App() {
         return;
       }
       if (s.modal) return;
-      // Single selected line / text / rectangle / block: type (lines) or Enter/F2 to edit in place.
+      // Single selected line / text / rectangle / block: type (lines) or Enter to edit in place.
       if (s.selection.length === 1 && !mod && !e.altKey) {
         const pg = currentPage(s);
         const id = s.selection[0];
-        const conn = pg.connections.find((c) => c.id === id);
+        // A line or a snake: typing labels it.
+        const conn = pg.connections.find((c) => c.id === id) ?? (pg.bundles ?? []).find((b) => b.id === id);
         const obj = pg.objects.find((o) => o.id === id);
         const edit = (detail: object) => {
           e.preventDefault();
@@ -75,10 +78,10 @@ export function App() {
           pendingTyped = p && p.id === id && now - p.at < 400 ? { id, text: p.text + e.key, at: now } : { id, text: e.key, at: now };
           return edit({ kind: 'label', id, typed: pendingTyped.text });
         }
-        if (e.key === 'Enter' || e.key === 'F2') {
+        if (e.key === 'Enter') {
           if (conn) return edit({ kind: 'label', id });
           if (obj?.kind === 'block') return edit({ kind: 'device', id });
-          if (obj) return edit({ kind: 'text', id });
+          if (obj && 'text' in obj) return edit({ kind: 'text', id });
         }
       }
       if (mod && k === 'z') {
@@ -90,7 +93,13 @@ export function App() {
         redo();
       } else if (mod && k === 'c') copySelection();
       else if (mod && k === 'x') cutSelection();
-      else if (mod && k === 'v') paste();
+      else if (mod && k === 'v') {
+        if (e.shiftKey) paste(true);
+        else {
+          clearTimeout(pendingPaste);
+          pendingPaste = window.setTimeout(paste, 80);
+        }
+      }
       else if (mod && k === 'd') {
         e.preventDefault();
         duplicateSelection();
@@ -100,23 +109,29 @@ export function App() {
       } else if (mod && k === 'a') {
         e.preventDefault();
         selectAll();
-      } else if ((mod && k === 'k') || (!mod && k === 'q')) {
-        e.preventDefault();
-        setState({ modal: { kind: 'quickInsert' } });
       } else if (mod && (k === '0' || k === '=' || k === '+' || k === '-')) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('schema:view', { detail: k === '0' ? 'fit' : k === '-' ? 'out' : 'in' }));
       } else if (k === 'delete' || k === 'backspace') {
         e.preventDefault();
         deleteSelection();
-      } else if (k === 'escape') setState({ selection: [], selectedPorts: [], tool: 'select' });
+      } else if (k === 'escape') {
+        // First Esc leaves a drawing tool (keeping what was just drawn selected); the next clears the selection.
+        if (s.tool !== 'select') setState({ tool: 'select' });
+        else setState({ selection: [], selectedPorts: [] });
+      }
       else if (!mod && k === 'v') setState({ tool: 'select' });
       else if (!mod && k === 't') setState({ tool: 'text' });
       else if (!mod && k === 'r') setState({ tool: 'rect' });
-      else if (!mod && k === 's') straighten();
+      else if (!mod && k === 'e') setState({ tool: 'ellipse' });
+      else if (!mod && k === 'f') setState({ tool: 'container' });
+      else if (!mod && k === 'l') setState({ tool: 'callout' });
       else if (!mod && k === 'h') setState({ tool: 'pan' });
-      else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
-      else if (k.startsWith('arrow')) {
+      else if (e.shiftKey && (k === 'arrowdown' || k === 'arrowup') && s.selection.length === 1 && currentPage(s).connections.some((c) => c.id === s.selection[0])) {
+        // A line is selected: step to the next / previous line (then just type to label it).
+        e.preventDefault();
+        selectNextLine(k === 'arrowdown' ? 1 : -1);
+      } else if (k.startsWith('arrow')) {
         e.preventDefault();
         const step = e.shiftKey ? s.prefs.gridSize : 1;
         const dx = k === 'arrowleft' ? -step : k === 'arrowright' ? step : 0;
@@ -126,6 +141,23 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onKey);
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest?.('input, textarea, [contenteditable=true]') || getState().modal) return;
+      const files = [...(e.clipboardData?.files ?? [])].filter(isMediaFile);
+      if (!files.length) return;
+      e.preventDefault();
+      clearTimeout(pendingPaste);
+      void importMedia(files);
+    };
+    window.addEventListener('paste', onPaste);
+    // From the label editor: Shift+↓ / Shift+↑ saves the label and moves on to the next line.
+    const onNext = (e: Event) => {
+      selectNextLine((e as CustomEvent).detail as 1 | -1);
+      const id = getState().selection[0];
+      window.dispatchEvent(new CustomEvent('schema:edit', { detail: { kind: 'label', id } }));
+    };
+    window.addEventListener('schema:nextline', onNext);
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       // The autosave keeps work safe, but warn if the file on disk is out of date.
       if (getState().dirty && getState().fileHandle) e.preventDefault();
@@ -133,6 +165,8 @@ export function App() {
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('paste', onPaste);
+      window.removeEventListener('schema:nextline', onNext);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
   }, []);
@@ -148,7 +182,7 @@ export function App() {
         </div>
         <PropertiesPanel />
       </div>
-      {modal?.kind === 'blockEditor' && <BlockEditor target={modal.target} defId={modal.defId} />}
+      {modal?.kind === 'blockEditor' && <BlockEditor target={modal.target} defId={modal.defId} objId={modal.objId} />}
       {modal?.kind === 'quickInsert' && <QuickInsert />}
       {modal?.kind === 'prefs' && <PrefsDialog />}
       {modal?.kind === 'titleBlock' && <TitleBlockDialog />}
@@ -156,6 +190,7 @@ export function App() {
       {modal?.kind === 'backups' && <BackupsDialog />}
       {modal?.kind === 'signalTypes' && <SignalTypesDialog />}
       {modal?.kind === 'history' && <HistoryDialog />}
+      {modal?.kind === 'tagTarget' && <TagTargetDialog key={modal.objId} objId={modal.objId} isNew={modal.isNew} />}
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={'toast ' + t.kind}>

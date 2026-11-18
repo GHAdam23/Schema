@@ -1,6 +1,7 @@
 import type { BlockObj, Page, PageObject, Project, Side } from '../model/types';
 import { blockFor, blockLayout, BLK } from '../model/blockGeometry';
-import { objBounds } from '../model/routing';
+import { fromLocal, insideObj, localBox, toLocal } from '../model/geom';
+import { containerBand } from '../render/buildPage';
 import type { PortRef } from '../state/store';
 
 export interface PortHit extends PortRef {
@@ -38,17 +39,37 @@ export function hitPort(project: Project, page: Page, x: number, y: number): Por
   return null;
 }
 
-/** Topmost object under a point: anywhere inside its bounds counts, for every kind of object. */
-export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0): PageObject | null {
+/** Containers are grabbed by their frame or label band, so what's inside stays clickable. */
+export function hitsContainer(project: Project, o: PageObject, x: number, y: number, tol: number) {
+  if (o.kind !== 'container') return false;
+  const b = localBox(project, o);
+  const q = toLocal(project, o, { x, y });
+  if (!insideObj(project, o, { x, y }, tol)) return false;
+  const band = containerBand(o);
+  const inner = q.x > b.x + tol && q.x < b.x + b.w - tol && q.y > b.y + Math.max(tol, band) && q.y < b.y + b.h - tol;
+  return !inner;
+}
+
+/** Topmost object under a point: anywhere inside its (rotated) box counts; containers only on their frame. */
+export function hitObject(project: Project, page: Page, x: number, y: number, pad = 0, frameTol = 4): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    const b = objBounds(project, o);
-    if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return o;
+    if (o.kind === 'container') {
+      if (hitsContainer(project, o, x, y, frameTol + pad)) return o;
+      continue;
+    }
+    if (insideObj(project, o, { x, y }, pad)) return o;
   }
   return null;
 }
 
-/** Connection point on a shape: the centre of the side nearest to (x, y), as fractions of its bounds. */
+/** Connection point on an object: the centre of the side nearest to the page point (rotation aware). */
+export function outlinePointOf(project: Project, o: PageObject, x: number, y: number) {
+  const q = toLocal(project, o, { x, y });
+  return outlinePoint(localBox(project, o), q.x, q.y);
+}
+
+/** Connection point on a box: the centre of the side nearest to (x, y), as fractions of the box. */
 export function outlinePoint(b: { x: number; y: number; w: number; h: number }, x: number, y: number) {
   const fx = (x - b.x) / b.w;
   const fy = (y - b.y) / b.h;
@@ -78,22 +99,27 @@ export interface ShapeDot {
 export function hitShapeDot(project: Project, page: Page, x: number, y: number, tol: number): ShapeDot | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    if (o.kind === 'block') continue;
-    const b = objBounds(project, o);
+    if (o.kind === 'block' || o.kind === 'line') continue;
     for (const c of SIDE_CENTRES) {
-      if (Math.hypot(b.x + c.fx * b.w - x, b.y + c.fy * b.h - y) <= tol) return { objId: o.id, ...c };
+      const p = dotPos(project, o, c);
+      if (Math.hypot(p.x - x, p.y - y) <= tol) return { objId: o.id, ...c };
     }
   }
   return null;
+}
+
+/** Page position of a connection dot (fractions of the unrotated box). */
+export function dotPos(project: Project, o: PageObject, c: { fx: number; fy: number }) {
+  const b = localBox(project, o);
+  return fromLocal(project, o, { x: b.x + c.fx * b.w, y: b.y + c.fy * b.h });
 }
 
 /** The shape (not block) under or near a point, for showing its dots. */
 export function hitShape(project: Project, page: Page, x: number, y: number, pad: number): PageObject | null {
   for (let i = page.objects.length - 1; i >= 0; i--) {
     const o = page.objects[i];
-    if (o.kind === 'block') continue;
-    const b = objBounds(project, o);
-    if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return o;
+    if (o.kind === 'block' || o.kind === 'line') continue;
+    if (o.kind === 'container' ? hitsContainer(project, o, x, y, pad + 4) : insideObj(project, o, { x, y }, pad)) return o;
   }
   return null;
 }

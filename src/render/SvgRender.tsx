@@ -19,10 +19,16 @@ export const SvgItems = memo(function SvgItems({ items, assets }: { items: DLIte
     <>
       {items.map((it, i) => {
         switch (it.t) {
+          case 'group':
+            return (
+              <g key={i} transform={`matrix(${it.m.join(' ')})`}>
+                <SvgItems items={it.items} assets={assets} />
+              </g>
+            );
           case 'rect':
             return <rect key={i} x={it.x} y={it.y} width={it.w} height={it.h} fill={it.fill ?? 'none'} {...strokeProps(it.stroke)} />;
           case 'path':
-            return <path key={i} d={pathToSvg(it.d)} fill={it.fill ?? 'none'} {...strokeProps(it.stroke)} />;
+            return <path key={i} d={pathToSvg(it.d)} fill={it.fill ?? 'none'} fillRule={it.evenOdd ? 'evenodd' : undefined} {...strokeProps(it.stroke)} />;
           case 'text': {
             const f = FONT_CSS[it.font];
             return (
@@ -44,7 +50,10 @@ export const SvgItems = memo(function SvgItems({ items, assets }: { items: DLIte
           case 'image': {
             const a = assets[it.assetId];
             if (!a) return null;
-            return <image key={i} x={it.x} y={it.y} width={it.w} height={it.h} href={`data:${a.mime};base64,${a.data}`} preserveAspectRatio="none" />;
+            // PDFs show their raster preview on screen; the export embeds the page itself.
+            const src = a.preview ?? a;
+            if (src.mime === 'application/pdf') return <rect key={i} x={it.x} y={it.y} width={it.w} height={it.h} fill="#eef2f7" />;
+            return <image key={i} x={it.x} y={it.y} width={it.w} height={it.h} href={`data:${src.mime};base64,${src.data}`} preserveAspectRatio="none" />;
           }
         }
       })}

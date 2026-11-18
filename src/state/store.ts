@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { produce, freeze, type Draft } from 'immer';
 import type { BlockDef, Id, Project } from '../model/types';
 import { newProject } from '../model/project';
+import { syncGlue } from '../model/glue';
 import { loadPrefs, type Prefs } from './prefs';
 
 export interface PortRef {
@@ -49,17 +50,20 @@ export interface HistoryEntry {
   at: number;
 }
 
-export type Tool = 'select' | 'text' | 'rect' | 'pan';
+export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'cloud' | 'line' | 'arrow' | 'arrow2' | 'tag' | 'pan';
 
 export type Modal =
-  | { kind: 'blockEditor'; target: 'library' | 'project'; defId: Id | null }
+  /** library: a library block; project: the ports shared by a model's devices; instance: one placed block only. */
+  | { kind: 'blockEditor'; target: 'library' | 'project' | 'instance'; defId: Id | null; objId?: Id }
   | { kind: 'quickInsert' }
   | { kind: 'prefs' }
   | { kind: 'titleBlock' }
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
   | { kind: 'signalTypes' }
-  | { kind: 'history' };
+  | { kind: 'history' }
+  /** Choose the device (and port) a reference tag points to. `isNew`: cancelling removes the tag again. */
+  | { kind: 'tagTarget'; objId: Id; isNew: boolean };
 
 const MAX_HISTORY = 200;
 
@@ -116,6 +120,10 @@ export function nextLabel(label: string, details?: string[]) {
   pendingLabel = { label, details };
   queueMicrotask(() => (pendingLabel = null));
 }
+/** Like nextLabel, but only if no more specific description is already pending. */
+export function defaultLabel(label: string) {
+  if (!pendingLabel) nextLabel(label);
+}
 function takeLabel(fallback = 'Edit') {
   const p = pendingLabel;
   pendingLabel = null;
@@ -128,7 +136,11 @@ function takeLabel(fallback = 'Edit') {
  */
 export function updateProject(recipe: (d: Draft<Project>) => void, record: boolean | string = true) {
   const prev = state.project;
-  const next = produce(prev, recipe);
+  // Glued drawn lines keep in step with what they're glued to.
+  const next = produce(prev, (d) => {
+    recipe(d);
+    syncGlue(d as Project);
+  });
   if (next === prev) return;
   const rec = record !== false;
   setState((s) => ({
@@ -204,7 +216,7 @@ function fixPageAndSelection() {
   const s = state;
   let page = s.project.pages.find((p) => p.id === s.pageId);
   if (!page) page = s.project.pages[0];
-  const ids = new Set([...page.objects.map((o) => o.id), ...page.connections.map((c) => c.id)]);
+  const ids = new Set([...page.objects.map((o) => o.id), ...page.connections.map((c) => c.id), ...(page.bundles ?? []).map((b) => b.id)]);
   setState({ pageId: page.id, selection: s.selection.filter((id) => ids.has(id)), selectedPorts: s.selectedPorts.filter((p) => ids.has(p.objId)) });
 }
 
