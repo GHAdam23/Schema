@@ -202,14 +202,26 @@ export function PropertiesPanel() {
             </>
           )}
           {conns.length > 1 && (
-            <div className="btnrow">
-              <button title="Line the labels up under the label of the first line you selected (it stays put)" onClick={() => alignLabels('hcenter')}>
-                Line up labels ↕
-              </button>
-              <button title="Line the labels up level with the label of the first line you selected (labels on vertical runs)" onClick={() => alignLabels('vcenter')}>
-                Line up labels ↔
-              </button>
-            </div>
+            <>
+              <div className="sub">Line up labels (with the first line selected)</div>
+              <div className="btnrow">
+                <button title="Left edges in line with the first selected line's label" onClick={() => alignLabels('left')}>
+                  ⇤ Left
+                </button>
+                <button title="Centres in line with the first selected line's label" onClick={() => alignLabels('hcenter')}>
+                  Centre
+                </button>
+                <button title="Right edges in line with the first selected line's label" onClick={() => alignLabels('right')}>
+                  Right ⇥
+                </button>
+              </div>
+              <div className="btnrow small">
+                <span className="muted">Labels on vertical runs:</span>
+                <button onClick={() => alignLabels('top')}>Top</button>
+                <button onClick={() => alignLabels('vcenter')}>Middle</button>
+                <button onClick={() => alignLabels('bottom')}>Bottom</button>
+              </div>
+            </>
           )}
           <StrokeEditor value={conns[0]?.style ?? (objs[0] && 'border' in objs[0] ? (objs[0].border as StrokeStyle) : null) ?? DEFAULT_LINE} onChange={(st) => st && setStroke(s.selection, st)} />
         </div>

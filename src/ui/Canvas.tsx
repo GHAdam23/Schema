@@ -441,6 +441,31 @@ export function Canvas() {
         }
         const snapped = snapMove(s.project, pg, d.ids, d.orig, dx, dy, z);
         setGuides(snapped.guides);
+        // Dragging a single drawn line: its ends snap onto shapes / lines nearby and glue there (Alt = free).
+        const lone = d.ids.length === 1 ? pg.objects.find((o) => o.id === d.ids[0]) : undefined;
+        let glue: [LineGlue | null, LineGlue | null] | null = null;
+        if (lone?.kind === 'line') {
+          const op = d.orig.get(lone.id)!;
+          const ends0 = lineEnds({ ...lone, x: op.x + snapped.dx, y: op.y + snapped.dy });
+          const tol = 8 / z;
+          const hits = e.altKey ? [] : ends0.map((q) => snapTarget(s.project, pg, routes, q, tol, lone.id));
+          const best = hits
+            .map((h, i) => (h ? { h, i, d: Math.hypot(h.q.x - ends0[i].x, h.q.y - ends0[i].y) } : null))
+            .filter((x): x is { h: NonNullable<(typeof hits)[number]>; i: number; d: number } => !!x)
+            .sort((a, b) => a.d - b.d)[0];
+          glue = [null, null];
+          if (best) {
+            snapped.dx += best.h.q.x - ends0[best.i].x;
+            snapped.dy += best.h.q.y - ends0[best.i].y;
+            glue[best.i] = best.h.glue;
+            // The other end also glues if it now sits on something.
+            const o2 = 1 - best.i;
+            const q2 = { x: ends0[o2].x + best.h.q.x - ends0[best.i].x, y: ends0[o2].y + best.h.q.y - ends0[best.i].y };
+            const h2 = snapTarget(s.project, pg, routes, q2, 1, lone.id);
+            if (h2) glue[o2] = h2.glue;
+          }
+          setLineSnap(best?.h.q ?? null);
+        }
         updateProject((dr) => {
           const pgd = dr.pages.find((x) => x.id === pg.id)!;
           for (const o of pgd.objects) {
@@ -452,6 +477,10 @@ export function Canvas() {
           }
           applyCarry(pgd, d.carry, snapped.dx, snapped.dy);
           unglueMoved(pgd, new Set(d.ids));
+          if (glue) {
+            const t = pgd.objects.find((o) => o.id === d.ids[0]);
+            if (t?.kind === 'line') t.ends = glue[0] || glue[1] ? glue : undefined;
+          }
         }, false);
         return;
       }
@@ -609,6 +638,7 @@ export function Canvas() {
     const p = toPage(e.clientX, e.clientY);
     switch (d.t) {
       case 'move':
+        setLineSnap(null);
         if (!d.moved && !d.additive && d.clickId) setState({ selection: [d.clickId] });
         if (!d.moved && d.additive && d.clickId && d.wasSelected) toggleSel(d.clickId);
         break;
@@ -1470,16 +1500,36 @@ function Overlay(props: {
           return o ? <path d={polyD(objCorners(project, o)) + 'Z'} fill="rgba(250,204,21,0.12)" stroke="#ca8a04" strokeWidth={1.5 / z} strokeDasharray={`${4 / z} ${2 / z}`} pointerEvents="none" /> : null;
         })()}
       {/* Selected objects (outline follows rotation) */}
-      {selectedObjs.map((o) =>
-        o.kind === 'line' ? (
-          <path key={o.id} d={polyD(lineEnds(o))} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={3 / z} pointerEvents="none" />
-        ) : (
-          <path key={o.id} d={polyD(objCorners(project, o)) + 'Z'} fill="none" stroke="#2563eb" strokeWidth={sw} pointerEvents="none" />
-        ),
-      )}
+      {/* A soft halo plus a crisp outline set a few pixels outside the object, so it reads clearly
+          against the object's own border; with several selected, each gets corner markers too. */}
+      {selectedObjs.map((o) => {
+        if (o.kind === 'line') return <path key={o.id} d={polyD(lineEnds(o))} fill="none" stroke="#2563eb" strokeOpacity={0.45} strokeWidth={5 / z} strokeLinecap="round" pointerEvents="none" />;
+        const cs = paddedCorners(project, o, 3 / z);
+        const d = polyD(cs) + 'Z';
+        const m = 5 / z;
+        return (
+          <g key={o.id} pointerEvents="none">
+            <path d={d} fill="none" stroke="#3b82f6" strokeOpacity={0.25} strokeWidth={5 / z} />
+            <path d={d} fill="none" stroke="#2563eb" strokeWidth={1.5 / z} />
+            {selectedObjs.length > 1 && cs.map((c, i) => <rect key={i} x={c.x - m / 2} y={c.y - m / 2} width={m} height={m} fill="#2563eb" />)}
+          </g>
+        );
+      })}
       {selectedObjs.length === 1 && <Handles project={project} o={selectedObjs[0]} z={z} />}
     </g>
   );
+}
+
+/** Corners of an object's (rotated) box grown outward by `pad`. */
+function paddedCorners(project: Project, o: PageObject, pad: number): Pt[] {
+  const b = localBox(project, o);
+  const g = { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+  return [
+    { x: g.x, y: g.y },
+    { x: g.x + g.w, y: g.y },
+    { x: g.x + g.w, y: g.y + g.h },
+    { x: g.x, y: g.y + g.h },
+  ].map((q) => fromLocal(project, o, q));
 }
 
 function segCursor(r: ResolvedRoute, i: number) {

@@ -1033,12 +1033,17 @@ export function alignLabels(mode: AlignMode) {
     const hi = (i: Item) => (axis === 'x' ? i.lb.box.x + i.lb.box.w : i.lb.box.y + i.lb.box.h);
     const minV = Math.min(...items.map(lo));
     const maxV = Math.max(...items.map(hi));
+    // Reference: the label of the line selected first — it stays put; the others take its left
+    // edge, centre or right edge (top / middle / bottom for labels on vertical runs).
     const ref = [...items].sort((a, b) => order(a) - order(b))[0];
-    const refC = axis === 'x' ? ref.lb.p.x : ref.lb.p.y;
+    void minV;
+    void maxV;
     for (const it of items) {
-      if (it === ref && (mode === 'hcenter' || mode === 'vcenter')) continue;
-      const half = (hi(it) - lo(it)) / 2;
-      const target = mode === 'left' || mode === 'top' ? minV + half : mode === 'right' || mode === 'bottom' ? maxV - half : refC;
+      if (it === ref) continue;
+      // Half its length along the alignment axis once it sits on a run in that direction
+      // (a label moving off a vertical run turns horizontal).
+      const half = (it.lb.tw + 4) / 2;
+      const target = mode === 'left' || mode === 'top' ? lo(ref) + half : mode === 'right' || mode === 'bottom' ? hi(ref) - half : (lo(ref) + hi(ref)) / 2;
       const t = labelTAt(it.r, axis, target, it.lb.p);
       if (t === null) missed++;
       else sets.push({ id: it.r.conn.id, idx: it.idx, t });
