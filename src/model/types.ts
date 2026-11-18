@@ -328,7 +328,25 @@ export interface Project {
   devices: Record<Id, ProjectDevice>;
   blockDefs: Record<Id, BlockDef>;
   assets: Record<Id, Asset>;
-  /** Label auto-numbering is Phase 3; the counter lives here for later. */
+  /** Line colour / style per signal type (used when `signalColors` is on). Keys are upper-case signal names. */
+  signalStyles?: Record<string, SignalStyle>;
+  signalColors?: boolean;
+  /** Automatic numbering of new line labels. */
+  autoLabel?: AutoLabel;
+}
+
+export interface SignalStyle {
+  color: string;
+  dash?: DashStyle;
+}
+
+export interface AutoLabel {
+  on: boolean;
+  prefix: string;
+  /** Next number to hand out. */
+  next: number;
+  /** Zero-padded to this many digits (e.g. 3 → 007). */
+  digits: number;
 }
 
 export function isPortEndpoint(e: Endpoint): e is { objId: Id; portId: Id } {

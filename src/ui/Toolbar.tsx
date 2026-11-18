@@ -1,6 +1,6 @@
 import { redo, setState, undo, useStore } from '../state/store';
 import { alignSelection, bundleSelection, distributeSelection, straighten, type AlignMode } from '../state/actions';
-import { exportEquipmentListCmd, importMedia, newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
+import { exportCableListCmd, exportEquipmentListCmd, importMedia, newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
 import { pickFile } from '../io/files';
 import { MEDIA_ACCEPT } from '../io/importMedia';
 import { savePrefs } from '../state/prefs';
@@ -41,7 +41,8 @@ export function Toolbar() {
         <Btn label="Save" title="Save (Ctrl+S)" onClick={() => void saveCmd()} />
         <Btn label="Save As" title="Save As (Ctrl+Shift+S)" onClick={() => void saveCmd(true)} />
         <Btn label="PDF" title="Export vector PDF" onClick={() => setState({ modal: { kind: 'exportPdf' } })} />
-        <Btn label="Equipment" title="Export the equipment list (CSV): manufacturer, model, friendly name, pages" onClick={() => void exportEquipmentListCmd()} />
+        <Btn label="Equipment" title="Export the equipment list (CSV): manufacturer, model, friendly name, pages, rack position" onClick={() => void exportEquipmentListCmd()} />
+        <Btn label="Cables" title="Export the cable list (CSV): label, signal, from device/port, to device/port, pages. Lines through reference tags are listed once." onClick={() => void exportCableListCmd()} />
       </div>
       <div className="group">
         <Btn label="↶" title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo} />

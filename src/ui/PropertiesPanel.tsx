@@ -2,6 +2,7 @@ import type { BlockDef, BlockObj, BoxObj, Bundle, Connection, ImageObj, PageObje
 import { setState, useStore, currentPage, type AppState } from '../state/store';
 import {
   alignLabels,
+  numberLines,
   bundleProblem,
   bundleSelection,
   connectionWarnings,
@@ -25,7 +26,8 @@ import {
 import { DEFAULT_LINE } from '../model/defaults';
 import { fitTextBox, textBoxOf, titleBlockObjects } from '../render/buildPage';
 import { devicePages, tagRowFit, tagTargetPage, tagText } from '../model/tags';
-import { nextLabel } from '../state/store';
+import { nextLabel, updateProject } from '../state/store';
+import { connSignal, DEFAULT_AUTO_LABEL, formatLabel } from '../model/signals';
 import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describeObject, describeConnection } from '../state/actions';
 import { blockFor } from '../model/blockGeometry';
 import { isBox } from '../model/geom';
@@ -123,6 +125,9 @@ export function PropertiesPanel() {
                 </label>
               )}
               <div className="btnrow">
+                <button title="Label the selected lines with the next numbers (top to bottom); lines that already have a label keep it — Shift-click to renumber them too" onClick={(e) => numberLines(conns.map((c) => c.id), e.shiftKey)} disabled={!conns.length}>
+                  Number these lines
+                </button>
                 <button
                   disabled={!!bundleProblem(s.project, page, conns.map((c) => c.id))}
                   title={bundleProblem(s.project, page, conns.map((c) => c.id)) ?? 'Draw these lines as one heavier trunk with short labelled legs at each end'}
@@ -175,6 +180,7 @@ function PageSection({ s }: { s: AppState }) {
       <div className="muted">
         {page.objects.filter((o) => o.kind === 'block').length} blocks · {page.connections.length} lines
       </div>
+      <LineSettings s={s} />
       <div className="help">
         <p>
           <b>Place blocks:</b> drag from the library, double-click a library entry,, or use <b>Insert…</b> to search.
@@ -236,6 +242,57 @@ function PageSection({ s }: { s: AppState }) {
         </p>
       </div>
     </div>
+  );
+}
+
+/** Project-wide line settings: auto-numbered labels and signal colours. */
+function LineSettings({ s }: { s: AppState }) {
+  const auto = s.project.autoLabel ?? DEFAULT_AUTO_LABEL;
+  const setAuto = (patch: Partial<typeof auto>, label: string) => {
+    nextLabel(label);
+    updateProject((d) => void (d.autoLabel = { ...auto, ...patch }));
+  };
+  const nStyles = Object.keys(s.project.signalStyles ?? {}).length;
+  return (
+    <>
+      <Group title="Line labels">
+        <label className="check" title="Every new line gets the next number as its label">
+          <input type="checkbox" checked={auto.on} onChange={(e) => setAuto({ on: e.target.checked }, e.target.checked ? 'Auto-number line labels' : 'Stop auto-numbering line labels')} /> Number new lines automatically
+        </label>
+        <div className="fieldgroup">
+          <label>
+            Prefix <input style={{ width: 60 }} key={auto.prefix} defaultValue={auto.prefix} onBlur={(e) => e.target.value !== auto.prefix && setAuto({ prefix: e.target.value }, 'Label prefix')} onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()} />
+          </label>
+          <label>
+            Next <NumberField min={0} step={1} width={60} value={auto.next} onCommit={(v) => setAuto({ next: Math.round(v) }, 'Next label number')} />
+          </label>
+          <label title="Pad with zeros to this many digits">
+            Digits <NumberField min={0} max={6} step={1} width={44} value={auto.digits} onCommit={(v) => setAuto({ digits: Math.round(v) }, 'Label digits')} />
+          </label>
+        </div>
+        <div className="muted small">
+          Next label: <b>{formatLabel(auto, auto.next)}</b>. To number existing lines, select them and use “Number these lines”.
+        </div>
+      </Group>
+      <Group title="Signal colours">
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={!!s.project.signalColors}
+            onChange={(e) => {
+              if (e.target.checked && !nStyles) {
+                setState({ modal: { kind: 'signalColors' } });
+                return;
+              }
+              nextLabel(e.target.checked ? 'Colour lines by signal type' : 'Black lines');
+              updateProject((d) => void (d.signalColors = e.target.checked));
+            }}
+          />{' '}
+          Colour lines by signal type
+        </label>
+        <button onClick={() => setState({ modal: { kind: 'signalColors' } })}>Edit colours…{nStyles ? ` (${nStyles} set)` : ''}</button>
+      </Group>
+    </>
   );
 }
 
@@ -823,6 +880,19 @@ function ConnectionSection({ s, c }: { s: AppState; c: Connection }) {
       )}
       <Group title="Line style">
         <StrokeEditor value={c.style} onChange={(st) => st && setStroke([c.id], st)} />
+        {(() => {
+          const sig = connSignal(s.project, page, c);
+          const st = s.project.signalColors && s.project.signalStyles?.[sig];
+          if (!st) return null;
+          return c.style.color.toLowerCase() === '#000000' ? (
+            <div className="muted small">Drawn in the {sig} signal colour. Pick a colour here to override it.</div>
+          ) : (
+            <div className="btnrow small">
+              <span className="muted">Own colour (instead of the {sig} colour).</span>
+              <button onClick={() => setStroke([c.id], { color: '#000000' })}>Use signal colour</button>
+            </div>
+          );
+        })()}
       </Group>
       <div className="btnrow">
         <button disabled={!c.bends || !!c.curved || !!bundle} onClick={() => patchConnections([c.id], (x) => void (x.bends = null))}>

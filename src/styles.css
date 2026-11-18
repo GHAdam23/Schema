@@ -909,3 +909,20 @@ details.rows summary {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+.sigtable {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 50vh;
+  overflow: auto;
+  margin-top: 6px;
+}
+.sigrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.signame {
+  width: 80px;
+  font-weight: 600;
+}

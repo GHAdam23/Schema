@@ -5,7 +5,9 @@ import { fileToImageAsset, pickFile, download } from '../io/files';
 import { newId } from '../model/ids';
 import { exportPdfCmd, listBackups, restoreBackup, downloadBackup, type BackupRecord } from '../state/fileOps';
 import { DEFAULT_SIGNAL_TYPES, PAGE_SIZES } from '../model/defaults';
-import type { PageSizeId, TagObj } from '../model/types';
+import type { PageSizeId, SignalStyle, TagObj } from '../model/types';
+import { SIGNAL_COLOR_SUGGESTIONS } from '../model/signals';
+import { ColorSwatch } from './controls';
 import { setTagTarget } from '../state/actions';
 import { devicePages } from '../model/tags';
 
@@ -132,6 +134,87 @@ export function SignalTypesDialog() {
     >
       <div className="muted small">One per line. Used for suggestions in the block editor and for mismatch warnings.</div>
       <textarea className="textedit" rows={16} value={text} onChange={(e) => setText(e.target.value)} />
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/** Line colour / style per signal type (saved in the project, so the PDF looks the same for everyone). */
+export function SignalColorsDialog() {
+  const project = useStore((s) => s.project);
+  const prefs = useStore((s) => s.prefs);
+  const [styles, setStyles] = useState<Record<string, SignalStyle>>({ ...(project.signalStyles ?? {}) });
+  const [on, setOn] = useState(project.signalColors ?? true);
+  // Signal types: the preference list plus any used on blocks in this project.
+  const used = new Set<string>();
+  for (const d of Object.values(project.blockDefs)) for (const p of [...d.left, ...d.right]) if (p.signal) used.add(p.signal.toUpperCase());
+  const types = [...new Set([...prefs.signalTypes, ...used, ...Object.keys(styles)])];
+  const set = (t: string, v: SignalStyle | null) => {
+    const n = { ...styles };
+    if (v) n[t] = v;
+    else delete n[t];
+    setStyles(n);
+  };
+  return (
+    <Modal
+      title="Signal colours"
+      buttons={
+        <>
+          <button
+            title="Fill in suggested colours for the signal types that have none"
+            onClick={() => {
+              const n = { ...styles };
+              for (const t of types) if (!n[t] && SIGNAL_COLOR_SUGGESTIONS[t]) n[t] = { color: SIGNAL_COLOR_SUGGESTIONS[t] };
+              setStyles(n);
+            }}
+          >
+            Suggest colours
+          </button>
+          <button onClick={() => setStyles({})}>Clear all</button>
+          <div className="spacer" />
+          <button onClick={close}>Cancel</button>
+          <button
+            className="primary"
+            onClick={() => {
+              nextLabel('Signal colours');
+              updateProject((d) => {
+                d.signalStyles = styles;
+                d.signalColors = on;
+              });
+              close();
+            }}
+          >
+            Save
+          </button>
+        </>
+      }
+    >
+      <label className="check">
+        <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} /> Colour lines by signal type
+      </label>
+      <div className="muted small">
+        Lines that are still black take their signal type's colour (and dash). A line you've given its own colour keeps it. Saved in this project.
+      </div>
+      <div className="sigtable">
+        {types.map((t) => {
+          const st = styles[t];
+          return (
+            <div key={t} className="sigrow">
+              <span className="signame">{t}</span>
+              <ColorSwatch value={st?.color ?? '#000000'} defaultColor="#000000" defaultLabel="Black (no colour)" onChange={(c) => set(t, c && c !== '#000000' ? { ...st, color: c } : st?.dash ? { ...st, color: '#000000' } : null)} />
+              <select value={st?.dash ?? 'solid'} onChange={(e) => set(t, { color: st?.color ?? '#000000', dash: e.target.value === 'solid' ? undefined : (e.target.value as SignalStyle['dash']) })}>
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+              </select>
+              <svg width="60" height="10">
+                <line x1="2" y1="5" x2="58" y2="5" stroke={st?.color ?? '#000'} strokeWidth="1.5" strokeDasharray={st?.dash === 'dashed' ? '6 3' : st?.dash === 'dotted' ? '1.5 3' : undefined} />
+              </svg>
+            </div>
+          );
+        })}
+      </div>
     </Modal>
   );
 }

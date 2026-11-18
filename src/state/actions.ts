@@ -36,6 +36,8 @@ import { devicePages, tagRowFit, tagSize, tagTargetPage, tagText } from '../mode
 import { calloutTip, labelBox, labelBoxes, labelTAt, withLabelT, type LabelBox } from '../render/buildPage';
 import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
+import { DEFAULT_AUTO_LABEL, formatLabel } from '../model/signals';
+import { rackSpecOf } from '../model/rack';
 
 type D = Draft<Project>;
 
@@ -1135,6 +1137,36 @@ export function copySelection() {
   pastedOn.clear();
 }
 
+/**
+ * Give the selected lines the next auto-numbers, top to bottom then left to right (by their
+ * output end). Lines that already have a label keep it unless `relabel`.
+ */
+export function numberLines(ids: Id[], relabel = false) {
+  const s = getState();
+  const pg = currentPage(s);
+  const auto = s.project.autoLabel ?? DEFAULT_AUTO_LABEL;
+  const routes = resolvePageRoutes(s.project, pg);
+  const lines = pg.connections
+    .filter((c) => ids.includes(c.id) && (relabel || !c.label))
+    .map((c) => ({ c, a: routes.get(c.id)?.s }))
+    .sort((p, q) => (p.a?.y ?? 0) - (q.a?.y ?? 0) || (p.a?.x ?? 0) - (q.a?.x ?? 0));
+  if (!lines.length) {
+    toast('Those lines already have labels.', 'info');
+    return;
+  }
+  const first = formatLabel(auto, auto.next);
+  const last = formatLabel(auto, auto.next + lines.length - 1);
+  nextLabel(`Number ${plural(lines.length, 'line')} ${first}${lines.length > 1 ? '–' + last : ''}`);
+  updateProject((d) => {
+    const pgd = pageDraft(d);
+    lines.forEach((l, i) => {
+      const c = pgd.connections.find((x) => x.id === l.c.id);
+      if (c) c.label = formatLabel(auto, auto.next + i);
+    });
+    d.autoLabel = { ...auto, next: auto.next + lines.length };
+  });
+}
+
 export function hasClipboard() {
   return !!clip;
 }
@@ -1338,10 +1370,12 @@ export function connect(from: Endpoint, to: Endpoint, opts: { record?: boolean; 
     return null;
   }
   const warnings = connectionWarnings(s.project, pg, a, b);
-  const c: Connection = { id: newId('cn'), from: a, to: b, bends: null, label: '', labelT: null, style: { ...DEFAULT_LINE } };
+  const auto = s.project.autoLabel;
+  const c: Connection = { id: newId('cn'), from: a, to: b, bends: null, label: auto?.on ? formatLabel(auto, auto.next) : '', labelT: null, style: { ...DEFAULT_LINE } };
   nextLabel('Connect ' + describeConnection(s.project, pg, c));
   updateProject((d) => {
     pageDraft(d).connections.push(c);
+    if (auto?.on && d.autoLabel) d.autoLabel.next++;
   }, opts.record ?? true);
   if (warnings.length && !opts.quiet) toast(warnings.join(' '), 'warn', 5000);
   // A line drawn to a tag that already points at a port: add its partner at the far end.
@@ -1777,11 +1811,23 @@ export function patchBundles(ids: Id[], patch: (b: Draft<Bundle>) => void, recor
 export function equipmentListCsv(project: Project): string {
   const rows = Object.values(project.devices).map((dev) => {
     const def = project.blockDefs[dev.defId];
-    return [def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', ')];
+    // Rack position, if mounted: rack tag/name and RU span.
+    let rack = '';
+    let ru = '';
+    for (const pg of project.pages)
+      for (const o of pg.objects) {
+        if (o.kind !== 'rackunit' || o.deviceId !== dev.id || rack) continue;
+        const r = pg.objects.find((x) => x.id === o.rackId);
+        if (r?.kind !== 'rack') continue;
+        const n = rackSpecOf(def).ru;
+        rack = r.tag.trim() || r.name.trim() || 'Rack';
+        ru = n > 1 ? `${o.u}-${o.u + n - 1}` : String(o.u);
+      }
+    return [def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', '), rack, ru];
   });
   rows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]) || a[2].localeCompare(b[2], undefined, { numeric: true }));
   const esc = (v: string) => (/[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
-  return [['Manufacturer', 'Model', 'Friendly name', 'Page(s)'], ...rows].map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
+  return [['Manufacturer', 'Model', 'Friendly name', 'Page(s)', 'Rack', 'RU'], ...rows].map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
 }
 
 void rotOf;

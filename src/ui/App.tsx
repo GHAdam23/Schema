@@ -6,7 +6,7 @@ import { LibraryPanel } from './LibraryPanel';
 import { PropertiesPanel } from './PropertiesPanel';
 import { BlockEditor } from './BlockEditor';
 import { QuickInsert } from './QuickInsert';
-import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, HistoryDialog, TagTargetDialog } from './Dialogs';
+import { PrefsDialog, TitleBlockDialog, ExportPdfDialog, BackupsDialog, SignalTypesDialog, SignalColorsDialog, HistoryDialog, TagTargetDialog } from './Dialogs';
 import { isMediaFile } from '../io/importMedia';
 import { currentPage, getState, redo, setState, undo, useStore } from '../state/store';
 import {
@@ -189,6 +189,7 @@ export function App() {
       {modal?.kind === 'exportPdf' && <ExportPdfDialog />}
       {modal?.kind === 'backups' && <BackupsDialog />}
       {modal?.kind === 'signalTypes' && <SignalTypesDialog />}
+      {modal?.kind === 'signalColors' && <SignalColorsDialog />}
       {modal?.kind === 'history' && <HistoryDialog />}
       {modal?.kind === 'tagTarget' && <TagTargetDialog key={modal.objId} objId={modal.objId} isNew={modal.isNew} />}
       <div className="toasts">

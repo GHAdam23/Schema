@@ -62,6 +62,7 @@ export type Modal =
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
   | { kind: 'signalTypes' }
+  | { kind: 'signalColors' }
   | { kind: 'history' }
   /** Choose the device (and port) a reference tag points to. `isNew`: cancelling removes the tag again. */
   | { kind: 'tagTarget'; objId: Id; isNew: boolean };

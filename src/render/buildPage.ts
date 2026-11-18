@@ -36,6 +36,7 @@ import { fromLocal, isBox, localBox, objBounds, rotatePt, rotMatrix, rotOf } fro
 import { pageOfObject, tagFontSize, tagText, TAG_PAD_Y } from '../model/tags';
 import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
 import { drawRack, drawRackUnit } from './rackDraw';
+import { effectiveStyle } from '../model/signals';
 import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
 
 export { LABEL_SIZE };
@@ -662,7 +663,8 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
 
   routes.forEach((r, ri) => {
     if (onlyIds && !onlyIds.has(r.conn.id)) return;
-    const style = toDLStroke(r.conn.style);
+    const eff = effectiveStyle(project, page, r.conn);
+    const style = toDLStroke(eff);
     const lbs = labelBoxes(r);
     if (r.legs) {
       // Snake member: only its two legs are drawn, each with the full label.
@@ -671,12 +673,12 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
         const L = Math.abs(leg[1].x - leg[0].x);
         const gaps: [number, number][] = lb ? [[L / 2 - lb.gap / 2, L / 2 + lb.gap / 2]] : [];
         out.push({ t: 'path', d: strokePath(leg, gaps, new Map()), fill: null, stroke: style });
-        if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
+        if (lb) labelText(out, lb, r.conn.label, eff.color);
       });
       return;
     }
     const gaps = lbs.map((lb): [number, number] => [lb.d - lb.gap / 2, lb.d + lb.gap / 2]);
-    const texts = () => lbs.forEach((lb) => labelText(out, lb, r.conn.label, r.conn.style.color));
+    const texts = () => lbs.forEach((lb) => labelText(out, lb, r.conn.label, eff.color));
     if (r.curve) {
       out.push({ t: 'path', d: curvePath(r.curve, r.pts, gaps), fill: null, stroke: style });
       if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, [], new Map()), fill: null, stroke: style });
