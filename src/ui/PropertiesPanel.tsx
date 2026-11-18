@@ -80,6 +80,40 @@ function StrokeEditor({ value, onChange, allowNone }: { value: StrokeStyle | nul
   );
 }
 
+/**
+ * Number input that applies on Enter, when you leave it, or with the spinner / arrow keys — not
+ * on every keystroke (typing "0" over "25" would otherwise apply "2" first).
+ */
+function NumberField({ value, onCommit, min, max, step }: { value: number; onCommit: (v: number) => void; min?: number; max?: number; step?: number }) {
+  const [text, setText] = useState<string | null>(null);
+  const commit = (raw: string) => {
+    setText(null);
+    const v = Number(raw);
+    if (raw.trim() === '' || !isFinite(v)) return;
+    const c = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
+    if (c !== value) onCommit(c);
+  };
+  return (
+    <input
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={text ?? value}
+      onChange={(e) => {
+        // Spinner clicks / arrow keys have no inputType: apply right away. Typing waits.
+        if (!(e.nativeEvent as InputEvent).inputType) commit(e.target.value);
+        else setText(e.target.value);
+      }}
+      onBlur={(e) => text !== null && commit(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit((e.target as HTMLInputElement).value);
+        if (e.key === 'Escape') setText(null);
+      }}
+    />
+  );
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="field">
@@ -156,7 +190,7 @@ export function PropertiesPanel() {
               <div className="btnrow">
                 <button
                   disabled={!!bundleProblem(s.project, page, conns.map((c) => c.id))}
-                  title={bundleProblem(s.project, page, conns.map((c) => c.id)) ?? 'Draw these lines as one heavier trunk with short labelled legs at each end (B)'}
+                  title={bundleProblem(s.project, page, conns.map((c) => c.id)) ?? 'Draw these lines as one heavier trunk with short labelled legs at each end'}
                   onClick={bundleSelection}
                 >
                   Bundle into snake
@@ -169,10 +203,10 @@ export function PropertiesPanel() {
           )}
           {conns.length > 1 && (
             <div className="btnrow">
-              <button title="Put the label centres on one vertical line" onClick={() => alignLabels('hcenter')}>
+              <button title="Line the labels up under the label of the first line you selected (it stays put)" onClick={() => alignLabels('hcenter')}>
                 Line up labels ↕
               </button>
-              <button title="Put the label centres on one horizontal line (labels on vertical runs)" onClick={() => alignLabels('vcenter')}>
+              <button title="Line the labels up level with the label of the first line you selected (labels on vertical runs)" onClick={() => alignLabels('vcenter')}>
                 Line up labels ↔
               </button>
             </div>
@@ -194,13 +228,13 @@ function PageSection({ s }: { s: AppState }) {
       </div>
       <div className="help">
         <p>
-          <b>Place blocks:</b> drag from the library, double-click a library entry, or press <kbd>Q</kbd> / <kbd>Ctrl+K</kbd>.
+          <b>Place blocks:</b> drag from the library, double-click a library entry,, or use <b>Insert…</b> to search.
         </p>
         <p>
           <b>Move a block:</b> drag its header, footer or centre. <b>Connect:</b> drag from a port row to another port. Drag from the dots on a text box or rectangle to connect to it.
         </p>
         <p>
-          <b>Labels:</b> click a line and just start typing (Enter/F2 to edit an existing label); <kbd>Shift+↓</kbd> / <kbd>Shift+↑</kbd> moves on to the next line. Drag a label to slide it — it snaps in line
+          <b>Labels:</b> click a line and just start typing (Enter to edit an existing label); <kbd>Shift+↓</kbd> / <kbd>Shift+↑</kbd> moves on to the next line. Drag a label to slide it — it snaps in line
           with other labels. Select several lines and use the align buttons to line their labels up.
         </p>
         <p>
@@ -213,11 +247,11 @@ function PageSection({ s }: { s: AppState }) {
           <b>History</b> (toolbar / <kbd>Ctrl+H</kbd>) lists recent changes — including which lines were removed — and can undo to any point.
         </p>
         <p>
-          <b>Straight lines:</b> dragging a block snaps its ports level with the blocks it's wired to. <b>Straighten</b> (toolbar, or <kbd>S</kbd>) fixes jogs on the selected blocks or lines.
+          <b>Straight lines:</b> dragging a block snaps its ports level with the blocks it's wired to. <b>Straighten</b> (toolbar) fixes jogs on the selected blocks or lines.
         </p>
         <p>
           <b>Several lines at once:</b> click a port, Shift-click to extend the run (Ctrl-click to add single ports), then drag one of them onto
-          a port of the other block — the others follow onto the next rows. Or Ctrl-click ports on a second block and press <kbd>Shift+C</kbd> (Range connect).
+          a port of the other block — the others follow onto the next rows.
         </p>
         <p>
           <b>Select:</b> drag on empty space to select what's fully inside (any direction); hold Alt to select anything touched.
@@ -229,8 +263,8 @@ function PageSection({ s }: { s: AppState }) {
         </p>
         <p>
           <b>Shapes:</b> ellipse (<kbd>E</kbd>), container (<kbd>F</kbd>) — a labelled frame that moves what's inside it — and callout (<kbd>L</kbd>,
-          drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble, and drawn lines / arrows (drag
-          to draw; their ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
+          drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble, and lines (drag
+          to draw; set arrowheads in the line's properties; ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
           <b>Images:</b> drop PNG, JPG, PDF or SVG files on the page, paste an image, or use <b>Image…</b>. PDFs stay vector in the export; SVGs are
@@ -243,11 +277,11 @@ function PageSection({ s }: { s: AppState }) {
           properties you can hide rows or edit its ports for that block only.
         </p>
         <p>
-          <b>Reference tags:</b> drag a line from a port and let go on empty space, or use the Tag tool (<kbd>G</kbd>). The text
+          <b>Reference tags:</b> drag a line from a port and let go on empty space, or click a blue dot. The text
           (<i>TO (3) DISP-1</i>) updates itself; double-click a tag to jump to that device.
         </p>
         <p>
-          <b>Snakes:</b> select ≥4 lines of one signal type between the same two devices (or a device and a shape) and press <kbd>B</kbd>; click
+          <b>Snakes:</b> select ≥4 lines of one signal type between the same two devices (or a device and a shape) and use <b>Bundle</b>; click
           the trunk and type to label it. <b>Curved lines</b> (lines and snakes): in their properties — they route around objects, and the
           square handles on a selected curve reshape it.
         </p>
@@ -271,7 +305,7 @@ function PortsSection({ s }: { s: AppState }) {
         ))}
       </ul>
       <div className="btnrow">
-        <button disabled={blocks !== 2} onClick={rangeConnect} title="Pairs ports in order (Shift+C)">
+        <button disabled={blocks !== 2} onClick={rangeConnect} title="Pairs the ports picked on two blocks, in order — for destinations that aren't consecutive rows (dragging covers consecutive ones)">
           Range connect
         </button>
         <button
@@ -306,28 +340,41 @@ function LineSection({ o }: { o: LineObj }) {
       <div className="section-title">{o.arrows === 'none' ? 'Line' : 'Arrow'}</div>
       <SharedNote o={o} />
       <div className="fieldgroup">
-        <label>
-          Arrowheads{' '}
-          <select value={o.arrows} onChange={(e) => patchObjects([o.id], (t) => void (t.kind === 'line' && (t.arrows = e.target.value as LineObj['arrows'])))}>
-            <option value="none">None (line)</option>
-            <option value="end">At the end</option>
-            <option value="start">At the start</option>
-            <option value="both">Both ends</option>
-          </select>
-        </label>
+        <span>Arrowheads</span>
+        {(
+          [
+            ['none', '—', 'No arrowheads (plain line)'],
+            ['end', '→', 'Arrowhead at the end'],
+            ['start', '←', 'Arrowhead at the start'],
+            ['both', '↔', 'Arrowheads at both ends'],
+          ] as const
+        ).map(([v, label, title]) => (
+          <button key={v} className={o.arrows === v ? 'active' : ''} title={title} onClick={() => patchObjects([o.id], (t) => void (t.kind === 'line' && (t.arrows = v)))}>
+            {label}
+          </button>
+        ))}
       </div>
       <div className="fieldgroup">
         <label>
           Length{' '}
-          <input type="number" min={1} step={1} value={Math.round(o.w * 10) / 10} onChange={(e) => patchObjects([o.id], (t) => {
-            if (t.kind !== 'line') return;
-            const w = Math.max(1, Number(e.target.value) || 1);
-            t.x -= (w - t.w) / 2;
-            t.w = w;
-          })} />
+          <NumberField
+            min={1}
+            step={1}
+            value={Math.round(o.w * 10) / 10}
+            onCommit={(v) =>
+              patchObjects([o.id], (t) => {
+                if (t.kind !== 'line') return;
+                const w = Math.max(1, v);
+                t.x -= (w - t.w) / 2;
+                t.w = w;
+                // A typed length lets go of what the ends are glued to (it would pull them back).
+                delete t.ends;
+              })
+            }
+          />
         </label>
         <label>
-          Angle <input type="number" step={15} value={Math.round((o.rot ?? 0) * 10) / 10} onChange={(e) => setRotation([o.id], Number(e.target.value) || 0)} />°
+          Angle <NumberField step={15} value={Math.round((o.rot ?? 0) * 10) / 10} onCommit={(v) => setRotation([o.id], v)} />°
         </label>
       </div>
       <div className="sub">Line</div>
@@ -573,7 +620,7 @@ function FillEditor({ value, onChange, label = 'Fill' }: { value: string | null;
 
 function Geometry({ o }: { o: BoxObj }) {
   const num = (k: 'x' | 'y' | 'w' | 'h') => (
-    <input type="number" step={1} value={Math.round(o[k] * 100) / 100} onChange={(e) => patchObjects([o.id], (t) => void (t.kind !== 'block' && t.kind !== 'tag' && (t[k] = Number(e.target.value))))} />
+    <NumberField step={1} value={Math.round(o[k] * 100) / 100} onCommit={(v) => patchObjects([o.id], (t) => void (t.kind !== 'block' && t.kind !== 'tag' && (t[k] = v)))} />
   );
   return (
     <>
@@ -586,7 +633,7 @@ function Geometry({ o }: { o: BoxObj }) {
       <div className="fieldgroup">
         <label>
           Rotation{' '}
-          <input type="number" step={15} value={Math.round((o.rot ?? 0) * 10) / 10} onChange={(e) => setRotation([o.id], Number(e.target.value) || 0)} />°
+          <NumberField step={15} value={Math.round((o.rot ?? 0) * 10) / 10} onCommit={(v) => setRotation([o.id], v)} />°
         </label>
         <button title="Rotate 90° counter-clockwise" onClick={() => setRotation([o.id], (r) => r - 90)}>
           ⟲
@@ -892,7 +939,7 @@ function BundleSection({ b }: { b: Bundle }) {
           Reset route
         </button>
         <button onClick={() => setState({ selection: [...b.connIds] })}>Select lines</button>
-        <button onClick={() => unbundle([b.id])} title="Back to separate lines (Ctrl+Shift+B)">
+        <button onClick={() => unbundle([b.id])} title="Back to separate lines">
           Unbundle
         </button>
       </div>

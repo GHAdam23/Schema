@@ -590,6 +590,8 @@ export function setRotation(ids: Id[], deg: number | ((cur: number) => number), 
       if (o.kind === 'block' || o.kind === 'tag') return;
       const r = normDeg(typeof deg === 'function' ? deg(o.rot ?? 0) : deg);
       o.rot = Math.round(r * 100) / 100;
+      // A line turned by hand lets go of what its ends are glued to (they would pull it back).
+      if (o.kind === 'line') delete o.ends;
     },
     record,
   );
@@ -999,13 +1001,16 @@ export function alignLabels(mode: AlignMode) {
   const axis: 'x' | 'y' = mode === 'left' || mode === 'hcenter' || mode === 'right' ? 'x' : 'y';
   type Item = { r: ResolvedRoute; idx: number; lb: LabelBox };
   // Which labels line up: lines with one label use it. A line with a label at each end uses the one
-  // nearest the single labels; if every line has two, start labels line up with start labels and
-  // end labels with end labels.
+  // nearest the reference label (below); if every line has two, start labels line up with start
+  // labels and end labels with end labels.
+  // Reference for centring: the label of the line selected first — it stays where it is.
+  const order = (it: Item) => s.selection.indexOf(it.r.conn.id);
   const singles: Item[] = rs.filter((r) => !r.conn.labelEnds).map((r) => ({ r, idx: 0, lb: labelBox(r)! }));
   const doubles = rs.filter((r) => r.conn.labelEnds);
   const groups: Item[][] = [];
   if (singles.length) {
-    const c = singles.reduce((a, it) => a + (axis === 'x' ? it.lb.p.x : it.lb.p.y), 0) / singles.length;
+    const ref0 = [...singles].sort((a, b) => order(a) - order(b))[0];
+    const c = axis === 'x' ? ref0.lb.p.x : ref0.lb.p.y;
     const near = doubles.map((r) => {
       const bs = labelBoxes(r);
       const k = bs.length > 1 && Math.abs((axis === 'x' ? bs[1].p.x : bs[1].p.y) - c) < Math.abs((axis === 'x' ? bs[0].p.x : bs[0].p.y) - c) ? 1 : 0;
@@ -1028,9 +1033,12 @@ export function alignLabels(mode: AlignMode) {
     const hi = (i: Item) => (axis === 'x' ? i.lb.box.x + i.lb.box.w : i.lb.box.y + i.lb.box.h);
     const minV = Math.min(...items.map(lo));
     const maxV = Math.max(...items.map(hi));
+    const ref = [...items].sort((a, b) => order(a) - order(b))[0];
+    const refC = axis === 'x' ? ref.lb.p.x : ref.lb.p.y;
     for (const it of items) {
+      if (it === ref && (mode === 'hcenter' || mode === 'vcenter')) continue;
       const half = (hi(it) - lo(it)) / 2;
-      const target = mode === 'left' || mode === 'top' ? minV + half : mode === 'right' || mode === 'bottom' ? maxV - half : (minV + maxV) / 2;
+      const target = mode === 'left' || mode === 'top' ? minV + half : mode === 'right' || mode === 'bottom' ? maxV - half : refC;
       const t = labelTAt(it.r, axis, target, it.lb.p);
       if (t === null) missed++;
       else sets.push({ id: it.r.conn.id, idx: it.idx, t });

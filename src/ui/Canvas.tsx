@@ -161,7 +161,7 @@ export function Canvas() {
       }
     };
     window.addEventListener('schema:view', onView);
-    // Start inline editing from the keyboard (type on a selected line to label it, Enter/F2 to edit).
+    // Start inline editing from the keyboard (type on a selected line to label it, Enter to edit).
     const onEdit = (e: Event) => {
       const d = (e as CustomEvent).detail as Editing;
       setEditing(d);

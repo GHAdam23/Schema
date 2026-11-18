@@ -1,5 +1,5 @@
 import { redo, setState, undo, useStore } from '../state/store';
-import { alignSelection, bundleSelection, distributeSelection, rangeConnect, straighten, zOrder, type AlignMode } from '../state/actions';
+import { alignSelection, bundleSelection, distributeSelection, straighten, zOrder, type AlignMode } from '../state/actions';
 import { exportEquipmentListCmd, importMedia, newProjectCmd, openProjectCmd, saveCmd } from '../state/fileOps';
 import { pickFile } from '../io/files';
 import { MEDIA_ACCEPT } from '../io/importMedia';
@@ -27,8 +27,6 @@ export function Toolbar() {
   const canRedo = useStore((s) => s.future.length > 0);
   const tool = useStore((s) => s.tool);
   const selCount = useStore((s) => s.selection.length);
-  const portObjs = useStore((s) => new Set(s.selectedPorts.map((p) => p.objId)).size);
-  const portCount = useStore((s) => s.selectedPorts.length);
   const prefs = useStore((s) => s.prefs);
   const dirty = useStore((s) => s.dirty);
   const fileName = useStore((s) => s.fileName);
@@ -58,10 +56,7 @@ export function Toolbar() {
         <Btn label="Container" title="Container: a labelled frame that moves what's inside it (F)" active={tool === 'container'} onClick={() => setState({ tool: 'container' })} />
         <Btn label="Callout" title="Callout: text with a pointer (L)" active={tool === 'callout'} onClick={() => setState({ tool: 'callout' })} />
         <Btn label="Thought" title="Thought bubble: a cloud with trailing bubbles — drag the yellow diamond to point it" active={tool === 'cloud'} onClick={() => setState({ tool: 'cloud' })} />
-        <Btn label="Line" title="Draw a line (drag; Shift = 15° steps)" active={tool === 'line'} onClick={() => setState({ tool: 'line' })} />
-        <Btn label="Arrow" title="Draw an arrow (drag; Shift = 15° steps)" active={tool === 'arrow'} onClick={() => setState({ tool: 'arrow' })} />
-        <Btn label="↔" title="Draw a double-headed arrow (drag; Shift = 15° steps)" active={tool === 'arrow2'} onClick={() => setState({ tool: 'arrow2' })} />
-        <Btn label="Tag" title="Reference tag pointing to a device on another page (G). Tip: drag a line from a port into empty space." active={tool === 'tag'} onClick={() => setState({ tool: 'tag' })} />
+        <Btn label="Line" title="Draw a line or arrow (drag; Shift = 15° steps). Arrowheads are set in its properties." active={tool === 'line'} onClick={() => setState({ tool: 'line' })} />
         <Btn
           label="Image…"
           title="Import PNG / JPG / PDF / SVG (or drop files on the page, or paste an image)"
@@ -71,11 +66,10 @@ export function Toolbar() {
           }}
         />
         <Btn label="Hand" title="Pan by dragging (H). You can also right-drag, middle-drag, Space-drag, or drag the grey area." active={tool === 'pan'} onClick={() => setState({ tool: 'pan' })} />
-        <Btn label="Insert…" title="Quick insert block (Ctrl+K or Q)" onClick={() => setState({ modal: { kind: 'quickInsert' } })} />
+        <Btn label="Insert…" title="Quick insert: search the library and place a block" onClick={() => setState({ modal: { kind: 'quickInsert' } })} />
       </div>
       <div className="group">
-        <Btn label="Range connect" title="Connect selected port runs pairwise (Shift+C). Shift-click port rows on two blocks first." disabled={portObjs !== 2 || portCount < 2} onClick={rangeConnect} />
-        <Btn label="Bundle" title="Bundle the selected lines into a snake (B): ≥4 lines, same signal, same two devices" disabled={selCount < 4} onClick={bundleSelection} />
+        <Btn label="Bundle" title="Bundle the selected lines into a snake: ≥4 lines, same signal, same two devices" disabled={selCount < 4} onClick={bundleSelection} />
       </div>
       <div className="group">
         <Btn label="⇤" title="Align left" disabled={selCount < 2} onClick={align('left')} />
@@ -84,7 +78,7 @@ export function Toolbar() {
         <Btn label="⤒" title="Align top" disabled={selCount < 2} onClick={align('top')} />
         <Btn label="↕" title="Align middles vertically" disabled={selCount < 2} onClick={align('vcenter')} />
         <Btn label="⤓" title="Align bottom" disabled={selCount < 2} onClick={align('bottom')} />
-        <Btn label="Straighten" title="Move blocks so their lines run straight (S). Works on selected blocks or lines." disabled={!selCount} onClick={straighten} />
+        <Btn label="Straighten" title="Move blocks so their lines run straight. Works on selected blocks or lines." disabled={!selCount} onClick={straighten} />
         <Btn label="⋯H" title="Distribute horizontally" disabled={selCount < 3} onClick={() => distributeSelection('h')} />
         <Btn label="⋮V" title="Distribute vertically" disabled={selCount < 3} onClick={() => distributeSelection('v')} />
       </div>

@@ -16,12 +16,8 @@ import {
   duplicateSelection,
   moveObjects,
   paste,
-  rangeConnect,
   selectAll,
-  straighten,
-  bundleSelection,
   selectNextLine,
-  unbundle,
 } from '../state/actions';
 import { importMedia, openProjectCmd, saveCmd } from '../state/fileOps';
 
@@ -64,7 +60,7 @@ export function App() {
         return;
       }
       if (s.modal) return;
-      // Single selected line / text / rectangle / block: type (lines) or Enter/F2 to edit in place.
+      // Single selected line / text / rectangle / block: type (lines) or Enter to edit in place.
       if (s.selection.length === 1 && !mod && !e.altKey) {
         const pg = currentPage(s);
         const id = s.selection[0];
@@ -82,7 +78,7 @@ export function App() {
           pendingTyped = p && p.id === id && now - p.at < 400 ? { id, text: p.text + e.key, at: now } : { id, text: e.key, at: now };
           return edit({ kind: 'label', id, typed: pendingTyped.text });
         }
-        if (e.key === 'Enter' || e.key === 'F2') {
+        if (e.key === 'Enter') {
           if (conn) return edit({ kind: 'label', id });
           if (obj?.kind === 'block') return edit({ kind: 'device', id });
           if (obj && 'text' in obj) return edit({ kind: 'text', id });
@@ -97,10 +93,7 @@ export function App() {
         redo();
       } else if (mod && k === 'c') copySelection();
       else if (mod && k === 'x') cutSelection();
-      else if (mod && e.shiftKey && k === 'b') {
-        e.preventDefault();
-        unbundle(s.selection);
-      } else if (mod && k === 'v') {
+      else if (mod && k === 'v') {
         if (e.shiftKey) paste(true);
         else {
           clearTimeout(pendingPaste);
@@ -116,9 +109,6 @@ export function App() {
       } else if (mod && k === 'a') {
         e.preventDefault();
         selectAll();
-      } else if ((mod && k === 'k') || (!mod && k === 'q')) {
-        e.preventDefault();
-        setState({ modal: { kind: 'quickInsert' } });
       } else if (mod && (k === '0' || k === '=' || k === '+' || k === '-')) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent('schema:view', { detail: k === '0' ? 'fit' : k === '-' ? 'out' : 'in' }));
@@ -136,11 +126,7 @@ export function App() {
       else if (!mod && k === 'e') setState({ tool: 'ellipse' });
       else if (!mod && k === 'f') setState({ tool: 'container' });
       else if (!mod && k === 'l') setState({ tool: 'callout' });
-      else if (!mod && k === 'g') setState({ tool: 'tag' });
-      else if (!mod && k === 'b') bundleSelection();
-      else if (!mod && k === 's') straighten();
       else if (!mod && k === 'h') setState({ tool: 'pan' });
-      else if (!mod && k === 'c' && e.shiftKey) rangeConnect();
       else if (e.shiftKey && (k === 'arrowdown' || k === 'arrowup') && s.selection.length === 1 && currentPage(s).connections.some((c) => c.id === s.selection[0])) {
         // A line is selected: step to the next / previous line (then just type to label it).
         e.preventDefault();
