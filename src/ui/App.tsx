@@ -128,13 +128,14 @@ export function App() {
         else setState({ selection: [], selectedPorts: [] });
       }
       else if (!mod && k === 'v') setState({ tool: 'select' });
-      else if (!mod && k === 't') setState({ tool: 'text' });
+      else if (!mod && k === 'a') setState({ tool: 'text' });
       else if (!mod && k === 'r') setState({ tool: 'rect' });
       else if (!mod && k === 'e') setState({ tool: 'ellipse' });
-      else if (!mod && k === 'f') setState({ tool: 'container' });
-      else if (!mod && k === 'l') setState({ tool: 'callout' });
+      else if (!mod && k === 'n') setState({ tool: 'container' });
+      else if (!mod && k === 'c') setState({ tool: 'callout' });
+      else if (!mod && k === 'b') setState({ tool: 'cloud' });
+      else if (!mod && k === 'l') setState({ tool: 'line' });
       else if (!mod && k === 'h') setState({ tool: 'pan' });
-      else if (!mod && k === 'k') setState({ tool: 'rack' });
       else if (e.shiftKey && (k === 'arrowdown' || k === 'arrowup') && s.selection.length === 1 && currentPage(s).connections.some((c) => c.id === s.selection[0])) {
         // A line is selected: step to the next / previous line (then just type to label it).
         e.preventDefault();

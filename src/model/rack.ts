@@ -308,6 +308,12 @@ export function syncRacks(project: Project) {
         if (nl) r.labW = nl;
         else delete r.labW;
       }
+      // Keep the front view where it is when things appear on its left (labels, side view, overhang):
+      // the drawing grows outwards instead of pushing the rack across the page.
+      const L = rackLayout(r);
+      const fx = Math.round(((L.frame.x - r.x) / r.scale) * 1000) / 1000;
+      if (r.fx !== undefined && r.fx !== fx) r.x -= (fx - r.fx) * r.scale;
+      if (r.fx !== fx) r.fx = fx;
     }
     for (const o of pg.objects) {
       if (o.kind !== 'rackunit' || !o.rackId) continue;

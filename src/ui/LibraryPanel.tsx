@@ -275,7 +275,8 @@ const PARTS: [RackAccessory, string][] = [
 /** Racks (drag one onto the page) and rack hardware to drag into a rack, each with its height. */
 function RackPartsTab() {
   const [sizes, setSizes] = useState<Record<RackAccessory, number>>({ blank: 1, brush: 1, vent: 1, drawer: 2, shelf: 2 });
-  const [rackU, setRackU] = useState(12);
+  const [rackU, setRackU] = useState('12');
+  const ru = Math.max(1, Math.min(60, Math.round(Number(rackU)) || 12));
   return (
     <>
       <div className="liblist">
@@ -283,7 +284,7 @@ function RackPartsTab() {
           className="libitem rackitem"
           draggable
           onDragStart={(e) => {
-            e.dataTransfer.setData('application/x-schema-rack', String(rackU));
+            e.dataTransfer.setData('application/x-schema-rack', String(ru));
             e.dataTransfer.effectAllowed = 'copy';
           }}
           title="Drag onto the page to place a rack"
@@ -291,16 +292,9 @@ function RackPartsTab() {
           <div className="model">Rack</div>
           <div className="man">Numbered rack outline — drag onto the page</div>
           <div className="meta" onMouseDown={(e) => e.stopPropagation()}>
-            <label className="rackusize">
-              <input type="number" min={1} max={60} value={rackU} onChange={(e) => setRackU(Math.max(1, Math.min(60, Math.round(Number(e.target.value)) || 12)))} /> U
+            <label className="rackusize" title="Rack units of mounting space">
+              Size <input type="number" min={1} max={60} value={rackU} onChange={(e) => setRackU(e.target.value)} /> U
             </label>
-            <span className="seg">
-              {[12, 24, 42].map((n) => (
-                <button key={n} className={rackU === n ? 'active' : ''} onClick={() => setRackU(n)}>
-                  {n}U
-                </button>
-              ))}
-            </span>
           </div>
         </div>
         <div className="libgroup">Components — drag onto an empty rack space</div>

@@ -199,7 +199,7 @@ function PartSection({ s, o }: { s: AppState; o: RackUnitObj }) {
             </span>
           </div>
         )}
-        {o.assetId && <div className="muted small">The picture is stretched to fill the space.</div>}
+        {o.assetId && <PictureHint sp={unitSpec(s.project, o)} />}
       </Group>
       {o.accessory !== 'shelf' && (
         <Group title={o.assetId ? 'Name' : 'Label'}>
@@ -316,6 +316,7 @@ export function RackUnitSection({ s, o }: { s: AppState; o: RackUnitObj }) {
             <button onClick={() => patch((u) => delete u.assetId, 'Remove face picture')}>Drawn face</button>
           )}
         </div>
+        <PictureHint sp={unitSpec(s.project, o)} />
         <div className="fieldgroup">
           <label>
             Panel <ColorSwatch value={o.fill ?? '#ffffff'} defaultColor="#ffffff" defaultLabel="Default (white)" onChange={(c) => patch((u) => (u.fill = c && c !== '#ffffff' ? c : null), 'Unit face colour')} />
@@ -383,5 +384,18 @@ function LabelGroup({ s, o }: { s: AppState; o: RackUnitObj }) {
       </div>
       {!rack && cur !== 'face' && <div className="muted small">Side labels show once the unit is in a rack.</div>}
     </Group>
+  );
+}
+
+/** The ideal proportions for a face picture of this unit (it's stretched to fill the space). */
+function PictureHint({ sp }: { sp: ReturnType<typeof unitSpec> }) {
+  const w = isCustom(sp) ? sp.w : 19 / slotsOf(sp.width);
+  const h = isCustom(sp) ? sp.h : sp.ru * 1.75;
+  const f = (v: number) => String(Math.round(v * 100) / 100);
+  return (
+    <div className="muted small">
+      Best picture: {f(w)} × {f(h)} in — about {f(w / h)} : 1 (width : height), cropped to the panel's edges (ears included). It's stretched to fill
+      the space.
+    </div>
   );
 }

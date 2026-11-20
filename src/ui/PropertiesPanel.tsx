@@ -34,6 +34,7 @@ import { setPage, makeSeparateDevice, revertInstanceDef, setHiddenPorts, describ
 import { blockFor } from '../model/blockGeometry';
 import { isBox } from '../model/geom';
 import { RackSection, RackUnitSection } from './RackProps';
+import { Icon } from './icons';
 import { ColorSwatch, Field, FillEditor, Group, NumberField, StrokeEditor } from './controls';
 import { calloutTip } from '../render/buildPage';
 import { getState } from '../state/store';
@@ -83,7 +84,6 @@ export function PropertiesPanel() {
           <div className="section-title">
             {objs.length} object(s), {conns.length} line(s){bundles.length ? `, ${bundles.length} snake(s)` : ''}
           </div>
-          {objs.length > 1 && <ArrangeGroup n={objs.length} />}
           {conns.length + bundles.length > 0 && (
             <>
               <div className="sub">
@@ -127,6 +127,19 @@ export function PropertiesPanel() {
                   Label at both ends
                 </label>
               )}
+            </>
+          )}
+          <Group title={conns.length + bundles.length && !objs.length ? 'Line style' : 'Border / line style'}>
+            <StrokeEditor value={conns[0]?.style ?? (objs[0] && 'border' in objs[0] ? (objs[0].border as StrokeStyle) : null) ?? DEFAULT_LINE} onChange={(st) => st && setStroke(s.selection, st)} />
+          </Group>
+        </div>
+      )}
+      {/* Arranging comes after the properties, set apart. */}
+      {nSel > 1 && (objs.length > 1 || conns.length + bundles.length > 0) && (
+        <div className="section arrange-section">
+          {objs.length > 1 && <ArrangeGroup n={objs.length} />}
+          {conns.length + bundles.length > 0 && (
+            <Group title="Arrange lines">
               {conns.length > 1 && (
                 <div className="fieldgroup">
                   <span title="Line the labels up with the first selected line's label">Line up labels</span>
@@ -158,11 +171,8 @@ export function PropertiesPanel() {
                   </button>
                 )}
               </div>
-            </>
+            </Group>
           )}
-          <Group title={conns.length + bundles.length && !objs.length ? 'Line style' : 'Border / line style'}>
-            <StrokeEditor value={conns[0]?.style ?? (objs[0] && 'border' in objs[0] ? (objs[0].border as StrokeStyle) : null) ?? DEFAULT_LINE} onChange={(st) => st && setStroke(s.selection, st)} />
-          </Group>
         </div>
       )}
     </div>
@@ -222,7 +232,23 @@ function PageSection({ s }: { s: AppState }) {
           }
         }}
       >
-        <summary>Tips</summary>
+        <summary>
+          <Icon name="bulb" size={14} className="tipicon" /> Tips
+        </summary>
+        <div className="tipsub">Keyboard shortcuts</div>
+        <table className="shortcuts">
+          <tbody>
+            {SHORTCUTS.map(([k, what]) => (
+              <tr key={k}>
+                <td>
+                  <kbd>{k}</kbd>
+                </td>
+                <td>{what}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="tipsub">How to…</div>
         <p>
           <b>Place blocks:</b> drag from the library (several highlighted ones come together) or double-click a library entry.
         </p>
@@ -255,15 +281,15 @@ function PageSection({ s }: { s: AppState }) {
           start dragging.
         </p>
         <p>
-          <b>Pan:</b> right-drag, the Hand tool (<kbd>H</kbd>), drag the grey area, scroll, middle-drag or Space-drag. <b>Zoom:</b> Ctrl+scroll.
+          <b>Pan:</b> right-drag, the Move tool (<kbd>H</kbd>), drag the grey area, scroll, middle-drag or Space-drag. <b>Zoom:</b> Ctrl+scroll.
         </p>
         <p>
-          <b>Shapes:</b> ellipse (<kbd>E</kbd>), container (<kbd>F</kbd>) — a labelled frame that moves what's inside it — and callout (<kbd>L</kbd>,
-          drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble, and lines (drag
+          <b>Shapes:</b> ellipse (<kbd>E</kbd>), container (<kbd>N</kbd>) — a labelled frame that moves what's inside it — and callout (<kbd>C</kbd>,
+          drag the yellow diamond to point it — drop it on an object or a line to glue it there), thought bubble (<kbd>B</kbd>), and lines (<kbd>L</kbd>) (drag
           to draw; set arrowheads in the line's properties; ends snap and stay glued to shapes and lines, Alt = no snap). Shapes can be dragged out to size (Shift = circle / square). Drag the round handle above a selected shape, text box or image to rotate it (Shift = 15° steps).
         </p>
         <p>
-          <b>Racks:</b> drag a <b>Rack</b> from the <b>Racks &amp; components</b> tab onto the page (or press <kbd>K</kbd> and click). Then drag
+          <b>Racks:</b> drag a <b>Rack</b> from the <b>Racks &amp; components</b> tab onto the page. Then drag
           blocks from the library, devices from <b>Devices in project</b>, components (blank / brush / vent panels, drawers, shelves) or
           front-panel pictures onto a rack space — they go exactly where you drop them. Drag a unit to another space, or off the rack to take it out.
           Sizes, label position (on the face or beside the rack) and a face picture are in the unit's properties.
@@ -294,6 +320,39 @@ function PageSection({ s }: { s: AppState }) {
     </div>
   );
 }
+
+/** Every active keyboard shortcut (keep in step with App.tsx / Canvas.tsx). */
+const SHORTCUTS: [string, string][] = [
+  ['V', 'Select tool'],
+  ['H', 'Move tool (pan); or Space-drag, right-drag, middle-drag'],
+  ['A', 'Text box'],
+  ['R', 'Rectangle'],
+  ['E', 'Ellipse'],
+  ['N', 'Container'],
+  ['C', 'Callout'],
+  ['B', 'Thought bubble'],
+  ['L', 'Line / arrow'],
+  ['Esc', 'Leave a tool, then clear the selection'],
+  ['Ctrl+Z / Ctrl+Y', 'Undo / redo (also Ctrl+Shift+Z)'],
+  ['Ctrl+H', 'History'],
+  ['Ctrl+C / X / V', 'Copy / cut / paste'],
+  ['Ctrl+Shift+V', 'Paste as new devices'],
+  ['Ctrl+D', 'Duplicate'],
+  ['Ctrl+A', 'Select all'],
+  ['Delete', 'Delete the selection'],
+  ['Ctrl+] / Ctrl+[', 'Bring forward / send backward'],
+  ['Ctrl+Shift+] / [', 'Bring to front / send to back'],
+  ['Arrows', 'Nudge 1 pt (Shift: one grid step)'],
+  ['Type / Enter', 'Label the selected line or snake (Enter also edits text / a block name)'],
+  ['Shift+↓ / ↑', 'Next / previous line (also while editing a label)'],
+  ['Ctrl+Enter', 'Finish editing text'],
+  ['Alt (drag)', 'Selection box starting on an object; touch-select; no snapping for line ends'],
+  ['Shift (drag)', 'Square / circle, 15° steps, straight moves; keep image proportions off'],
+  ['Ctrl+S / Ctrl+Shift+S', 'Save / save as'],
+  ['Ctrl+O', 'Open'],
+  ['Ctrl+0', 'Fit the page'],
+  ['Ctrl+ + / −, Ctrl+wheel', 'Zoom'],
+];
 
 function tipsOpen() {
   try {

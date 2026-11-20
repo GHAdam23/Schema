@@ -37,7 +37,7 @@ import { calloutTip, labelBox, labelBoxes, labelTAt, withLabelT, type LabelBox }
 import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
 import { DEFAULT_AUTO_LABEL, formatLabel } from '../model/signals';
-import { rackSpecOf } from '../model/rack';
+import { ACCESSORY_NAMES, fits, isCustom, rackSpecOf, slotsOf, unitSpec } from '../model/rack';
 
 type D = Draft<Project>;
 
@@ -1273,6 +1273,10 @@ function copyObjectsInto(
       }
       return { ...o, id, deviceId, defId, hidden: o.hidden ? [...o.hidden] : undefined, x: o.x + dx, y: o.y + dy, border: { ...o.border } };
     }
+    if (o.kind === 'rackunit' && !src.devices[o.deviceId]) {
+      // Rack components and picture-only units: a plain copy.
+      return { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
+    }
     if (o.kind === 'rackunit') {
       // Same rule as blocks: the same device on another page, a new one where it's already racked.
       const dev = src.devices[o.deviceId];
@@ -1318,8 +1322,45 @@ function copyObjectsInto(
       delete o.tailTo;
     }
   });
-  // Rack units follow the copy of their rack, or stand on their own.
-  for (const o of outObjs) if (o.kind === 'rackunit' && o.rackId) o.rackId = idMap.get(o.rackId) ?? null;
+  // Copied racks get the next free tag (AV1 → AV2) so lists can tell them apart.
+  const tags = new Set(project.pages.flatMap((pg) => pg.objects.filter((o) => o.kind === 'rack').map((o) => (o as { tag: string }).tag.trim())));
+  for (const o of outObjs) {
+    if (o.kind !== 'rack' || !o.tag.trim() || !tags.has(o.tag.trim())) continue;
+    const m = o.tag.trim().match(/^(.*?)(\d+)$/);
+    const stem = m ? m[1] : o.tag.trim() + ' ';
+    let n = m ? parseInt(m[2], 10) + 1 : 2;
+    while (tags.has(stem + n)) n++;
+    o.tag = stem + n;
+    tags.add(o.tag);
+  }
+  // Rack units follow the copy of their rack; copies of units whose rack stays behind go into a free
+  // space of that rack when it's on the target page (nearest to the original), else stand on their own.
+  let scratchPage = opts.onPage;
+  for (const o of outObjs) {
+    if (o.kind !== 'rackunit' || !o.rackId) continue;
+    const copied = idMap.get(o.rackId);
+    if (copied) {
+      o.rackId = copied;
+      continue;
+    }
+    const rack = scratchPage?.objects.find((r) => r.id === o.rackId);
+    const sp = unitSpec({ ...project, devices: { ...project.devices, ...devices } }, o);
+    const slots = slotsOf(sp.width);
+    let spot: { u: number; slot: number } | null = null;
+    if (rack?.kind === 'rack' && scratchPage && !isCustom(sp)) {
+      for (let d = 1; d <= rack.ru && !spot; d++)
+        for (const u of [o.u - d * sp.ru, o.u + d * sp.ru, o.u - d, o.u + d])
+          for (let sl = 0; sl < slots && !spot; sl++) if (fits(project, scratchPage, rack, u, sp.ru, (o.slot + sl) % slots, slots, new Set())) spot = { u, slot: (o.slot + sl) % slots };
+    }
+    if (spot && scratchPage) {
+      o.u = spot.u;
+      o.slot = spot.slot;
+      scratchPage = { ...scratchPage, objects: [...scratchPage.objects, o] };
+    } else if (rack?.kind === 'rack' && isCustom(sp) && scratchPage) {
+      // Shelf gear: next to the original on the same shelf.
+      o.at = { x: (o.at?.x ?? 0) + 1, y: o.at?.y ?? 0 };
+    } else o.rackId = null;
+  }
   // Drawn lines glued to something: follow the copy of it, or let go.
   for (const o of outObjs) {
     if (o.kind !== 'line' || !o.ends) continue;
@@ -1873,11 +1914,40 @@ export function equipmentListCsv(project: Project): string {
         rack = r.tag.trim() || r.name.trim() || 'Rack';
         ru = n > 1 ? `${o.u}-${o.u + n - 1}` : String(o.u);
       }
-    return [def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', '), rack, ru];
+    return ['1', def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', '), rack, ru];
   });
-  rows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]) || a[2].localeCompare(b[2], undefined, { numeric: true }));
+  rows.sort((a, b) => a[1].localeCompare(b[1]) || a[2].localeCompare(b[2]) || a[3].localeCompare(b[3], undefined, { numeric: true }));
+  // Racks and rack components (blank / brush / vent panels, drawers, shelves) are tallied by type and size for ordering.
+  const tally = new Map<string, { qty: number; pages: Set<number>; racks: Set<string> }>();
+  project.pages.forEach((pg, pi) => {
+    for (const o of pg.objects) {
+      let key: string | null = null;
+      let rackName = '';
+      if (o.kind === 'rack') {
+        key = `Rack ${o.ru}U${o.frame === 'frame' ? ' (open frame / wall)' : ''}`;
+        rackName = o.tag.trim() || o.name.trim();
+      } else if (o.kind === 'rackunit' && o.accessory) {
+        const sp = unitSpec(project, o);
+        const w = sp.width === 'half' ? ', half width' : sp.width === 'third' ? ', third width' : '';
+        key = `${ACCESSORY_NAMES[o.accessory]} ${sp.ru}U${w}`;
+        const r = pg.objects.find((x) => x.id === o.rackId);
+        rackName = r?.kind === 'rack' ? r.tag.trim() || r.name.trim() : '';
+      }
+      if (!key) continue;
+      const t = tally.get(key) ?? { qty: 0, pages: new Set(), racks: new Set() };
+      t.qty++;
+      t.pages.add(pi + 1);
+      if (rackName) t.racks.add(rackName);
+      tally.set(key, t);
+    }
+  });
+  const parts = [...tally.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+    .map(([k, t]) => [String(t.qty), '', k, '', [...t.pages].join(', '), [...t.racks].sort().join(', '), '']);
   const esc = (v: string) => (/[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
-  return [['Manufacturer', 'Model', 'Friendly name', 'Page(s)', 'Rack', 'RU'], ...rows].map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
+  const out = [['Qty', 'Manufacturer', 'Model', 'Friendly name', 'Page(s)', 'Rack', 'RU'], ...rows];
+  if (parts.length) out.push([], ['Qty', '', 'Racks and rack components', '', 'Page(s)', 'Rack(s)', ''], ...parts);
+  return out.map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
 }
 
 void rotOf;

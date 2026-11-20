@@ -1,6 +1,6 @@
 :root {
   --bg: #e9edf2;
-  --panel: #f8fafc;
+  --panel: #e3e8ee;
   --border: #cfd6df;
   --text: #1f2933;
   --muted: #6b7785;
@@ -114,7 +114,7 @@ kbd {
 .tsection {
   display: flex;
   flex-direction: column;
-  padding: 0 6px;
+  padding: 0 5px;
   border-right: 1px solid var(--border);
   gap: 4px;
 }
@@ -160,7 +160,7 @@ kbd {
   display: grid;
   grid-template-columns: auto auto;
   grid-template-rows: auto auto;
-  gap: 2px 6px;
+  gap: 4px 5px;
   align-items: center;
   font-size: 11.5px;
   margin-right: 4px;
@@ -1140,4 +1140,67 @@ details.rows summary {
 .arr-label {
   width: 44px;
   color: var(--muted);
+}
+
+/* Round 3: icons on toolbar buttons */
+.toolbar .tb .tb-icon {
+  color: #334155;
+  margin-bottom: 1px;
+}
+.toolbar .tb.active .tb-icon {
+  color: #fff;
+}
+.toolbar .tb:disabled .tb-icon {
+  color: inherit;
+}
+.toolbar .tb.menu-btn .tb-icon {
+  margin: 0 3px 0 0;
+}
+.toolbar .tb .tb-sub {
+  font-size: inherit;
+}
+.toolbar .tb {
+  min-height: 50px;
+  padding: 4px 4px 3px;
+  min-width: 38px;
+  font-size: 11.5px;
+}
+.toolbar .tb.menu-btn {
+  min-height: 0;
+}
+.tstack button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Arrange options sit below the properties, set apart by a rule and space. */
+.section.arrange-section {
+  border-top: 1px solid #94a3b8;
+  margin-top: 50px;
+  padding-top: 10px;
+  border-bottom: none;
+}
+.tipicon {
+  color: #ca8a04;
+  vertical-align: -2px;
+}
+.tipsub {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 6px 0 3px;
+}
+table.shortcuts {
+  border-collapse: collapse;
+  font-size: 11.5px;
+  width: 100%;
+}
+table.shortcuts td {
+  padding: 2px 4px 2px 0;
+  vertical-align: top;
+}
+table.shortcuts td:first-child {
+  white-space: nowrap;
 }

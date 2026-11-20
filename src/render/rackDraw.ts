@@ -44,7 +44,7 @@ export function drawRack(out: DLItem[], project: Project, r: RackObj, page: Page
   const ts = TITLE_SIZE_IN * k;
   lines.forEach((t, i) => {
     const w = measureText(t, 'titleBold', ts);
-    out.push({ t: 'text', x: r.x + L.w / 2 - w / 2, y: r.y + ts * (1 + i * 1.2) - ts * 0.2, text: t, font: 'titleBold', size: ts, color: '#000000' });
+    out.push({ t: 'text', x: (r.x + L.labL + L.frame.x + L.frame.w) / 2 - w / 2, y: r.y + ts * (1 + i * 1.2) - ts * 0.2, text: t, font: 'titleBold', size: ts, color: '#000000' });
   });
 
   // Front view: frame, mounting area, rails with their square holes (three per space).

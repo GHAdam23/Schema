@@ -9,36 +9,24 @@ import { MEDIA_ACCEPT } from '../io/importMedia';
 import { savePrefs } from '../state/prefs';
 import { getState } from '../state/store';
 import type { Tool } from '../state/store';
+import { Icon, type IconName } from './icons';
 
 /** Toolbar button with an optional keyboard-shortcut reminder underneath. */
-function Btn(props: { label: string; keys?: string; title?: string; onClick: (e: React.MouseEvent) => void; disabled?: boolean; active?: boolean }) {
+function Btn(props: { label: string; icon?: IconName; keys?: string; sub?: string; title?: string; onClick: (e: React.MouseEvent) => void; disabled?: boolean; active?: boolean }) {
   return (
     <button className={'tb' + (props.active ? ' active' : '')} title={props.title ?? props.label} disabled={props.disabled} onClick={props.onClick}>
-      <span className="tb-label">{props.label}</span>
+      {props.icon && <Icon name={props.icon} size={16} className="tb-icon" />}
+      <span className="tb-label">
+        {props.label}
+        {props.sub && <span className="tb-sub"> {props.sub}</span>}
+      </span>
       <span className="tb-keys">{props.keys ?? ' '}</span>
     </button>
   );
 }
 
-/** Small line icons for the section titles. */
-const ICONS: Record<string, string> = {
-  edit: 'M3 13l1-4 7-7 3 3-7 7-4 1z M9 4l3 3',
-  cursor: 'M4 2l9 6-4 1 2 5-2 1-2-5-3 3z',
-  plus: 'M8 3v10 M3 8h10',
-  eye: 'M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
-  tag: 'M2 3h6l6 6-5 5-6-6z M5 6h.01',
-};
-
-export function Icon({ name }: { name: string }) {
-  return (
-    <svg className="ticon" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round">
-      <path d={ICONS[name]} />
-    </svg>
-  );
-}
-
 /** A titled toolbar section: caption with an icon on top, buttons below. */
-function Section({ title, icon, children, className, extra }: { title: string; icon: string; children: React.ReactNode; className?: string; extra?: React.ReactNode }) {
+function Section({ title, icon, children, className, extra }: { title: string; icon: IconName; children: React.ReactNode; className?: string; extra?: React.ReactNode }) {
   return (
     <div className={'tsection' + (className ? ' ' + className : '')}>
       <div className="tsection-title">
@@ -51,7 +39,7 @@ function Section({ title, icon, children, className, extra }: { title: string; i
 }
 
 /** Dropdown menu button (File, Export). */
-function Menu({ label, items }: { label: string; items: ([string, string, () => void] | null)[] }) {
+function Menu({ label, items }: { label: string; icon?: IconName; items: ([string, string, () => void] | null)[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -115,7 +103,7 @@ export function Toolbar() {
 
   const sel = new Set(selection);
   const lineIds = page.connections.filter((c) => sel.has(c.id)).map((c) => c.id);
-  const toolBtn = (t: Tool, label: string, keys: string | undefined, title: string) => <Btn label={label} keys={keys} title={title} active={tool === t} onClick={() => setState({ tool: t })} />;
+  const toolBtn = (t: Tool, icon: IconName, label: string, keys: string | undefined, title: string) => <Btn icon={icon} label={label} keys={keys} title={title} active={tool === t} onClick={() => setState({ tool: t })} />;
   const auto = project.autoLabel ?? DEFAULT_AUTO_LABEL;
   const setAuto = (patch: Partial<typeof auto>, label: string) => {
     nextLabel(label);
@@ -132,6 +120,7 @@ export function Toolbar() {
         <div className="tfile-menus">
           <Menu
             label="File"
+            icon="file"
             items={[
               ['New', '', newProjectCmd],
               ['Open…', 'Ctrl+O', () => void openProjectCmd()],
@@ -142,6 +131,7 @@ export function Toolbar() {
           />
           <Menu
             label="Export"
+            icon="export"
             items={[
               ['PDF…', '', () => setState({ modal: { kind: 'exportPdf' } })],
               null,
@@ -151,37 +141,39 @@ export function Toolbar() {
           />
           <Menu
             label="Settings"
+            icon="gear"
             items={[
               ['Project settings…', 'signals, fonts', () => setState({ modal: { kind: 'projectSettings' } })],
               ['Title block…', '', () => setState({ modal: { kind: 'titleBlock' } })],
               null,
               ['Backups…', '', () => setState({ modal: { kind: 'backups' } })],
-              ['Preferences…', 'app', () => setState({ modal: { kind: 'prefs' } })],
+              ['App preferences…', '', () => setState({ modal: { kind: 'prefs' } })],
             ]}
           />
         </div>
       </div>
       <Section title="Edit" icon="edit">
-        <Btn label="↶" keys="Ctrl+Z" title="Undo" onClick={undo} disabled={!canUndo} />
-        <Btn label="↷" keys="Ctrl+Y" title="Redo" onClick={redo} disabled={!canRedo} />
-        <Btn label="History" keys="Ctrl+H" title="Recent changes — see what changed and undo to any point" onClick={() => setState({ modal: { kind: 'history' } })} />
+        <Btn icon="undo" label="Undo" keys="Ctrl+Z" title="Undo" onClick={undo} disabled={!canUndo} />
+        <Btn icon="redo" label="Redo" keys="Ctrl+Y" title="Redo" onClick={redo} disabled={!canRedo} />
+        <Btn icon="history" label="History" keys="Ctrl+H" title="Recent changes — see what changed and undo to any point" onClick={() => setState({ modal: { kind: 'history' } })} />
       </Section>
       <Section title="Tools" icon="cursor">
-        {toolBtn('select', 'Select', 'V', 'Select and move objects')}
-        {toolBtn('pan', 'Move', 'H', 'Move around the page by dragging (also right-drag, middle-drag, Space-drag, or drag the grey area)')}
-        <Btn label="Snap" keys="to grid" active={prefs.snap} title="Snap to the grid while placing and moving" onClick={() => togglePref('snap')} />
-        <Btn label="Guides" keys="smart" active={prefs.smartGuides} title="Smart guides: snap to other objects' edges, centres and port rows while moving" onClick={() => togglePref('smartGuides')} />
+        {toolBtn('select', 'cursor', 'Select', 'V', 'Select and move objects')}
+        {toolBtn('pan', 'hand', 'Move', 'H', 'Move around the page by dragging (also right-drag, middle-drag, Space-drag, or drag the grey area)')}
+        <Btn icon="magnet" label="Snap" sub="to grid" active={prefs.snap} title="Snap to the grid while placing and moving" onClick={() => togglePref('snap')} />
+        <Btn icon="guides" label="Guides" active={prefs.smartGuides} title="Smart guides: snap to other objects' edges, centres and port rows while moving" onClick={() => togglePref('smartGuides')} />
       </Section>
       <Section title="Insert" icon="plus">
-        {toolBtn('text', 'Text', 'T', 'Text box: click, or drag out a box')}
-        {toolBtn('rect', 'Rect', 'R', 'Rectangle (Shift: square)')}
-        {toolBtn('ellipse', 'Ellipse', 'E', 'Ellipse (Shift: circle)')}
-        {toolBtn('container', 'Container', 'F', "Container: a labelled frame that moves what's inside it")}
-        {toolBtn('callout', 'Callout', 'L', 'Callout: text with a pointer')}
-        {toolBtn('cloud', 'Bubble', undefined, 'Thought bubble — drag the yellow diamond to point it')}
-        {toolBtn('line', 'Line', undefined, 'Draw a line or arrow (drag; Shift = 15° steps). Arrowheads are set in its properties.')}
+        {toolBtn('text', 'text', 'Text', 'A', 'Text box: click, or drag out a box')}
+        {toolBtn('rect', 'rect', 'Rectangle', 'R', 'Rectangle (Shift: square)')}
+        {toolBtn('ellipse', 'ellipse', 'Ellipse', 'E', 'Ellipse (Shift: circle)')}
+        {toolBtn('container', 'container', 'Container', 'N', "Container: a labelled frame that moves what's inside it")}
+        {toolBtn('callout', 'callout', 'Callout', 'C', 'Callout: text with a pointer')}
+        {toolBtn('cloud', 'bubble', 'Bubble', 'B', 'Thought bubble — drag the yellow diamond to point it')}
+        {toolBtn('line', 'line', 'Line', 'L', 'Draw a line or arrow (drag; Shift = 15° steps). Arrowheads are set in its properties.')}
         <Btn
-          label="Image"
+          icon="image"
+          label="Image/PDF"
           title="Import PNG / JPG / PDF / SVG (or drop files on the page, or paste an image)"
           onClick={async () => {
             const f = await pickFile(MEDIA_ACCEPT);
@@ -190,11 +182,11 @@ export function Toolbar() {
         />
       </Section>
       <Section title="View" icon="eye">
-        <Btn label="Grid" keys="show" active={prefs.showGrid} title="Show the grid" onClick={() => togglePref('showGrid')} />
-        <Btn label="−" keys="Ctrl+−" title="Zoom out" onClick={() => view('out')} />
-        <Btn label="Fit" keys="Ctrl+0" title="Fit the page" onClick={() => view('fit')} />
-        <Btn label="100%" title="Actual size" onClick={() => view('100')} />
-        <Btn label="+" keys="Ctrl++" title="Zoom in" onClick={() => view('in')} />
+        <Btn icon="grid" label="Grid" active={prefs.showGrid} title="Show the grid" onClick={() => togglePref('showGrid')} />
+        <Btn icon="zoomOut" label="Out" keys="Ctrl+−" title="Zoom out" onClick={() => view('out')} />
+        <Btn icon="fit" label="Fit" keys="Ctrl+0" title="Fit the page" onClick={() => view('fit')} />
+        <Btn icon="zoom" label="100%" title="Actual size" onClick={() => view('100')} />
+        <Btn icon="zoomIn" label="In" keys="Ctrl++" title="Zoom in" onClick={() => view('in')} />
       </Section>
       <Section title="Line labels" icon="tag" extra={<span className="tnext" title="The next label">next {formatLabel(auto, auto.next)}</span>}>
         <div className="tlabels">

@@ -567,8 +567,8 @@ function RackSizeFields({ rack, onChange }: { rack: BlockDef['rack']; onChange: 
           }}
         >
           <option value="none">— not set —</option>
-          <option value="rack">Rack-mount</option>
-          <option value="shelf">Not rack-mountable (shelf)</option>
+          <option value="rack">Rack-mounted</option>
+          <option value="shelf">Not rack-mounted (shelf, W × H × D)</option>
         </select>
       </label>
       {mount === 'rack' && (

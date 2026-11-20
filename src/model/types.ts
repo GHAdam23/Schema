@@ -220,6 +220,8 @@ export interface RackObj extends ObjBase {
   labels?: Exclude<RackLabelSide, 'none'>;
   /** Derived (syncRacks): width of the label columns beside the rack, inches. */
   labW?: [number, number];
+  /** Derived (syncRacks): offset of the front view from x, inches — kept so the front view doesn't move when the left side grows. */
+  fx?: number;
 }
 
 /**

@@ -43,7 +43,7 @@ export function PrefsDialog() {
   };
   return (
     <Modal
-      title="Preferences"
+      title="App preferences"
       buttons={
         <>
           <button

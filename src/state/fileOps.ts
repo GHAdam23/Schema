@@ -118,7 +118,7 @@ export async function importMedia(files: File[], at?: { x: number; y: number }) 
 
 export async function exportEquipmentListCmd() {
   const s = getState();
-  if (!Object.keys(s.project.devices).length) {
+  if (!Object.keys(s.project.devices).length && !s.project.pages.some((p) => p.objects.some((o) => o.kind === 'rack'))) {
     toast('No devices in this project yet.', 'warn');
     return;
   }
