@@ -150,6 +150,9 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Liberation Sans Narrow could not be fetched in the build environment, so the narrow font is the spec's fallback **Roboto Condensed** (`public/fonts/narrow-*.ttf`, OFL). To switch to Liberation Sans Narrow, replace those two files (same names) — nothing else changes.
 - Title block uses **Carlito**. pdf-lib's subsetter drops Carlito glyphs, so Carlito is embedded whole (adds ~0.6 MB per PDF); the narrow font is subset.
 
+### Hosting
+- Published with GitHub Pages: `.github/workflows/deploy.yml` builds (`npm ci`, `npm run build`) and deploys `dist/` on every push to `main` (or by hand from the Actions tab). One-time setup: make the repo public and set Settings → Pages → Source to "GitHub Actions". Address: `https://ghadam23.github.io/Schema/`. `vite.config.ts` uses `base: './'`, so the app works from that sub-path. Visitors need no account; their library, projects and backups stay in their own browser.
+
 ### Files
 - `.schema` = zip with `project.json` + `assets/<id>` (logo images). Plain JSON is also accepted on open.
 - Library CSV/XLSX: one row per port — `Manufacturer, Model, Column (IN/OUT), Port, Signal, Connector, Rack Units, Rack Width, Depth (in), Width (in), Height (in)` (columns are found by header name; old `Direction` / `Default Name` columns are accepted / ignored on import). Blocks with no ports are one row with empty port fields. Import merges by manufacturer+model (replaces existing).
