@@ -33,7 +33,7 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Header: **Manufacturer | Model**
 - Header split by the centre divider: **Manufacturer** centred over the left column, **Model** over the right column.
 - A centre divider line runs down the header and port rows (see the reference block from feedback round 1).
-- Footer (full width): **IN — Friendly name — OUT** (friendly name is per placed device; the library holds a default)
+- Footer (full width): **IN — Friendly name — OUT** (friendly name is per placed device; Phase 3 round 1: the library no longer holds a default — new devices start unnamed and the block shows a screen-only “add friendly name” reminder)
 - Ports, each: port name, signal type, connector type. **Direction is the column** — no per-row setting:
   - IN rows (left column) display `Port - Signal - Connector`, anchor on the left edge.
   - OUT rows (right column) display `Connector - Signal - Port`, anchor on the right edge.
@@ -46,14 +46,14 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Library browser: search/filter by manufacturer, model, signal type. Multi-select (Ctrl/Shift-click, Select all); export writes only the highlighted blocks (one block → file named after it). Import merges whatever the file contains.
 
 ### Signal types
-- Fixed, user-editable list (HDSDI, HDMI, AUDIO, DATA, AC, …).
+- User-editable lists (round 2): an app list in Preferences (what new projects start with) and each project's own list (Settings → Project settings), used for block-editor suggestions and signal colours. Defaults (Phase 3 round 1): SDI, RF, HDMI, DVI, DP, HDBT, NDI, AUDIO, AES/EBU, DANTE, MADI, DATA, FIBER, GPIO, USB, POWER.
 - Optional color/line style per signal type (off by default).
 - Soft warning (non-blocking) when connecting mismatched signal types. (No IN→IN / OUT→OUT warnings: network gear and jumpers do that legitimately.)
 
 ## 4. Projects, pages, title block
 
 - New project starts with one page. Page tabs: add, duplicate, rearrange (drag), rename, delete.
-- Page sizes: Letter 8.5×11 and Tabloid 11×17, **landscape only**.
+- Page sizes: Letter 8.5×11 and Tabloid 11×17 (labels list the short side first), **landscape only**.
 - Title block column on the right of every page, laid out after the designer's reference sheet (round 3), top to bottom:
   - Logo (≈12% of the column height)
   - **PROJECT ADDRESS** + address lines (all bold)
@@ -74,7 +74,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
   - Text boxes, rectangles (rectangles can hold text — double-click to type; text always shrinks to stay inside its box, optional word-wrap), circles/ellipses, containers (labeled grouping frames), callouts — all rotatable.
   - Imported images (JPG/PNG) and single-page PDFs — rotatable. PDFs stay embedded as the original and export as true vector (pdf-lib embedPage). SVG import also accepted.
   - **Reference tags** (see §7).
-- **Quick insert**: hotkey opens search; Enter drops the block at the cursor. Drag from library panel also works.
+  - **Racks** and **rack units** (rack elevations, Phase 3 — see §10).
+- Blocks are placed by dragging from the library panel (several highlighted blocks drag together) or double-clicking an entry. (The quick-insert search was removed in Phase 3 round 1.)
 - Style properties for lines, blocks, shapes, text: border thickness, solid/dashed, color.
 
 ## 6. Connections (lines)
@@ -99,8 +100,8 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 ## 8. Exports
 
 - Vector PDF: all pages or a selected range, fonts embedded.
-- Equipment list (CSV): manufacturer, model, friendly name, page(s).
-- Cable list (CSV/PDF page): label, from device/port, to device/port, signal type — Phase 3.
+- Equipment list (CSV): manufacturer, model, friendly name, page(s), rack + RU (Phase 3).
+- Cable list (CSV): label, signal, from device/port/connector, to device/port/connector, page(s) — Phase 3 ✅. (A printable cable-list PDF page is still open.)
 
 ## 9. Phases
 
@@ -121,15 +122,23 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - [x] Multi-page device instances + reference tags
 - [x] Equipment list export
 
-**Phase 3**
-- Cable list, optional signal-type colors, auto-label numbering, quality-of-life polish (incl. z-order buttons → right-click menu; custom font upload in project settings, embedded in PDFs)
-- **Rack elevations** (details to be specified later):
-  - Equipment dimensions in the block definition / equipment properties: height, width, depth, and rack-unit (RU) count.
-  - A rack tool that generates a rack outline from a given RU count (numbered rack spaces).
-  - Drag equipment into the rack; it snaps to the nearest rack space (occupying its RU count).
-  - Front view shows manufacturer, model and friendly name on each unit's face.
-  - Generate a side view of the same rack using depth data.
-  - Rack units are the same project devices as on the schematics (one device, many views).
+**Phase 3** — in progress (first cut implemented, awaiting test feedback)
+- [x] Cable list (CSV)
+- [x] Optional signal-type colours (per project)
+- [x] Auto-label numbering (prefix + counter)
+- [x] Quality of life: z-order in a right-click menu; grouped Text / Border / Fill properties with print-friendly colour swatches for text, borders and fills
+- [x] Custom font upload (project setting, embedded in PDFs)
+- [x] **Rack elevations**:
+  - [x] Equipment dimensions in the block definition: RU count, width (full / half / third), depth. (Height = RU × 1.75″.)
+  - [x] Rack tool: rack outline from an RU count, numbered spaces.
+  - [x] Drag equipment into the rack; it snaps to the nearest free space (occupying its RU count).
+  - [x] Front view shows manufacturer, model and friendly name on each unit's face.
+  - [x] Side view of the same rack from the depth data.
+  - [x] Rack units are the same project devices as on the schematics.
+- [x] Round 1 feedback (see §11)
+- [x] Round 2 feedback (see §11)
+- [x] Round 3 feedback (see §11)
+- [ ] Open: cable list as a printable PDF page; UI friction review with the designer (ongoing).
 
 ## 10. Implementation notes (decisions made while building)
 
@@ -141,9 +150,12 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Liberation Sans Narrow could not be fetched in the build environment, so the narrow font is the spec's fallback **Roboto Condensed** (`public/fonts/narrow-*.ttf`, OFL). To switch to Liberation Sans Narrow, replace those two files (same names) — nothing else changes.
 - Title block uses **Carlito**. pdf-lib's subsetter drops Carlito glyphs, so Carlito is embedded whole (adds ~0.6 MB per PDF); the narrow font is subset.
 
+### Hosting
+- Published with GitHub Pages: `.github/workflows/deploy.yml` builds (`npm ci`, `npm run build`) and deploys `dist/` on every push to `main` (or by hand from the Actions tab). One-time setup: make the repo public and set Settings → Pages → Source to "GitHub Actions". Address: `https://ghadam23.github.io/Schema/`. `vite.config.ts` uses `base: './'`, so the app works from that sub-path. Visitors need no account; their library, projects and backups stay in their own browser.
+
 ### Files
 - `.schema` = zip with `project.json` + `assets/<id>` (logo images). Plain JSON is also accepted on open.
-- Library CSV/XLSX: one row per port — `Manufacturer, Model, Default Name, Column (IN/OUT), Port, Signal, Connector` (an old `Direction` column is accepted on import). Blocks with no ports are one row with empty port fields. Import merges by manufacturer+model (replaces existing).
+- Library CSV/XLSX: one row per port — `Manufacturer, Model, Column (IN/OUT), Port, Signal, Connector, Rack Units, Rack Width, Depth (in), Width (in), Height (in)` (columns are found by header name; old `Direction` / `Default Name` columns are accepted / ignored on import). Blocks with no ports are one row with empty port fields. Import merges by manufacturer+model (replaces existing).
 - Library and preferences are stored in the browser (IndexedDB / localStorage); preferences export/import as JSON.
 - Autosave: the open project is written to IndexedDB 1.5 s after each change and restored on reload. Rolling backups: a snapshot every 5 minutes while editing and on every save; last 20 kept (pref). Optional pref: also autosave into the open `.schema` file.
 - "Modified" date updates on explicit save.
@@ -169,7 +181,6 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - Smart guides snap object edges/centres and **port rows** (so lines come out straight); otherwise grid snap (default 9 pt = 1/8"). Arrow keys nudge 1 pt (Shift = grid).
 - "Definition" buttons on a block: *Use library version* / *Save to library* appear only when the project's copy differs from the library (e.g. you fixed a port name while drawing and want that fix for future projects); *Add to library* appears for blocks that aren't in your library (e.g. a project from someone else).
 - Copy/paste of blocks creates new devices (Phase 2 will add "place another instance of this device").
-- Quick insert: the Insert… button (round 5: no shortcut), Enter drops the block at the cursor.
 - Shortcuts: V/T/R tools, Ctrl+Z/Y, Ctrl+C/X/V/D/A, Delete, Ctrl+S / Ctrl+Shift+S / Ctrl+O, Ctrl+0 fit, Ctrl+± zoom, Space/middle-drag pan, Ctrl+wheel zoom.
 
 ### Phase 2 (decisions made while building)
@@ -198,9 +209,41 @@ Owner/designer: Adam Rollin. Target: Chrome / Edge (desktop). Landscape pages on
 - History: specific labels (e.g. "Edit text") are no longer overwritten by the generic "Change object".
 - Fill colours (shapes, container label band, tags) use a swatch that always shows the colour; its palette has "No fill" and a custom colour.
 - Keyboard shortcuts (after the round-5 trim): Ctrl+S / Ctrl+Shift+S / Ctrl+O, Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z), Ctrl+H history, Ctrl+C / X / V / D / A, Ctrl+Shift+V paste as new devices, Delete, arrows nudge (Shift = grid), Esc, tools V T R E F L H, type / Enter to label a selected line or snake, Shift+↑/↓ next line, Ctrl+0 fit, Ctrl+± zoom, Ctrl+wheel, Space/right/middle-drag pan, Ctrl+Enter finishes text.
-- Stacking: objects stack in creation order (Front/Fwd/Bwd/Back change it; containers start at the back); lines are always drawn above all objects so connections are never hidden.
+- Stacking: objects stack in creation order (the right-click menu changes it — Phase 3; containers and racks start at the back); lines are always drawn above all objects so connections are never hidden.
+
+### Phase 3 (decisions made while building)
+- **Properties panel** (designer request): settings are grouped in titled boxes — **Text** (content, colour, size, bold, wrap, alignment), **Border**, **Fill**, **Position & size**, plus Pointer for callouts and Line style for lines. One colour control everywhere (`ui/controls.tsx` `ColorSwatch`): a swatch that opens a small palette of print-friendly colours (black, three greys, white, brown, red, orange, yellow, green, blue, purple — no pale tints) and "Custom". The first entry is **Default (black)** for text and borders, **No fill** for fills, **No border** where a border is optional (text boxes, images — replaces the old Add/No border buttons). Number fields everywhere apply on Enter / leaving / spinner.
+- **Right-click menu** (designer request): stacking order (Bring to front / forward, Send backward / to back) moved out of the toolbar into a context menu on the canvas, with Cut / Copy / Paste / Duplicate / Delete. Right-click without moving opens it (selecting what's under the pointer first if it isn't selected); right-drag still pans. Round 1: Office shortcuts, listed in the menu — `Ctrl+]` forward, `Ctrl+[` backward, `Ctrl+Shift+]` to front, `Ctrl+Shift+[` to back (matched on the physical bracket keys).
+- **Toolbar** (round 1): one row of titled sections with the shortcut under each button: file name above **File ▾** (New, Open, Save, Save As) · **Export ▾** (PDF, Equipment list, Cable list) · **Settings ▾** (Project settings, Title block, Backups, Preferences) · **Edit** (undo, redo, history) · **Tools** (Select `V`, Move `H` — the old Hand) · **Insert** (Text `T`, Rect `R`, Ellipse `E`, Container `F`, Callout `L`, Bubble — was Thought, Rack `K`, Line, Image) · **View** (Grid, Snap, Guides, zoom) · **Arrange** (align / distribute / Straighten for objects) — replaced by **Lines** when only lines are selected (Number / Clear labels, line up labels 3×2 grid, Straighten, Bundle into snake; both show when lines and objects are selected). The multi-line properties keep only routing and label-at-both-ends.
+- **Project settings** (round 1): line-label numbering, signal colours and fonts moved from the page panel into Settings ▾ → Project settings (they were always project-wide). Signal colours open their own dialog from there and return to it. The page panel shows the page counts and a collapsible **Tips** section (open/closed remembered).
+- **Unnamed devices** (round 1): no default friendly name in library blocks (editor field, library files); new devices start with an empty name, which needn't be unique (no merge prompt). Blocks show a red italic “add friendly name” in the footer on screen only; tags and lists fall back to the model. Clearing a name in properties is allowed.
+- **Library “differs” notices** are red (block and rack-unit properties).
+- Block properties: “Edit ports — this instance…” / “Edit ports — all project instances…”.
+- **Rack elevations** (`model/rack.ts`, `render/rackDraw.ts`, `state/rackActions.ts`, `ui/RackProps.tsx`), modelled on the designer's rack sheet (racks.png, round 1 of Phase 3):
+  - `BlockDef.rack = { ru, width: 'full' | 'half' | 'third', depth (in) }` — edited in the block editor (library / every-model) or from a rack unit's properties (changes the project's copy of the model; "Save to library" when it differs). Library CSV/XLSX gained `Rack Units, Rack Width, Depth (in)` columns. A model with no size is placed as 1U full width (toast says so).
+  - `RackObj` (page object, not rotatable): RU count, title (name + tag shown in quotes, e.g. *Backstage 40U Rack* / *“AV1”*), look (grey **cabinet** or black **frame / wall rack**), casters, RU numbers (1 at the bottom, on the left rail), optional **side view** (drawn on the left: rear rail left, front rail right, each unit a box of its depth from the front rail; unknown depth = dashed at 12″) with rack depth (default 24″), and a scale (default 8 pt/in, shown and typed as a paper ratio **1 : 9**; corner handles scale the whole rack). Everything is drawn to scale: a space is 19″ × 1.75″. Placed with the **Rack** tool (12U by default; size in properties). Racks are created at the back, like containers.
+  - `RackUnitObj`: a device (same project device as its schematic blocks — renaming either renames both; Devices tab / equipment list show both) mounted at bottom RU `u` and `slot` (for half / third width) in `rackId`. Its x/y follow the rack (`syncRacks` runs after every change, next to `syncGlue`). Units are always drawn and hit on top of their rack. Face: white panel (colour selectable) with rack ears and screws on full-width units, manufacturer / model / friendly name centred and shrunk to fit; text colour selectable.
+  - Mounting: drop a library block on a rack = new device mounted; drop a device from the Devices tab = that device mounted (once per page). Dragging a unit lifts it out of its rack; on release over a rack it snaps to the nearest free space (6 sub-columns per RU so half and third widths share spaces), otherwise it stays free-standing on the page; if there's no room it goes back. Bottom RU / left-right can also be typed in properties. The rack's properties list its contents top to bottom (click to select) and warn about overlaps after a size change. Deleting / copying a rack takes its units along.
+- **Cable list** (`model/cableList.ts`, toolbar **Cables**): one row per cable — Label, Signal, From, From port, From connector, To, To port, To connector, Page(s). A line ending at a reference tag counts as going to the tag's device/port, so a cable drawn across two pages (paired tags) and lines repeated on several pages are listed once. Sorted by label (numeric aware), then source.
+- **Signal colours** (project setting, `Project.signalStyles` + `signalColors`): Page properties → Signal colours → Edit colours… (dialog lists the preference signal types plus any used in the project; "Suggest colours" fills print-friendly defaults; optional dash per type). A line that is still black is drawn in its signal type's colour (output port's signal first); a line given its own colour keeps it ("Use signal colour" resets it). Snake trunks follow their lines' signal.
+- **Auto-numbered labels** (`Project.autoLabel` = prefix, next number, digits): Page properties → Line labels. When on, every new line gets the next label (`C-001`, …; paired off-page lines share it). "Number these lines" (several lines selected) numbers unlabelled lines top to bottom (Shift-click renumbers labelled ones too).
+- **Custom fonts** (`Project.fonts`, Page properties → Fonts): upload a TTF/OTF (plus optional bold) to replace the narrow font (blocks, labels, tags, shapes, rack faces) and/or the title font (title block, rack titles). Stored as project assets, measured with fontkit like the built-in fonts (layout caches are cleared when fonts change), registered as their own CSS families on screen, and embedded whole in PDFs. "Use built-in" goes back.
+- **Rack parts and placement** (round 1): no automatic blank panels. The left panel's **Rack parts** tab has Blank, Brush (opening with bristles), Vent (slotted) panels and Shelves, each with a 1–4U picker; dropped on a rack space they become `RackUnitObj`s with `accessory` + their own `size` (U, width, depth; height / depth / label / colours in properties). Empty spaces show the rails' square holes (EIA: three per U); beside half / third-width gear the rest of the space is a dark-grey filler (#595959, like a blank). **Nothing is placed automatically**: a drop goes into exactly the space under it (bottom RU from the unit's top edge, left / middle / right from the pointer) or, if that space isn't free, isn't placed / goes back (toast). Several library blocks dropped on a rack go downwards from the drop point. **Not-rack-mount gear**: a model's width can be `custom` (“Shelf”) with W × H in inches; in a rack it's drawn at that size, positioned freely (`at`, inches from the mounting area) and dropped onto the shelf below it (snaps to the shelf plate), taking no rack space. **Front-panel images**: PNG / JPG / PDF / SVG files dropped on a rack — or an image object dragged onto one — become units (`assetId`) stretched to their space, U height from the image's proportions at 19″ (changeable). **Depth**: units deeper than the rack stick out past the rear rail in the side view (the drawing grows to the left; `RackObj.over` is kept up to date by `syncRacks`) and the rack lists a warning.
+- **Round 2 layout**: toolbar = file name + File / Export / Settings menus · Edit · Tools (Select, Move, Snap, Guides) · Insert (Text, Rect, Ellipse, Container, Callout, Bubble, Line, Image) · View (Grid, zoom) · Line labels (Auto, Prefix, Next, Digits, Number / Clear selected, next label shown in the caption). Section captions with an icon sit above the buttons. Selection-dependent commands live in Properties: **Arrange** group (align ×6, spread across / down, Straighten) for 2+ objects; for lines: routing, label at both ends, line up labels (3×2 grid), Straighten, Bundle into snake; Straighten also on a single block / line.
+- **Rack labels and pictures** (round 2): `RackObj.labels` (default for its units: face / left / right) and `RackUnitObj.labelSide` (face / left / right / none). Side labels (manufacturer + model, friendly name in bold) sit in label columns left of everything / right of the front view with a leader line to the unit; column widths are derived in `syncRacks` (`RackObj.labW`). A device unit can show a face picture (`assetId`, “Use a picture…”); its label then defaults to the right side. Picture-only units default to no label. Rack-unit pictures are kept by `gc` and carried by copy/paste.
+- **Rack components** (round 2): Racks & components tab = a draggable **Rack** (U field + 12/24/42 presets) and blank / brush / vent panels, **drawers** (front + handle) and shelves, each 1–6U. Panels have two screws per ear (¼″ from top and bottom); rail holes are round; the brush opening is the panel height minus ~0.9″.
+- **Not rack-mountable gear in the block editor** (round 2): “Mounting” = not set / rack-mount (U, width, depth) / not rack-mountable (W, H, D in inches).
+- Dev hook `window.__schema` also exposes `cableListCsv` and `rackActions` for smoke tests.
 
 ## 11. Feedback log
+
+**Phase 3 — round 3** (all addressed): duplicate / copy of racks and rack components fixed (components have no device — the copy crashed); a duplicated unit goes into the nearest free space of the same rack, a duplicated rack gets the next tag (AV1 → AV2) · equipment list: Qty column plus a tally of racks (by size) and rack components (by type, U and width) with the racks they're in · “Rectangle” spelled out · panels / toolbar a shade darker (`--panel` #e3e8ee) · rack title stays centred on the rack, and the front view no longer moves when labels, the side view or deep gear grow the drawing to the left (`RackObj.fx`) · face-picture properties show the ideal picture size and proportion · Settings ▾ “App preferences…” · an icon on every toolbar button (`ui/icons.tsx`) · shortcuts: Text **A**, Rectangle R, Ellipse E, Container **N**, Callout **C**, Bubble **B**, Line **L**; Image button “Image/PDF” (no shortcut); rack **K** removed · “Snap to grid” as one label, Guides without a sub-label · Arrange (and line arranging) below the properties after a rule and 50 px · rack size is just a typed field · block editor mounting “Rack-mounted / Not rack-mounted” · Tips: light-bulb icon and the full keyboard-shortcut list.
+
+**Phase 3 — round 2** (all addressed): signal types per project + app default list · Preferences export/import buttons say “preferences” · toolbar captions on top with icons, taller, more padding · Snap and Guides moved to Tools (both are placement aids; Grid display stays in View) · Arrange (align / spread / straighten) and line-label alignment / bundling moved out of the toolbar into the selection's properties (no more contextual toolbar row) · permanent **Line labels** toolbar section (Auto, prefix, next, digits, Number / Clear selected) · panels show 4 screws (2 per ear) even at 1U · brush opening grows with height · shelf text “isn't rack-mountable” · drawers added · components 1–6U · block editor “Mounting: rack-mount / not rack-mountable (shelf)” with W × H × D · page sizes short side first · racks are dragged in from **Racks & components** (Rack tool removed from the toolbar; the `K` shortcut was removed in round 3) · equipment labels on the face, left or right of the rack (rack default + per unit, leader lines) and face pictures for device units · Devices tab: click a name to edit it · “differs from library” compares the instance's own port list · Tips at the bottom of the page panel · round rail holes · tab “Devices in project”.
+
+**Phase 3 — round 1** (all addressed): z-order shortcuts (Office) listed in the menu · Insert / quick-insert removed · multi-select drag from the library places them all · no default friendly name (“add friendly name” reminder) · racks: drawn to scale with a paper-scale readout (question: the sentence “one rack space is 1.75″H x …” was cut off) · dark-grey filler beside half / third-width gear · screw holes on empty rails · blank panels no longer automatic — Rack parts tab with blank / brush / vent panels and shelves of chosen U height · non-rack-mount gear on shelves · deep gear sticks out past the rear rail · front-panel images into rack spaces · nothing placed automatically (drop = that exact space) · rack shortcut K · red “differs from library” · new default signal types · Clear labels · fonts and signal colours moved to Project settings · toolbar regrouped (File / Export / Settings menus, Edit, Tools, Insert, View, Arrange / Lines, shortcut hints) · help text → Tips · “Edit ports — this instance / all project instances”.
+
+**Phase 3 — kickoff** (all addressed): grouped Text / Border / Fill properties, the fill colour swatch reused for text and borders with a few print colours (default black) · z-order buttons moved to a right-click menu · rack elevations from the reference sheet (front + optional side view) · plus the planned Phase 3 items (cable list, signal colours, auto-numbering, font upload).
 
 **Phase 2 — round 6** (all addressed; last round of Phase 2): line up labels left / centre / right (top / middle / bottom on vertical runs), all relative to the first selected line's label · clearer selection (halo + outline set outside the object, corner markers when several are selected) · dragging an existing line near a shape / line glues its end there.
 

@@ -18,6 +18,7 @@ import type {
   PageSizeId,
   Project,
   ProjectDevice,
+  RackUnitObj,
   RectObj,
   StrokeStyle,
   TagObj,
@@ -27,14 +28,16 @@ import { isPortEndpoint } from '../model/types';
 import { newId } from '../model/ids';
 import { cloneDef, newPage } from '../model/project';
 import { DEFAULT_BLOCK_BORDER, DEFAULT_LINE, DEFAULT_RECT_BORDER, drawingArea } from '../model/defaults';
-import { blockFor, findPort, portAnchor } from '../model/blockGeometry';
+import { blockFor, blockLayout, findPort, portAnchor } from '../model/blockGeometry';
 import { LINE_H, lineBox, lineEnds } from '../model/glue';
 import { axisOf, objBounds, resolveEndpoint, resolvePageRoutes, straightenDelta, type ResolvedRoute } from '../model/routing';
-import { normDeg, rotOf } from '../model/geom';
+import { isBox, normDeg, rotOf } from '../model/geom';
 import { devicePages, tagRowFit, tagSize, tagTargetPage, tagText } from '../model/tags';
 import { calloutTip, labelBox, labelBoxes, labelTAt, withLabelT, type LabelBox } from '../render/buildPage';
 import { currentPage, defaultLabel, getState, labelLast, nextLabel, setState, toast, updateProject, type PortRef } from './store';
 import { saveLibrary } from '../io/libraryStore';
+import { DEFAULT_AUTO_LABEL, formatLabel } from '../model/signals';
+import { ACCESSORY_NAMES, fits, isCustom, rackSpecOf, slotsOf, unitSpec } from '../model/rack';
 
 type D = Draft<Project>;
 
@@ -133,7 +136,7 @@ export function placeBlock(def: BlockDef, x: number, y: number, fromLibrary = tr
       defId = newDef.id;
     }
   }
-  const dev: ProjectDevice = { id: newId('dv'), defId, name: uniqueDeviceName(s.project, def.defaultName || def.model || 'DEVICE') };
+  const dev: ProjectDevice = { id: newId('dv'), defId, name: '' };
   const obj: BlockObj = { id: newId('ob'), kind: 'block', deviceId: dev.id, x, y, scale: 1, border: { ...DEFAULT_BLOCK_BORDER } };
   nextLabel(`Add ${dev.name} (${def.manufacturer} ${def.model})`);
   updateProject((d) => {
@@ -145,7 +148,39 @@ export function placeBlock(def: BlockDef, x: number, y: number, fromLibrary = tr
   return obj.id;
 }
 
+/** Several library blocks at once (dragged together): stacked downwards from (x, y), one history step. */
+export function placeBlocks(defs: BlockDef[], x: number, y: number, gap = 18): Id[] {
+  if (defs.length === 1) return [placeBlock(defs[0], x, y)];
+  const s = getState();
+  const newDefs: BlockDef[] = [];
+  const devices: ProjectDevice[] = [];
+  const objs: BlockObj[] = [];
+  let top = y;
+  for (const def of defs) {
+    let pdef = Object.values(s.project.blockDefs).find((b) => b.libraryId === def.id) ?? newDefs.find((b) => b.libraryId === def.id);
+    if (!pdef) {
+      pdef = { ...cloneDef(def), libraryId: def.id };
+      newDefs.push(pdef);
+    }
+    const dev: ProjectDevice = { id: newId('dv'), defId: pdef.id, name: '' };
+    devices.push(dev);
+    objs.push({ id: newId('ob'), kind: 'block', deviceId: dev.id, x, y: top, scale: 1, border: { ...DEFAULT_BLOCK_BORDER } });
+    const h = blockLayout(pdef, '').h;
+    top = Math.round((top + h + gap) / s.prefs.gridSize) * s.prefs.gridSize;
+  }
+  nextLabel(`Add ${defs.length} blocks`);
+  updateProject((d) => {
+    for (const nd of newDefs) d.blockDefs[nd.id] = nd;
+    for (const dv of devices) d.devices[dv.id] = dv;
+    pageDraft(d).objects.push(...objs);
+  });
+  setState({ selection: objs.map((o) => o.id), selectedPorts: [] });
+  return objs.map((o) => o.id);
+}
+
 export function uniqueDeviceName(p: Project, base: string): string {
+  // Devices without a friendly name yet ("add friendly name") don't need to be unique.
+  if (!base.trim()) return '';
   const names = new Set(Object.values(p.devices).map((d) => d.name));
   if (!names.has(base)) return base;
   const m = base.match(/^(.*?)(\d+)$/);
@@ -587,7 +622,7 @@ export function setRotation(ids: Id[], deg: number | ((cur: number) => number), 
   patchObjects(
     ids,
     (o) => {
-      if (o.kind === 'block' || o.kind === 'tag') return;
+      if (!isBox(o)) return;
       const r = normDeg(typeof deg === 'function' ? deg(o.rot ?? 0) : deg);
       o.rot = Math.round(r * 100) / 100;
       // A line turned by hand lets go of what its ends are glued to (they would pull it back).
@@ -620,6 +655,8 @@ export function deleteSelection() {
     const others = page0.connections.filter((c) => c.from.objId === t.id || c.to.objId === t.id).map((c) => (c.from.objId === t.id ? c.to.objId : c.from.objId));
     if (others.length && others.every((id) => sel.has(id))) sel.add(t.id);
   }
+  // Units in a deleted rack go with it.
+  for (const o of page0.objects) if (o.kind === 'rackunit' && o.rackId && sel.has(o.rackId)) sel.add(o.id);
   // A tag's automatic partner at the far end goes too.
   const partners = new Set(page0.objects.filter((o): o is TagObj => o.kind === 'tag' && sel.has(o.id) && !!o.pairId).map((o) => o.pairId!));
   const page = page0;
@@ -655,7 +692,7 @@ export function deleteSelection() {
 /** Remove unreferenced devices/defs and dangling connections. */
 export function gc(d: D) {
   const usedDevices = new Set<string>();
-  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block') usedDevices.add(o.deviceId);
+  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block' || o.kind === 'rackunit') usedDevices.add(o.deviceId);
   for (const id of Object.keys(d.devices)) if (!usedDevices.has(id)) delete d.devices[id];
   const usedDefs = new Set(Object.values(d.devices).map((v) => v.defId));
   for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'block' && o.defId) usedDefs.add(o.defId);
@@ -674,7 +711,9 @@ export function gc(d: D) {
   }
   // Imported images no longer used (the logo is kept).
   const usedAssets = new Set<string>(d.info.logoAssetId ? [d.info.logoAssetId] : []);
-  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'image') usedAssets.add(o.assetId);
+  for (const pg of d.pages) for (const o of pg.objects) if (o.kind === 'image' || (o.kind === 'rackunit' && o.assetId)) usedAssets.add(o.assetId!);
+  // Uploaded fonts.
+  for (const f of [d.fonts?.narrow, d.fonts?.title]) if (f) [f.regular, f.bold].forEach((id) => id && usedAssets.add(id));
   for (const id of Object.keys(d.assets)) if (!usedAssets.has(id)) delete d.assets[id];
 }
 
@@ -794,7 +833,7 @@ export function setStroke(ids: Id[], style: Partial<StrokeStyle>) {
   updateProject((d) => {
     const pg = pageDraft(d);
     for (const o of pg.objects) {
-      if (!set.has(o.id)) continue;
+      if (!set.has(o.id) || o.kind === 'rack' || o.kind === 'rackunit') continue;
       if (o.kind === 'text' || o.kind === 'image') o.border = { ...(o.border ?? { color: '#000000', width: 1, dash: 'solid' }), ...style } as StrokeStyle;
       else o.border = { ...o.border, ...style } as StrokeStyle;
     }
@@ -811,13 +850,13 @@ export function renameDevice(deviceId: Id, name: string) {
   const p = getState().project;
   const dev = p.devices[deviceId];
   if (!dev) return;
-  const other = Object.values(p.devices).find((d) => d.id !== deviceId && d.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const other = name.trim() ? Object.values(p.devices).find((d) => d.id !== deviceId && d.name.trim().toLowerCase() === name.trim().toLowerCase()) : undefined;
   if (other) {
     const a = p.blockDefs[dev.defId];
     const b = p.blockDefs[other.defId];
     const sameModel = a && b && a.manufacturer === b.manufacturer && a.model === b.model;
-    const pagesA = devicePages(p, deviceId);
-    const pagesB = devicePages(p, other.id);
+    const pagesA = devicePages(p, deviceId, true);
+    const pagesB = devicePages(p, other.id, true);
     const clash = pagesA.some((i) => pagesB.includes(i));
     if (sameModel && !clash) {
       const where = pagesB.map((i) => i + 1).join(', ');
@@ -828,7 +867,7 @@ export function renameDevice(deviceId: Id, name: string) {
     } else if (!sameModel) toast(`Another device is already named "${other.name}" (${b?.manufacturer} ${b?.model}).`, 'warn', 5000);
     else toast(`"${other.name}" is already on this page — kept as two devices with the same name.`, 'warn', 5000);
   }
-  nextLabel(`Rename device "${dev.name}" → "${name}"`);
+  nextLabel(name ? `Rename device "${dev.name}" → "${name}"` : `Clear the name of "${dev.name}"`);
   updateProject((d) => {
     const dv = d.devices[deviceId];
     if (dv) dv.name = name;
@@ -853,6 +892,7 @@ export function mergeDevices(from: Id, into: Id) {
   updateProject((d) => {
     for (const pg of d.pages) {
       const objs = new Set<Id>();
+      for (const o of pg.objects) if (o.kind === 'rackunit' && o.deviceId === from) o.deviceId = into;
       for (const o of pg.objects)
         if (o.kind === 'block' && o.deviceId === from) {
           o.deviceId = into;
@@ -1119,6 +1159,7 @@ export function copySelection() {
   const s = getState();
   const pg = currentPage();
   const sel = new Set(s.selection);
+  for (const o of pg.objects) if (o.kind === 'rackunit' && o.rackId && sel.has(o.rackId)) sel.add(o.id);
   const objects = pg.objects.filter((o) => sel.has(o.id));
   if (!objects.length) return;
   const ids = new Set(objects.map((o) => o.id));
@@ -1128,6 +1169,53 @@ export function copySelection() {
   clip = { pageId: pg.id, objects, connections, bundles, project: s.project };
   pasteCount = 0;
   pastedOn.clear();
+}
+
+/**
+ * Give the selected lines the next auto-numbers, top to bottom then left to right (by their
+ * output end). Lines that already have a label keep it unless `relabel`.
+ */
+export function numberLines(ids: Id[], relabel = false) {
+  const s = getState();
+  const pg = currentPage(s);
+  const auto = s.project.autoLabel ?? DEFAULT_AUTO_LABEL;
+  const routes = resolvePageRoutes(s.project, pg);
+  const lines = pg.connections
+    .filter((c) => ids.includes(c.id) && (relabel || !c.label))
+    .map((c) => ({ c, a: routes.get(c.id)?.s }))
+    .sort((p, q) => (p.a?.y ?? 0) - (q.a?.y ?? 0) || (p.a?.x ?? 0) - (q.a?.x ?? 0));
+  if (!lines.length) {
+    toast('Those lines already have labels.', 'info');
+    return;
+  }
+  const first = formatLabel(auto, auto.next);
+  const last = formatLabel(auto, auto.next + lines.length - 1);
+  nextLabel(`Number ${plural(lines.length, 'line')} ${first}${lines.length > 1 ? '–' + last : ''}`);
+  updateProject((d) => {
+    const pgd = pageDraft(d);
+    lines.forEach((l, i) => {
+      const c = pgd.connections.find((x) => x.id === l.c.id);
+      if (c) c.label = formatLabel(auto, auto.next + i);
+    });
+    d.autoLabel = { ...auto, next: auto.next + lines.length };
+  });
+}
+
+/** Remove the labels of the given lines. */
+export function clearLabels(ids: Id[]) {
+  const pg = currentPage();
+  const n = pg.connections.filter((c) => ids.includes(c.id) && c.label).length;
+  if (!n) return;
+  nextLabel(`Clear ${plural(n, 'line label')}`);
+  patchConnections(ids, (c) => {
+    c.label = '';
+    c.labelT = null;
+    delete c.labelEndsT;
+  });
+}
+
+export function hasClipboard() {
+  return !!clip;
 }
 
 export function cutSelection() {
@@ -1162,6 +1250,7 @@ function copyObjectsInto(
   const defs: Record<string, BlockDef> = {};
   const scratch = { ...project, devices: { ...project.devices } };
   const onPage = new Set(opts.onPage?.objects.filter((o) => o.kind === 'block').map((o) => (o as BlockObj).deviceId) ?? []);
+  const inRackOnPage = new Set(opts.onPage?.objects.filter((o): o is RackUnitObj => o.kind === 'rackunit').map((o) => o.deviceId) ?? []);
   const outObjs: PageObject[] = objects.map((o) => {
     const id = newId('ob');
     idMap.set(o.id, id);
@@ -1183,6 +1272,23 @@ function copyObjectsInto(
         defId = c.id;
       }
       return { ...o, id, deviceId, defId, hidden: o.hidden ? [...o.hidden] : undefined, x: o.x + dx, y: o.y + dy, border: { ...o.border } };
+    }
+    if (o.kind === 'rackunit' && !src.devices[o.deviceId]) {
+      // Rack components and picture-only units: a plain copy.
+      return { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
+    }
+    if (o.kind === 'rackunit') {
+      // Same rule as blocks: the same device on another page, a new one where it's already racked.
+      const dev = src.devices[o.deviceId];
+      let deviceId = o.deviceId;
+      if (opts.forceNew || !project.devices[o.deviceId] || inRackOnPage.has(o.deviceId)) {
+        const nd: ProjectDevice = { id: newId('dv'), defId: dev.defId, name: uniqueDeviceName(scratch, dev.name) };
+        devices[nd.id] = nd;
+        scratch.devices[nd.id] = nd;
+        deviceId = nd.id;
+      }
+      inRackOnPage.add(deviceId);
+      return { ...o, id, deviceId, x: o.x + dx, y: o.y + dy };
     }
     const copy = { ...JSON.parse(JSON.stringify(o)), id, x: o.x + dx, y: o.y + dy };
     if (copy.kind === 'tag') {
@@ -1216,6 +1322,45 @@ function copyObjectsInto(
       delete o.tailTo;
     }
   });
+  // Copied racks get the next free tag (AV1 → AV2) so lists can tell them apart.
+  const tags = new Set(project.pages.flatMap((pg) => pg.objects.filter((o) => o.kind === 'rack').map((o) => (o as { tag: string }).tag.trim())));
+  for (const o of outObjs) {
+    if (o.kind !== 'rack' || !o.tag.trim() || !tags.has(o.tag.trim())) continue;
+    const m = o.tag.trim().match(/^(.*?)(\d+)$/);
+    const stem = m ? m[1] : o.tag.trim() + ' ';
+    let n = m ? parseInt(m[2], 10) + 1 : 2;
+    while (tags.has(stem + n)) n++;
+    o.tag = stem + n;
+    tags.add(o.tag);
+  }
+  // Rack units follow the copy of their rack; copies of units whose rack stays behind go into a free
+  // space of that rack when it's on the target page (nearest to the original), else stand on their own.
+  let scratchPage = opts.onPage;
+  for (const o of outObjs) {
+    if (o.kind !== 'rackunit' || !o.rackId) continue;
+    const copied = idMap.get(o.rackId);
+    if (copied) {
+      o.rackId = copied;
+      continue;
+    }
+    const rack = scratchPage?.objects.find((r) => r.id === o.rackId);
+    const sp = unitSpec({ ...project, devices: { ...project.devices, ...devices } }, o);
+    const slots = slotsOf(sp.width);
+    let spot: { u: number; slot: number } | null = null;
+    if (rack?.kind === 'rack' && scratchPage && !isCustom(sp)) {
+      for (let d = 1; d <= rack.ru && !spot; d++)
+        for (const u of [o.u - d * sp.ru, o.u + d * sp.ru, o.u - d, o.u + d])
+          for (let sl = 0; sl < slots && !spot; sl++) if (fits(project, scratchPage, rack, u, sp.ru, (o.slot + sl) % slots, slots, new Set())) spot = { u, slot: (o.slot + sl) % slots };
+    }
+    if (spot && scratchPage) {
+      o.u = spot.u;
+      o.slot = spot.slot;
+      scratchPage = { ...scratchPage, objects: [...scratchPage.objects, o] };
+    } else if (rack?.kind === 'rack' && isCustom(sp) && scratchPage) {
+      // Shelf gear: next to the original on the same shelf.
+      o.at = { x: (o.at?.x ?? 0) + 1, y: o.at?.y ?? 0 };
+    } else o.rackId = null;
+  }
   // Drawn lines glued to something: follow the copy of it, or let go.
   for (const o of outObjs) {
     if (o.kind !== 'line' || !o.ends) continue;
@@ -1252,13 +1397,16 @@ export function paste(newDevices = false) {
   // Bring over block defs if pasting from another project.
   const defs: Record<string, BlockDef> = {};
   for (const o of clip.objects) {
-    if (o.kind !== 'block') continue;
+    if (o.kind !== 'block' && o.kind !== 'rackunit') continue;
     const dev = clip.project.devices[o.deviceId];
     if (dev && !s.project.blockDefs[dev.defId]) defs[dev.defId] = clip.project.blockDefs[dev.defId];
   }
   // Images bring their assets along (e.g. pasting from another project).
   const assets: Record<string, Asset> = {};
-  for (const o of clip.objects) if (o.kind === 'image' && !s.project.assets[o.assetId] && clip.project.assets[o.assetId]) assets[o.assetId] = clip.project.assets[o.assetId];
+  for (const o of clip.objects) {
+    const aid = o.kind === 'image' ? o.assetId : o.kind === 'rackunit' ? o.assetId : undefined;
+    if (aid && !s.project.assets[aid] && clip.project.assets[aid]) assets[aid] = clip.project.assets[aid];
+  }
   const copy = copyObjectsInto(s.project, clip.project, clip.objects, clip.connections, off, off, clip.bundles, { onPage: page, forceNew: newDevices });
   const reused = copy.objects.filter((o) => o.kind === 'block' && s.project.devices[o.deviceId]).length;
   updateProject((d) => {
@@ -1313,10 +1461,12 @@ export function connect(from: Endpoint, to: Endpoint, opts: { record?: boolean; 
     return null;
   }
   const warnings = connectionWarnings(s.project, pg, a, b);
-  const c: Connection = { id: newId('cn'), from: a, to: b, bends: null, label: '', labelT: null, style: { ...DEFAULT_LINE } };
+  const auto = s.project.autoLabel;
+  const c: Connection = { id: newId('cn'), from: a, to: b, bends: null, label: auto?.on ? formatLabel(auto, auto.next) : '', labelT: null, style: { ...DEFAULT_LINE } };
   nextLabel('Connect ' + describeConnection(s.project, pg, c));
   updateProject((d) => {
     pageDraft(d).connections.push(c);
+    if (auto?.on && d.autoLabel) d.autoLabel.next++;
   }, opts.record ?? true);
   if (warnings.length && !opts.quiet) toast(warnings.join(' '), 'warn', 5000);
   // A line drawn to a tag that already points at a port: add its partner at the far end.
@@ -1450,6 +1600,8 @@ const KIND_NAMES: Record<PageObject['kind'], string> = {
   image: 'Image',
   tag: 'Tag',
   line: 'Line',
+  rack: 'Rack',
+  rackunit: 'Rack unit',
 };
 
 export function kindName(o: PageObject) {
@@ -1461,6 +1613,8 @@ export function describeObject(p: Project, o: PageObject) {
   if (o.kind === 'tag') return `Tag "${tagText(p, o)}"`;
   if (o.kind === 'image') return 'Image';
   if (o.kind === 'line') return o.arrows === 'none' ? 'Line' : o.arrows === 'both' ? 'Double arrow' : 'Arrow';
+  if (o.kind === 'rack') return 'Rack' + (o.tag.trim() || o.name.trim() ? ` "${(o.tag.trim() || o.name.trim()).slice(0, 24)}"` : '');
+  if (o.kind === 'rackunit') return 'Rack unit ' + (p.devices[o.deviceId]?.name ?? '');
   if (o.kind === 'callout' && o.shape === 'cloud') return 'Thought bubble' + (o.text.trim() ? ` "${o.text.trim().split('\n')[0].slice(0, 24)}"` : '');
   const t = o.text?.trim().split('\n')[0].slice(0, 24);
   return KIND_NAMES[o.kind] + (t ? ` "${t}"` : '');
@@ -1748,11 +1902,52 @@ export function patchBundles(ids: Id[], patch: (b: Draft<Bundle>) => void, recor
 export function equipmentListCsv(project: Project): string {
   const rows = Object.values(project.devices).map((dev) => {
     const def = project.blockDefs[dev.defId];
-    return [def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', ')];
+    // Rack position, if mounted: rack tag/name and RU span.
+    let rack = '';
+    let ru = '';
+    for (const pg of project.pages)
+      for (const o of pg.objects) {
+        if (o.kind !== 'rackunit' || o.deviceId !== dev.id || rack) continue;
+        const r = pg.objects.find((x) => x.id === o.rackId);
+        if (r?.kind !== 'rack') continue;
+        const n = rackSpecOf(def).ru;
+        rack = r.tag.trim() || r.name.trim() || 'Rack';
+        ru = n > 1 ? `${o.u}-${o.u + n - 1}` : String(o.u);
+      }
+    return ['1', def?.manufacturer ?? '', def?.model ?? '', dev.name, devicePages(project, dev.id).map((i) => i + 1).join(', '), rack, ru];
   });
-  rows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]) || a[2].localeCompare(b[2], undefined, { numeric: true }));
+  rows.sort((a, b) => a[1].localeCompare(b[1]) || a[2].localeCompare(b[2]) || a[3].localeCompare(b[3], undefined, { numeric: true }));
+  // Racks and rack components (blank / brush / vent panels, drawers, shelves) are tallied by type and size for ordering.
+  const tally = new Map<string, { qty: number; pages: Set<number>; racks: Set<string> }>();
+  project.pages.forEach((pg, pi) => {
+    for (const o of pg.objects) {
+      let key: string | null = null;
+      let rackName = '';
+      if (o.kind === 'rack') {
+        key = `Rack ${o.ru}U${o.frame === 'frame' ? ' (open frame / wall)' : ''}`;
+        rackName = o.tag.trim() || o.name.trim();
+      } else if (o.kind === 'rackunit' && o.accessory) {
+        const sp = unitSpec(project, o);
+        const w = sp.width === 'half' ? ', half width' : sp.width === 'third' ? ', third width' : '';
+        key = `${ACCESSORY_NAMES[o.accessory]} ${sp.ru}U${w}`;
+        const r = pg.objects.find((x) => x.id === o.rackId);
+        rackName = r?.kind === 'rack' ? r.tag.trim() || r.name.trim() : '';
+      }
+      if (!key) continue;
+      const t = tally.get(key) ?? { qty: 0, pages: new Set(), racks: new Set() };
+      t.qty++;
+      t.pages.add(pi + 1);
+      if (rackName) t.racks.add(rackName);
+      tally.set(key, t);
+    }
+  });
+  const parts = [...tally.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+    .map(([k, t]) => [String(t.qty), '', k, '', [...t.pages].join(', '), [...t.racks].sort().join(', '), '']);
   const esc = (v: string) => (/[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
-  return [['Manufacturer', 'Model', 'Friendly name', 'Page(s)'], ...rows].map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
+  const out = [['Qty', 'Manufacturer', 'Model', 'Friendly name', 'Page(s)', 'Rack', 'RU'], ...rows];
+  if (parts.length) out.push([], ['Qty', '', 'Racks and rack components', '', 'Page(s)', 'Rack(s)', ''], ...parts);
+  return out.map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
 }
 
 void rotOf;

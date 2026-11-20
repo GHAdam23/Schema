@@ -7,6 +7,7 @@ import { exportPdf } from '../render/pdfExport';
 import { currentPage, getState, replaceProject, setState, subscribe, toast, updateProject } from './store';
 import { importMediaFile } from '../io/importMedia';
 import { addImage, equipmentListCsv } from './actions';
+import { cableListCsv } from '../model/cableList';
 import { drawingArea } from '../model/defaults';
 
 // ---------------------------------------------------------------------------------------------
@@ -117,12 +118,27 @@ export async function importMedia(files: File[], at?: { x: number; y: number }) 
 
 export async function exportEquipmentListCmd() {
   const s = getState();
-  if (!Object.keys(s.project.devices).length) {
+  if (!Object.keys(s.project.devices).length && !s.project.pages.some((p) => p.objects.some((o) => o.kind === 'rack'))) {
     toast('No devices in this project yet.', 'warn');
     return;
   }
   const blob = new Blob(['\ufeff' + equipmentListCsv(s.project)], { type: 'text/csv' });
   const name = (s.project.info.name || 'Schema').replace(/[\\/:*?"<>|]+/g, '_') + ' - Equipment list.csv';
+  try {
+    await saveAs(blob, name, [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]);
+  } catch (e) {
+    if ((e as DOMException).name !== 'AbortError') toast('Export failed: ' + (e as Error).message, 'error', 6000);
+  }
+}
+
+export async function exportCableListCmd() {
+  const s = getState();
+  if (!s.project.pages.some((p) => p.connections.length)) {
+    toast('No lines in this project yet.', 'warn');
+    return;
+  }
+  const blob = new Blob(['\ufeff' + cableListCsv(s.project)], { type: 'text/csv' });
+  const name = (s.project.info.name || 'Schema').replace(/[\\/:*?"<>|]+/g, '_') + ' - Cable list.csv';
   try {
     await saveAs(blob, name, [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]);
   } catch (e) {

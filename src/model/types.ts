@@ -18,13 +18,36 @@ export interface BlockDef {
   id: Id;
   manufacturer: string;
   model: string;
-  /** Default friendly name used when a new device is placed. */
-  defaultName: string;
+  /** (Older files) default friendly name — no longer used: new devices start without a name. */
+  defaultName?: string;
   left: PortDef[];
   right: PortDef[];
   /** For project-local copies: the library definition this was copied from. */
   libraryId?: Id;
+  /** Physical size for rack elevations (none = not set; placed as 1RU full width). */
+  rack?: RackSpec;
 }
+
+/** Rack size of a model. Rack-mount gear: height from the RU count (1RU = 1.75"). */
+export interface RackSpec {
+  /** Rack units tall (rack-mount gear). */
+  ru: number;
+  /**
+   * Fraction of the 19" rack width: full, half (2 per space) or a third (3 per space); `custom` =
+   * not rack-mount (sits on a shelf), drawn at its real width × height (`w`, `h`).
+   */
+  width?: 'full' | 'half' | 'third' | 'custom';
+  /** Depth behind the front rail, inches (used by the side view). */
+  depth?: number;
+  /** Not rack-mount: real width and height, inches. */
+  w?: number;
+  h?: number;
+}
+
+export type RackAccessory = 'blank' | 'brush' | 'vent' | 'shelf' | 'drawer';
+
+/** Where a rack unit's manufacturer / model / name go: on its face, beside the rack (left / right), or nowhere. */
+export type RackLabelSide = 'face' | 'left' | 'right' | 'none';
 
 export type DashStyle = 'solid' | 'dashed' | 'dotted';
 
@@ -169,9 +192,73 @@ export interface TagObj extends ObjBase {
   auto?: boolean;
 }
 
-export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj | LineObj;
+/**
+ * Rack elevation: a numbered rack outline (front view, optionally a side view on its left) with a
+ * title above. x/y is the top-left of the whole drawing; its size follows from the settings.
+ */
+export interface RackObj extends ObjBase {
+  kind: 'rack';
+  /** Rack units of mounting space. */
+  ru: number;
+  /** Title (e.g. "Backstage 40U Rack") and tag (e.g. AV1, shown in quotes) above the rack. */
+  name: string;
+  tag: string;
+  /** Cabinet: grey side panels; frame: black open frame / wall rack. */
+  frame: 'cabinet' | 'frame';
+  casters?: boolean;
+  /** Rack-unit numbers on the left rail. */
+  numbers: boolean;
+  /** Also draw the side view (depth) on the left. */
+  side?: boolean;
+  /** Depth between the front and rear rails, inches (side view). */
+  depth: number;
+  /** Drawing scale: points per inch. */
+  scale: number;
+  /** Derived (kept up to date by syncRacks): how far the deepest unit sticks out past the rear rail, inches. */
+  over?: number;
+  /** Default place for the units' labels (default: on their faces). */
+  labels?: Exclude<RackLabelSide, 'none'>;
+  /** Derived (syncRacks): width of the label columns beside the rack, inches. */
+  labW?: [number, number];
+  /** Derived (syncRacks): offset of the front view from x, inches — kept so the front view doesn't move when the left side grows. */
+  fx?: number;
+}
+
+/**
+ * A device mounted in a rack (the same project device as its schematic blocks). In a rack, x/y
+ * are kept in step with the rack (see syncRacks); a unit outside any rack is drawn on its own.
+ */
+export interface RackUnitObj extends ObjBase {
+  kind: 'rackunit';
+  /** The device ('' for accessories and image faces). */
+  deviceId: Id;
+  /** Rack hardware instead of a device: blank / brush / vent panel or a shelf. */
+  accessory?: RackAccessory;
+  /** An imported image / PDF / SVG drawn as the unit's face (an image-only unit, or a device's face picture). */
+  assetId?: Id;
+  /** Where its label goes (default: the rack's setting; side for a device with a face picture). */
+  labelSide?: RackLabelSide;
+  /** Own size (accessories and image faces); devices take theirs from their model. */
+  size?: { ru: number; width?: 'full' | 'half' | 'third'; depth?: number };
+  /** Optional text on an accessory / image unit (e.g. "BLANK PANEL"). */
+  label?: string;
+  rackId: Id | null;
+  /** Lowest rack unit it occupies (1 = bottom space). */
+  u: number;
+  /** Position across the rack for half / third-width units (0-based from the left). */
+  slot: number;
+  /** Not-rack-mount devices in a rack (on a shelf): top-left offset from the mounting area's top-left, inches. */
+  at?: { x: number; y: number };
+  /** Face colour (null = default) and text colour. */
+  fill: string | null;
+  color: string;
+  /** Points per inch when outside a rack (in a rack the rack's scale applies). */
+  scale: number;
+}
+
+export type PageObject = BlockObj | TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj | ImageObj | TagObj | LineObj | RackObj | RackUnitObj;
 /** Objects that have a free box (x, y, w, h, rot). */
-export type BoxObj = Exclude<PageObject, BlockObj | TagObj>;
+export type BoxObj = Exclude<PageObject, BlockObj | TagObj | RackObj | RackUnitObj>;
 /** Objects that hold editable text in their box. */
 export type TextualObj = TextObj | RectObj | EllipseObj | ContainerObj | CalloutObj;
 
@@ -271,7 +358,36 @@ export interface Project {
   devices: Record<Id, ProjectDevice>;
   blockDefs: Record<Id, BlockDef>;
   assets: Record<Id, Asset>;
-  /** Label auto-numbering is Phase 3; the counter lives here for later. */
+  /** Line colour / style per signal type (used when `signalColors` is on). Keys are upper-case signal names. */
+  signalStyles?: Record<string, SignalStyle>;
+  signalColors?: boolean;
+  /** Automatic numbering of new line labels. */
+  autoLabel?: AutoLabel;
+  /** Signal types for this project (block editor suggestions, signal colours); new projects copy the app list. */
+  signalTypes?: string[];
+  /** Uploaded fonts replacing the built-in ones (embedded in the project and in PDFs). */
+  fonts?: { narrow?: CustomFont; title?: CustomFont };
+}
+
+/** An uploaded font family: asset ids of its regular and (optional) bold TTF/OTF files. */
+export interface CustomFont {
+  name: string;
+  regular: Id;
+  bold?: Id;
+}
+
+export interface SignalStyle {
+  color: string;
+  dash?: DashStyle;
+}
+
+export interface AutoLabel {
+  on: boolean;
+  prefix: string;
+  /** Next number to hand out. */
+  next: number;
+  /** Zero-padded to this many digits (e.g. 3 → 007). */
+  digits: number;
 }
 
 export function isPortEndpoint(e: Endpoint): e is { objId: Id; portId: Id } {

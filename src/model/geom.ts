@@ -1,5 +1,6 @@
 // Object geometry: boxes, rotation, bounds.
-import type { PageObject, Project } from './types';
+import type { BoxObj, PageObject, Project } from './types';
+import { rackSize, unitSize } from './rack';
 import { blockSize } from './blockGeometry';
 import { tagSize } from './tags';
 
@@ -16,8 +17,13 @@ export interface Rect {
 /** Affine matrix [a, b, c, d, e, f]: x' = a x + c y + e, y' = b x + d y + f (page coordinates, y down). */
 export type Matrix = [number, number, number, number, number, number];
 
+/** Objects with a free box (x, y, w, h, rot) — not blocks, tags or rack drawings. */
+export function isBox(o: PageObject): o is BoxObj {
+  return o.kind !== 'block' && o.kind !== 'tag' && o.kind !== 'rack' && o.kind !== 'rackunit';
+}
+
 export function rotOf(o: PageObject): number {
-  return o.kind === 'block' || o.kind === 'tag' ? 0 : normDeg(o.rot ?? 0);
+  return isBox(o) ? normDeg(o.rot ?? 0) : 0;
 }
 
 export function normDeg(d: number) {
@@ -35,6 +41,8 @@ export function localBox(project: Project, o: PageObject): Rect {
     const s = tagSize(project, o);
     return { x: o.x, y: o.y, w: s.w, h: s.h };
   }
+  if (o.kind === 'rack') return { x: o.x, y: o.y, ...rackSize(o) };
+  if (o.kind === 'rackunit') return { x: o.x, y: o.y, ...unitSize(project, o) };
   return { x: o.x, y: o.y, w: o.w, h: o.h };
 }
 

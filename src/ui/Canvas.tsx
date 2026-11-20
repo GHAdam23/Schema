@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, TagObj, TextualObj } from '../model/types';
+import type { BlockObj, Connection, Endpoint, Id, LineGlue, Page, PageObject, Project, RackAccessory, RackUnitObj, TagObj, TextualObj } from '../model/types';
 import type { Tool } from '../state/store';
 import { PAGE_SIZES, drawingArea } from '../model/defaults';
 import { blockFor, blockSize, BLK, portAnchor, portRowRect } from '../model/blockGeometry';
@@ -44,15 +44,27 @@ import {
   patchBundles,
   patchConnections,
   patchObjects,
-  placeBlock,
+  placeBlocks,
   placeInstance,
   renameDevice,
   routesToCarry,
   withContents,
+  copySelection,
+  cutSelection,
+  deleteSelection,
+  duplicateSelection,
+  hasClipboard,
+  paste,
+  zOrder,
   type Carry,
 } from '../state/actions';
 import { importMedia } from '../state/fileOps';
-import { centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
+import { addAccessory, addRack, imageIntoRack, mountDevice, mountFromLibrary, mountImage, settleUnits } from '../state/rackActions';
+import { importMediaFile } from '../io/importMedia';
+import { newId } from '../model/ids';
+import { toast } from '../state/store';
+import { rackAt } from '../model/rack';
+import { isBox, centre, fromLocal, localBox, normDeg, objCorners, rotatePt, rotOf, toLocal } from '../model/geom';
 import { tagRowFit, tagSize } from '../model/tags';
 import { isMediaFile } from '../io/importMedia';
 import { isPortEndpoint } from '../model/types';
@@ -68,7 +80,7 @@ type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 type Drag =
   | { t: 'marquee'; start: Pt; cur: Pt; base: Id[]; touch: boolean; enclose?: boolean }
-  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry }
+  | { t: 'move'; start: Pt; ids: Id[]; orig: Map<Id, Pt>; moved: boolean; clickId: Id | null; additive: boolean; wasSelected: boolean; carry: Carry; units?: Map<Id, { rackId: Id | null; u: number; slot: number; x: number; y: number; at?: Pt }> }
   | { t: 'resize'; id: Id; handle: Handle; start: Pt; orig: PageObject; origSize: { w: number; h: number } }
   | { t: 'rotate'; id: Id; c: Pt; start: number; orig: number }
   | { t: 'tail'; id: Id }
@@ -79,7 +91,8 @@ type Drag =
   | { t: 'connect'; from: Endpoint; start: Pt; cur: Pt; moved: boolean; port: PortHit | null; additive: 'none' | 'shift' | 'ctrl'; multi?: PortHit[] }
   | { t: 'segment'; connId: Id; seg: number; start: Pt; bends: number[]; moved: boolean }
   | { t: 'label'; connId: Id; idx: number; moved: boolean }
-  | { t: 'pan'; sx: number; sy: number; orig: View };
+  /** `menu`: a right-button press — released without moving, it opens the context menu instead. */
+  | { t: 'pan'; sx: number; sy: number; orig: View; menu?: boolean; moved?: boolean };
 
 interface Editing {
   kind: 'text' | 'device' | 'label';
@@ -128,6 +141,7 @@ export function Canvas() {
   const [tailHover, setTailHover] = useState<Id | null>(null);
   // Where a line/arrow end being dragged has snapped onto a shape.
   const [lineSnap, setLineSnap] = useState<Pt | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const spaceDown = useRef(false);
   const lastPortClick = useRef<PortHit | null>(null);
 
@@ -228,8 +242,9 @@ export function Canvas() {
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     // Pan: middle or right drag, Space+drag, the Hand tool, or dragging the grey area around the page.
     const offPage = p.x < 0 || p.y < 0 || p.x > size.w || p.y > size.h;
+    setMenu(null);
     if (e.button === 1 || e.button === 2 || (e.button === 0 && (spaceDown.current || getState().tool === 'pan' || offPage))) {
-      setDrag({ t: 'pan', sx: e.clientX, sy: e.clientY, orig: viewRef.current });
+      setDrag({ t: 'pan', sx: e.clientX, sy: e.clientY, orig: viewRef.current, menu: e.button === 2 });
       return;
     }
     if (e.button !== 0) return;
@@ -256,6 +271,11 @@ export function Canvas() {
       }
       if (tool === 'tag') {
         setState({ tool: 'select', modal: { kind: 'tagTarget', objId: addTag(x, y), isNew: true } });
+        return;
+      }
+      if (tool === 'rack') {
+        setState({ tool: 'select' });
+        addRack(x, y);
         return;
       }
       // Shapes: drag out to size (Shift = square / circle); a plain click gives the default size.
@@ -398,6 +418,8 @@ export function Canvas() {
     const z = viewRef.current.z;
     switch (d.t) {
       case 'pan': {
+        if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < DRAG_THRESHOLD) return;
+        d.moved = true;
         setView({ ...d.orig, px: d.orig.px + e.clientX - d.sx, py: d.orig.py + e.clientY - d.sy });
         return;
       }
@@ -434,6 +456,14 @@ export function Canvas() {
           const movedObjs = pg.objects.filter((o) => d.ids.includes(o.id));
           checkpoint(movedObjs.length === 1 ? 'Move ' + describeObject(s.project, movedObjs[0]) : `Move ${movedObjs.length} objects`);
           d.moved = true;
+          // Rack units dragged without their rack come loose while dragging; they snap into a rack space on release.
+          const loose = movedObjs.filter((o): o is RackUnitObj => o.kind === 'rackunit' && !!o.rackId && !d.ids.includes(o.rackId));
+          if (loose.length) {
+            d.units = new Map(loose.map((o) => [o.id, { rackId: o.rackId, u: o.u, slot: o.slot, x: o.x, y: o.y, at: o.at }]));
+            updateProject((dr) => {
+              for (const o of dr.pages.find((x) => x.id === pg.id)!.objects) if (o.kind === 'rackunit' && d.units!.has(o.id)) o.rackId = null;
+            }, false);
+          }
         }
         if (e.shiftKey) {
           if (Math.abs(dx) > Math.abs(dy)) dy = 0;
@@ -493,7 +523,7 @@ export function Canvas() {
           if (Math.abs(r - sq) < 4) r = sq;
         }
         r = Math.round(normDeg(r) * 10) / 10;
-        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && (o.rot = r)), false);
+        patchObjects([d.id], (o) => void (isBox(o) && (o.rot = r)), false);
         return;
       }
       case 'lineEnd': {
@@ -546,7 +576,7 @@ export function Canvas() {
             : addCallout(r.x, r.y, t === 'cloud' ? 'cloud' : 'box', r.w, r.h);
           return;
         }
-        patchObjects([d.id], (o) => void (o.kind !== 'block' && o.kind !== 'tag' && Object.assign(o, r)), false);
+        patchObjects([d.id], (o) => void (isBox(o) && Object.assign(o, r)), false);
         return;
       }
       case 'tail': {
@@ -637,8 +667,17 @@ export function Canvas() {
     const pg = currentPage(s);
     const p = toPage(e.clientX, e.clientY);
     switch (d.t) {
+      case 'pan':
+        if (d.menu && !d.moved) openMenu(e, p);
+        break;
       case 'move':
         setLineSnap(null);
+        if (d.moved) {
+          settleUnits(d.ids, d.units ?? new Map());
+          // A single image dragged onto a rack becomes that space's front panel.
+          const only = d.ids.length === 1 ? pg.objects.find((o) => o.id === d.ids[0]) : undefined;
+          if (only?.kind === 'image') imageIntoRack(only.id);
+        }
         if (!d.moved && !d.additive && d.clickId) setState({ selection: [d.clickId] });
         if (!d.moved && d.additive && d.clickId && d.wasSelected) toggleSel(d.clickId);
         break;
@@ -728,6 +767,17 @@ export function Canvas() {
     }
   };
 
+  /** Right-click without dragging: select what's under the pointer (unless it's already selected) and show the menu. */
+  const openMenu = (e: React.PointerEvent, p: Pt) => {
+    const s = getState();
+    const pg = currentPage(s);
+    const el = document.elementsFromPoint(e.clientX, e.clientY).find((x) => (x as HTMLElement).dataset?.hit === 'seg' || (x as HTMLElement).dataset?.hit === 'label') as HTMLElement | undefined;
+    const id = el?.dataset.id ?? hitObject(s.project, pg, p.x, p.y)?.id ?? null;
+    if (id && !s.selection.includes(id)) setState({ selection: [id], selectedPorts: [] });
+    const r = wrapRef.current!.getBoundingClientRect();
+    setMenu({ x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+
   const clickPort = (ph: PortHit, mode: 'none' | 'shift' | 'ctrl') => {
     const s = getState();
     const pg = currentPage(s);
@@ -797,6 +847,23 @@ export function Canvas() {
     if (h.includes('s')) y2 = sv(q.y);
     // Images keep their proportions on the corner handles (Shift frees them).
     if (o.kind === 'image' && h.length === 2) keepAspect = !keepAspect;
+    if (o.kind === 'rack') {
+      // A rack scales as a whole (points per inch), anchored at the opposite corner.
+      const f = Math.max((x2 - x1) / b.w, (y2 - y1) / b.h);
+      const scale = Math.min(30, Math.max(2, Math.round(o.scale * f * 4) / 4));
+      const k = scale / o.scale;
+      patchObjects(
+        [d.id],
+        (t) => {
+          if (t.kind !== 'rack') return;
+          t.scale = scale;
+          t.x = h.includes('w') ? b.x + b.w - b.w * k : b.x;
+          t.y = h.includes('n') ? b.y + b.h - b.h * k : b.y;
+        },
+        false,
+      );
+      return;
+    }
     if (o.kind === 'block') {
       // Uniform scale, anchored at the opposite corner.
       const sx = (x2 - x1) / b.w;
@@ -846,7 +913,7 @@ export function Canvas() {
     patchObjects(
       [d.id],
       (t) => {
-        if (t.kind === 'block' || t.kind === 'tag') return;
+        if (!isBox(t)) return;
         if (t.kind === 'callout' && o.kind === 'callout') {
           // The pointer's tip stays where it is.
           t.tail = { x: Math.round(o.x + o.tail.x - nx), y: Math.round(o.y + o.tail.y - ny) };
@@ -901,31 +968,64 @@ export function Canvas() {
 
   const onDragOver = (e: React.DragEvent) => {
     const t = e.dataTransfer.types;
-    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('Files')) {
+    if (t.includes('application/x-schema-block') || t.includes('application/x-schema-device') || t.includes('application/x-schema-rackpart') || t.includes('application/x-schema-rack') || t.includes('Files')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
     }
   };
   const onDrop = (e: React.DragEvent) => {
     const p = toPage(e.clientX, e.clientY);
+    // Dropped on a rack: mount it there (the same device as on the schematics).
+    const rack = rackAt(currentPage(), p, 4);
     const files = [...e.dataTransfer.files].filter(isMediaFile);
     if (files.length) {
       e.preventDefault();
-      void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
+      if (rack) {
+        // Front-panel pictures go into the rack space they're dropped on.
+        void (async () => {
+          let at = p;
+          for (const f of files) {
+            try {
+              const r = await importMediaFile(f);
+              const id = mountImage(r.asset, newId('as'), r.name, at);
+              const u = id && currentPage().objects.find((o) => o.id === id);
+              if (u) at = { x: p.x, y: u.y + localBox(getState().project, u).h + 2 };
+            } catch (err) {
+              toast(`Could not import ${f.name}: ${(err as Error).message}`, 'error', 7000);
+            }
+          }
+        })();
+      } else void importMedia(files, { x: snapV(p.x), y: snapV(p.y) });
+      return;
+    }
+    const newRack = e.dataTransfer.getData('application/x-schema-rack');
+    if (newRack) {
+      e.preventDefault();
+      addRack(snapV(p.x), snapV(p.y), Number(newRack) || 12);
+      return;
+    }
+    const part = e.dataTransfer.getData('application/x-schema-rackpart');
+    if (part) {
+      e.preventDefault();
+      const { type, ru } = JSON.parse(part) as { type: RackAccessory; ru: number };
+      addAccessory(type, ru, p);
       return;
     }
     const dev = e.dataTransfer.getData('application/x-schema-device');
     if (dev) {
       e.preventDefault();
-      placeInstance(dev, snapV(p.x), snapV(p.y));
+      if (rack) mountDevice(dev, p);
+      else placeInstance(dev, snapV(p.x), snapV(p.y));
       return;
     }
-    const id = e.dataTransfer.getData('application/x-schema-block');
-    if (!id) return;
+    const ids = e.dataTransfer.getData('application/x-schema-block');
+    if (!ids) return;
     e.preventDefault();
-    const def = getState().library.find((l) => l.id === id);
-    if (!def) return;
-    placeBlock(def, snapV(p.x), snapV(p.y));
+    const lib = getState().library;
+    const defs = ids.split(',').map((id) => lib.find((l) => l.id === id)).filter((d): d is NonNullable<typeof d> => !!d);
+    if (!defs.length) return;
+    if (rack) mountFromLibrary(defs, p);
+    else placeBlocks(defs, snapV(p.x), snapV(p.y));
   };
 
   // ------------------------------------------------------------------------------------------
@@ -942,7 +1042,7 @@ export function Canvas() {
     }
     const o = hitObject(s.project, pg, p.x, p.y);
     if (!o) return;
-    if (o.kind === 'block') setEditing({ kind: 'device', id: o.id });
+    if (o.kind === 'block' || o.kind === 'rackunit') setEditing({ kind: 'device', id: o.id });
     else if (o.kind === 'tag') jumpToTag(o);
     else if ('text' in o) setEditing({ kind: 'text', id: o.id });
   };
@@ -1050,7 +1150,60 @@ export function Canvas() {
         </g>
       </svg>
       {previewWarn.length > 0 && <div className="canvas-hint warn">{previewWarn.join(' ')}</div>}
+      {menu && <ContextMenu at={menu} onClose={() => setMenu(null)} />}
       {editing && <InlineEditor key={JSON.stringify(editing)} editing={editing} view={view} onDone={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function ContextMenu({ at, onClose }: { at: { x: number; y: number }; onClose: () => void }) {
+  const selection = useStore((s) => s.selection);
+  const page = useStore((s) => currentPage(s));
+  const ref = useRef<HTMLDivElement>(null);
+  const objCount = page.objects.filter((o) => selection.includes(o.id)).length;
+  const [pos, setPos] = useState(at);
+  useEffect(() => {
+    // Keep the menu inside the canvas.
+    const el = ref.current;
+    const box = el?.parentElement?.getBoundingClientRect();
+    if (el && box) setPos({ x: Math.min(at.x, box.width - el.offsetWidth - 4), y: Math.min(at.y, box.height - el.offsetHeight - 4) });
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('mousedown', close);
+    window.addEventListener('keydown', esc);
+    window.addEventListener('wheel', onClose);
+    return () => {
+      window.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', esc);
+      window.removeEventListener('wheel', onClose);
+    };
+  }, [at, onClose]);
+  const item = (label: string, keys: string, fn: () => void, disabled = false) => (
+    <button
+      disabled={disabled}
+      onClick={() => {
+        onClose();
+        fn();
+      }}
+    >
+      <span>{label}</span>
+      {keys && <kbd>{keys}</kbd>}
+    </button>
+  );
+  const none = selection.length === 0;
+  return (
+    <div className="ctxmenu" ref={ref} style={{ left: pos.x, top: pos.y }} onContextMenu={(e) => e.preventDefault()}>
+      {item('Cut', 'Ctrl+X', cutSelection, !objCount)}
+      {item('Copy', 'Ctrl+C', copySelection, !objCount)}
+      {item('Paste', 'Ctrl+V', () => paste(), !hasClipboard())}
+      {item('Duplicate', 'Ctrl+D', duplicateSelection, !objCount)}
+      {item('Delete', 'Del', deleteSelection, none)}
+      <hr />
+      {item('Bring to front', 'Ctrl+Shift+]', () => zOrder('front'), !objCount)}
+      {item('Bring forward', 'Ctrl+]', () => zOrder('forward'), !objCount)}
+      {item('Send backward', 'Ctrl+[', () => zOrder('backward'), !objCount)}
+      {item('Send to back', 'Ctrl+Shift+[', () => zOrder('back'), !objCount)}
+      {objCount === 0 && !none && <div className="ctxnote">Lines are always drawn above objects.</div>}
     </div>
   );
 }
@@ -1446,6 +1599,31 @@ function Overlay(props: {
           );
         });
       })}
+      {/* Blocks without a friendly name yet: a reminder in the footer (screen only, not printed). */}
+      {page.objects.map((o) => {
+        if (o.kind !== 'block') return null;
+        const { dev, def } = blockFor(project, o);
+        if (!dev || !def || dev.name.trim()) return null;
+        const sz = blockSize(project, o);
+        const fh = BLK.footerH * o.scale;
+        return (
+          <text
+            key={'nn' + o.id}
+            x={o.x + sz.w / 2}
+            y={o.y + sz.h - fh / 2}
+            dominantBaseline="central"
+            textAnchor="middle"
+            fontFamily="SchemaNarrow"
+            fontStyle="italic"
+            fontSize={BLK.footerSize * o.scale * 0.9}
+            fill="#e11d48"
+            fillOpacity={0.75}
+            pointerEvents="none"
+          >
+            add friendly name
+          </text>
+        );
+      })}
       {/* Port hover / selection */}
       {selectedPorts.map((sp) => {
         const o = page.objects.find((x) => x.id === sp.objId);
@@ -1541,7 +1719,7 @@ function segCursor(r: ResolvedRoute, i: number) {
 const HANDLE_CURSORS = ['ns-resize', 'nesw-resize', 'ew-resize', 'nwse-resize'];
 
 function Handles({ project, o, z }: { project: Project; o: PageObject; z: number }) {
-  if (o.kind === 'tag') return null;
+  if (o.kind === 'tag' || o.kind === 'rackunit') return null;
   if (o.kind === 'line')
     return (
       <g>
@@ -1564,13 +1742,14 @@ function Handles({ project, o, z }: { project: Project; o: PageObject; z: number
     ['sw', b.x, b.y + b.h, 5],
     ['w', b.x, b.y + b.h / 2, 6],
   ];
-  const hs2 = o.kind === 'block' ? all.filter((h) => h[0].length === 2) : all;
+  const fixedShape = o.kind === 'block' || o.kind === 'rack';
+  const hs2 = fixedShape ? all.filter((h) => h[0].length === 2) : all;
   const at = (x: number, y: number) => fromLocal(project, o, { x, y });
   const rotH = at(b.x + b.w / 2, b.y - 20 / z);
   const topC = at(b.x + b.w / 2, b.y);
   return (
     <g>
-      {o.kind !== 'block' && (
+      {!fixedShape && (
         <>
           <line x1={topC.x} y1={topC.y} x2={rotH.x} y2={rotH.y} stroke="#2563eb" strokeWidth={1 / z} pointerEvents="none" />
           <circle data-hit="rotate" data-id={o.id} cx={rotH.x} cy={rotH.y} r={4 / z} fill="#fff" stroke="#2563eb" strokeWidth={1 / z} style={{ cursor: 'grab' }}>
@@ -1667,17 +1846,23 @@ function InlineEditor({ editing, view, onDone }: { editing: Editing; view: View;
       });
     };
   } else if (editing.kind === 'device') {
-    const o = pg.objects.find((x) => x.id === editing.id) as BlockObj | undefined;
-    if (!o) return null;
+    const o = pg.objects.find((x) => x.id === editing.id);
+    if (o?.kind !== 'block' && o?.kind !== 'rackunit') return null;
     const dev = s.project.devices[o.deviceId];
-    const sz = blockSize(s.project, o);
-    const fh = BLK.footerH * o.scale;
-    rect = tr({ x: o.x, y: o.y + sz.h - fh, w: sz.w, h: fh });
+    if (o.kind === 'block') {
+      const sz = blockSize(s.project, o);
+      const fh = BLK.footerH * o.scale;
+      rect = tr({ x: o.x, y: o.y + sz.h - fh, w: sz.w, h: fh });
+      fontSize = Math.max(10, BLK.footerSize * o.scale * view.z);
+    } else {
+      const b = localBox(s.project, o);
+      rect = tr({ x: b.x, y: b.y + b.h / 2 - Math.min(b.h, 14) / 2, w: b.w, h: Math.min(b.h, 14) });
+      fontSize = 11;
+    }
     initial = dev?.name ?? '';
-    fontSize = Math.max(10, BLK.footerSize * o.scale * view.z);
     commit = (v) => {
       const name = v.trim();
-      if (name && dev && name !== dev.name) renameDevice(dev.id, name);
+      if (dev && name !== dev.name) renameDevice(dev.id, name);
     };
   } else {
     // A line, or a snake (its trunk route carries the snake's label).

@@ -29,6 +29,7 @@ export function newProject(prefs: Prefs): Project {
       revision: '0',
     },
     pages: [newPage('Page 1', prefs.defaultPageSize)],
+    signalTypes: [...prefs.signalTypes],
     devices: {},
     blockDefs: {},
     assets,
@@ -36,7 +37,7 @@ export function newProject(prefs: Prefs): Project {
 }
 
 export function emptyBlockDef(): BlockDef {
-  return { id: newId('bd'), manufacturer: '', model: '', defaultName: '', left: [], right: [] };
+  return { id: newId('bd'), manufacturer: '', model: '', left: [], right: [] };
 }
 
 /** Deep copy a block definition with a new id (port ids are kept, so connections survive updates). */

@@ -9,9 +9,11 @@ import { getState, setState, updateProject } from './state/store';
 import * as actions from './state/actions';
 import { exportPdf } from './render/pdfExport';
 import { serializeProject, deserializeProject } from './io/projectFile';
+import { cableListCsv } from './model/cableList';
+import * as rackActions from './state/rackActions';
 
 // Small debugging/automation hook (used by smoke tests).
-(window as unknown as { __schema: unknown }).__schema = { getState, setState, updateProject, actions, exportPdf, serializeProject, deserializeProject };
+(window as unknown as { __schema: unknown }).__schema = { getState, setState, updateProject, actions, exportPdf, serializeProject, deserializeProject, cableListCsv, rackActions };
 
 async function boot() {
   const root = createRoot(document.getElementById('root')!);

@@ -32,9 +32,11 @@ import {
   type Pt,
   type ResolvedRoute,
 } from '../model/routing';
-import { fromLocal, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
+import { fromLocal, isBox, localBox, objBounds, rotatePt, rotMatrix, rotOf } from '../model/geom';
 import { pageOfObject, tagFontSize, tagText, TAG_PAD_Y } from '../model/tags';
-import { capHeightEm, fitText, measureText, wrapText } from '../text/fonts';
+import { capHeightEm, fitText, measureText, onFontsChanged, wrapText } from '../text/fonts';
+import { drawRack, drawRackUnit } from './rackDraw';
+import { effectiveStyle } from '../model/signals';
 import { parsePathData, type DLItem, type DLStroke, type PathCmd } from './displayList';
 
 export { LABEL_SIZE };
@@ -54,7 +56,11 @@ export interface BuildOptions {
 export function buildPage(project: Project, page: Page, opts: BuildOptions): DLItem[] {
   const out: DLItem[] = [];
   drawFrame(out, project, page, opts);
-  for (const o of page.objects) drawObject(out, project, o);
+  for (const o of page.objects) {
+    // Units in a rack are drawn with their rack (always on top of it).
+    if (o.kind === 'rackunit' && o.rackId) continue;
+    drawObject(out, project, o, page);
+  }
   drawConnections(out, project, page);
   return out;
 }
@@ -62,8 +68,10 @@ export function buildPage(project: Project, page: Page, opts: BuildOptions): DLI
 // ---------------------------------------------------------------------------------------------
 // Objects
 
-export function drawObject(out: DLItem[], project: Project, o: PageObject) {
+export function drawObject(out: DLItem[], project: Project, o: PageObject, page: Page | null = null) {
   if (o.kind === 'block') return drawBlock(out, project, o);
+  if (o.kind === 'rack') return drawRack(out, project, o, page);
+  if (o.kind === 'rackunit') return drawRackUnit(out, project, o, page);
   if (o.kind === 'tag') return drawTag(out, project, o);
   const rot = rotOf(o);
   const dst: DLItem[] = rot ? [] : out;
@@ -320,7 +328,7 @@ function vectorItems(a: Asset): DLItem[] {
   return v;
 }
 
-function drawImage(out: DLItem[], project: Project, o: ImageObj) {
+export function drawImage(out: DLItem[], project: Project, o: ImageObj) {
   const a = project.assets[o.assetId];
   if (!a) out.push({ t: 'rect', x: o.x, y: o.y, w: o.w, h: o.h, fill: '#ffdddd', stroke: THIN });
   else if (a.vector) out.push({ t: 'group', m: [o.w / a.w, 0, 0, o.h / a.h, o.x, o.y], items: vectorItems(a) });
@@ -389,6 +397,7 @@ interface Fit {
   padY: number;
 }
 const fitCache = new Map<string, Fit>();
+onFontsChanged(() => fitCache.clear());
 
 /**
  * Text layout for a box. The padding collapses first; the font size only shrinks (never grows)
@@ -449,7 +458,7 @@ export function textTop(o: TextBox) {
   return o.y + padY - lead;
 }
 
-function drawTextIn(out: DLItem[], o: TextBox) {
+export function drawTextIn(out: DLItem[], o: TextBox) {
   if (!o.text) return;
   const font = o.bold ? 'narrowBold' : 'narrow';
   const { size, lines, padX } = fitTextBox(o);
@@ -655,7 +664,8 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
 
   routes.forEach((r, ri) => {
     if (onlyIds && !onlyIds.has(r.conn.id)) return;
-    const style = toDLStroke(r.conn.style);
+    const eff = effectiveStyle(project, page, r.conn);
+    const style = toDLStroke(eff);
     const lbs = labelBoxes(r);
     if (r.legs) {
       // Snake member: only its two legs are drawn, each with the full label.
@@ -664,12 +674,12 @@ export function drawConnections(out: DLItem[], project: Project, page: Page, onl
         const L = Math.abs(leg[1].x - leg[0].x);
         const gaps: [number, number][] = lb ? [[L / 2 - lb.gap / 2, L / 2 + lb.gap / 2]] : [];
         out.push({ t: 'path', d: strokePath(leg, gaps, new Map()), fill: null, stroke: style });
-        if (lb) labelText(out, lb, r.conn.label, r.conn.style.color);
+        if (lb) labelText(out, lb, r.conn.label, eff.color);
       });
       return;
     }
     const gaps = lbs.map((lb): [number, number] => [lb.d - lb.gap / 2, lb.d + lb.gap / 2]);
-    const texts = () => lbs.forEach((lb) => labelText(out, lb, r.conn.label, r.conn.style.color));
+    const texts = () => lbs.forEach((lb) => labelText(out, lb, r.conn.label, eff.color));
     if (r.curve) {
       out.push({ t: 'path', d: curvePath(r.curve, r.pts, gaps), fill: null, stroke: style });
       if (r.trunk) for (const bar of r.trunk.bars) if (Math.abs(bar[1].y - bar[0].y) > 1e-6) out.push({ t: 'path', d: strokePath(bar, [], new Map()), fill: null, stroke: style });
@@ -848,7 +858,7 @@ export function titleBlockObjects(project: Project): BoxObj[] {
   if (!first) return [];
   const r = titleBlockRect(first.size);
   return first.objects.filter((o): o is BoxObj => {
-    if (o.kind === 'block' || o.kind === 'tag') return false;
+    if (!isBox(o)) return false;
     const b = objBounds(project, o);
     return b.x >= r.x - 0.5 && b.y >= r.y - 0.5 && b.x + b.w <= r.x + r.w + 0.5 && b.y + b.h <= r.y + r.h + 0.5;
   });

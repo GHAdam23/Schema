@@ -5,7 +5,10 @@ import { fileToImageAsset, pickFile, download } from '../io/files';
 import { newId } from '../model/ids';
 import { exportPdfCmd, listBackups, restoreBackup, downloadBackup, type BackupRecord } from '../state/fileOps';
 import { DEFAULT_SIGNAL_TYPES, PAGE_SIZES } from '../model/defaults';
-import type { PageSizeId, TagObj } from '../model/types';
+import type { PageSizeId, SignalStyle, TagObj } from '../model/types';
+import { SIGNAL_COLOR_SUGGESTIONS } from '../model/signals';
+import { ColorSwatch } from './controls';
+import { ProjectSettingsBody } from './ProjectSettings';
 import { setTagTarget } from '../state/actions';
 import { devicePages } from '../model/tags';
 
@@ -40,13 +43,14 @@ export function PrefsDialog() {
   };
   return (
     <Modal
-      title="Preferences"
+      title="App preferences"
       buttons={
         <>
           <button
+            title="Save these preferences to a file (e.g. to use them on another computer)"
             onClick={() => download(new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' }), 'schema-preferences.json')}
           >
-            Export…
+            Export preferences…
           </button>
           <button
             onClick={async () => {
@@ -60,7 +64,7 @@ export function PrefsDialog() {
               }
             }}
           >
-            Import…
+            Import preferences…
           </button>
           <div className="spacer" />
           <button onClick={close}>Cancel</button>
@@ -98,31 +102,47 @@ export function PrefsDialog() {
         <label>
           Backups to keep <input type="number" min={1} max={200} value={p.backupsToKeep} onChange={(e) => set('backupsToKeep', Math.max(1, Number(e.target.value) || 20))} />
         </label>
-        <div className="sub">Signal types</div>
-        <button onClick={() => setState({ modal: { kind: 'signalTypes' } })}>Edit signal types…</button>
+        <div className="sub">Signal types for new projects</div>
+        <div className="muted small">Each project keeps its own list (Settings → Project settings); this is the list new projects start with.</div>
+        <button onClick={() => setState({ modal: { kind: 'signalTypes', scope: 'app' } })}>Edit default signal types…</button>
       </div>
     </Modal>
   );
 }
 
-export function SignalTypesDialog() {
+export function SignalTypesDialog({ scope }: { scope: 'app' | 'project' }) {
   const prefs = useStore((s) => s.prefs);
-  const [text, setText] = useState(prefs.signalTypes.join('\n'));
+  const project = useStore((s) => s.project);
+  const cur = scope === 'app' ? prefs.signalTypes : project.signalTypes ?? prefs.signalTypes;
+  const [text, setText] = useState(cur.join('\n'));
+  const done = () => setState({ modal: scope === 'app' ? { kind: 'prefs' } : { kind: 'projectSettings' } });
   return (
     <Modal
-      title="Signal types"
+      title={scope === 'app' ? 'Default signal types (new projects)' : 'Signal types — this project'}
+      onClose={done}
       buttons={
         <>
-          <button onClick={() => setText(DEFAULT_SIGNAL_TYPES.join('\n'))}>Reset to defaults</button>
+          {scope === 'project' && (
+            <button title="Replace this project's list with your default list (Preferences)" onClick={() => setText(prefs.signalTypes.join('\n'))}>
+              Use my default list
+            </button>
+          )}
+          <button onClick={() => setText(DEFAULT_SIGNAL_TYPES.join('\n'))}>Built-in list</button>
           <div className="spacer" />
-          <button onClick={close}>Cancel</button>
+          <button onClick={done}>Cancel</button>
           <button
             className="primary"
             onClick={() => {
               const list = [...new Set(text.split(/\r?\n/).map((s) => s.trim().toUpperCase()).filter(Boolean))];
-              const p = { ...prefs, signalTypes: list };
-              savePrefs(p);
-              setState({ prefs: p, modal: null });
+              if (scope === 'app') {
+                const p = { ...prefs, signalTypes: list };
+                savePrefs(p);
+                setState({ prefs: p });
+              } else {
+                nextLabel('Edit signal types');
+                updateProject((d) => void (d.signalTypes = list));
+              }
+              done();
             }}
           >
             Save
@@ -130,8 +150,119 @@ export function SignalTypesDialog() {
         </>
       }
     >
-      <div className="muted small">One per line. Used for suggestions in the block editor and for mismatch warnings.</div>
+      <div className="muted small">
+        One per line.{' '}
+        {scope === 'app'
+          ? 'New projects start with this list; each project can then have its own.'
+          : 'Suggested in the block editor and listed under signal colours for this project.'}
+      </div>
       <textarea className="textedit" rows={16} value={text} onChange={(e) => setText(e.target.value)} />
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/** Line colour / style per signal type (saved in the project, so the PDF looks the same for everyone). */
+/** Signal colours are edited from Project settings; closing goes back there. */
+const back = () => setState({ modal: { kind: 'projectSettings' } });
+
+export function ProjectSettingsDialog() {
+  return (
+    <Modal
+      title="Project settings"
+      buttons={
+        <>
+          <div className="spacer" />
+          <button className="primary" onClick={close}>
+            Done
+          </button>
+        </>
+      }
+    >
+      <div className="muted small">Saved in this project and used on every page. Changes apply right away (and can be undone).</div>
+      <div className="projsettings">
+        <ProjectSettingsBody />
+      </div>
+    </Modal>
+  );
+}
+
+export function SignalColorsDialog() {
+  const project = useStore((s) => s.project);
+  const prefs = useStore((s) => s.prefs);
+  const [styles, setStyles] = useState<Record<string, SignalStyle>>({ ...(project.signalStyles ?? {}) });
+  const [on, setOn] = useState(project.signalColors ?? true);
+  // Signal types: the preference list plus any used on blocks in this project.
+  const used = new Set<string>();
+  for (const d of Object.values(project.blockDefs)) for (const p of [...d.left, ...d.right]) if (p.signal) used.add(p.signal.toUpperCase());
+  const types = [...new Set([...(project.signalTypes ?? prefs.signalTypes), ...used, ...Object.keys(styles)])];
+  const set = (t: string, v: SignalStyle | null) => {
+    const n = { ...styles };
+    if (v) n[t] = v;
+    else delete n[t];
+    setStyles(n);
+  };
+  return (
+    <Modal
+      title="Signal colours"
+      onClose={back}
+      buttons={
+        <>
+          <button
+            title="Fill in suggested colours for the signal types that have none"
+            onClick={() => {
+              const n = { ...styles };
+              for (const t of types) if (!n[t] && SIGNAL_COLOR_SUGGESTIONS[t]) n[t] = { color: SIGNAL_COLOR_SUGGESTIONS[t] };
+              setStyles(n);
+            }}
+          >
+            Suggest colours
+          </button>
+          <button onClick={() => setStyles({})}>Clear all</button>
+          <div className="spacer" />
+          <button onClick={back}>Cancel</button>
+          <button
+            className="primary"
+            onClick={() => {
+              nextLabel('Signal colours');
+              updateProject((d) => {
+                d.signalStyles = styles;
+                d.signalColors = on;
+              });
+              back();
+            }}
+          >
+            Save
+          </button>
+        </>
+      }
+    >
+      <label className="check">
+        <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} /> Colour lines by signal type
+      </label>
+      <div className="muted small">
+        Lines that are still black take their signal type's colour (and dash). A line you've given its own colour keeps it. Saved in this project.
+      </div>
+      <div className="sigtable">
+        {types.map((t) => {
+          const st = styles[t];
+          return (
+            <div key={t} className="sigrow">
+              <span className="signame">{t}</span>
+              <ColorSwatch value={st?.color ?? '#000000'} defaultColor="#000000" defaultLabel="Black (no colour)" onChange={(c) => set(t, c && c !== '#000000' ? { ...st, color: c } : st?.dash ? { ...st, color: '#000000' } : null)} />
+              <select value={st?.dash ?? 'solid'} onChange={(e) => set(t, { color: st?.color ?? '#000000', dash: e.target.value === 'solid' ? undefined : (e.target.value as SignalStyle['dash']) })}>
+                <option value="solid">Solid</option>
+                <option value="dashed">Dashed</option>
+                <option value="dotted">Dotted</option>
+              </select>
+              <svg width="60" height="10">
+                <line x1="2" y1="5" x2="58" y2="5" stroke={st?.color ?? '#000'} strokeWidth="1.5" strokeDasharray={st?.dash === 'dashed' ? '6 3' : st?.dash === 'dotted' ? '1.5 3' : undefined} />
+              </svg>
+            </div>
+          );
+        })}
+      </div>
     </Modal>
   );
 }

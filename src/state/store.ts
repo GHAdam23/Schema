@@ -4,6 +4,8 @@ import { produce, freeze, type Draft } from 'immer';
 import type { BlockDef, Id, Project } from '../model/types';
 import { newProject } from '../model/project';
 import { syncGlue } from '../model/glue';
+import { syncRacks } from '../model/rack';
+import { syncProjectFonts } from '../text/fonts';
 import { loadPrefs, type Prefs } from './prefs';
 
 export interface PortRef {
@@ -50,17 +52,19 @@ export interface HistoryEntry {
   at: number;
 }
 
-export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'cloud' | 'line' | 'arrow' | 'arrow2' | 'tag' | 'pan';
+export type Tool = 'select' | 'text' | 'rect' | 'ellipse' | 'container' | 'callout' | 'cloud' | 'line' | 'arrow' | 'arrow2' | 'tag' | 'rack' | 'pan';
 
 export type Modal =
   /** library: a library block; project: the ports shared by a model's devices; instance: one placed block only. */
   | { kind: 'blockEditor'; target: 'library' | 'project' | 'instance'; defId: Id | null; objId?: Id }
-  | { kind: 'quickInsert' }
+  | { kind: 'projectSettings' }
   | { kind: 'prefs' }
   | { kind: 'titleBlock' }
   | { kind: 'exportPdf' }
   | { kind: 'backups' }
-  | { kind: 'signalTypes' }
+  /** app: the list new projects start with; project: this project's list. */
+  | { kind: 'signalTypes'; scope: 'app' | 'project' }
+  | { kind: 'signalColors' }
   | { kind: 'history' }
   /** Choose the device (and port) a reference tag points to. `isNew`: cancelling removes the tag again. */
   | { kind: 'tagTarget'; objId: Id; isNew: boolean };
@@ -100,6 +104,8 @@ export function getState() {
 export function setState(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
   const p = typeof patch === 'function' ? patch(state) : patch;
   state = { ...state, ...p };
+  // Uploaded project fonts take effect before anything measures text.
+  if (p.project) syncProjectFonts(state.project);
   listeners.forEach((l) => l());
 }
 
@@ -139,6 +145,7 @@ export function updateProject(recipe: (d: Draft<Project>) => void, record: boole
   // Glued drawn lines keep in step with what they're glued to.
   const next = produce(prev, (d) => {
     recipe(d);
+    syncRacks(d as Project);
     syncGlue(d as Project);
   });
   if (next === prev) return;
